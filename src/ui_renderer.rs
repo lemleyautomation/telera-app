@@ -10,7 +10,7 @@ use std::ops::{Add, Div, Mul, Sub};
 use wgpu::util::DeviceExt;
 use wgpu::MultisampleState;
 
-use telera_layout::{RenderCommand, Vec2};
+use telera_layout::{MeasureText, RenderCommand, Vec2};
 
 pub struct TextLine {
     line: glyphon::Buffer,
@@ -280,6 +280,42 @@ pub struct UIRenderer {
     pub size_bind_group: wgpu::BindGroup,
 
     pub dpi_scale: f32,
+}
+
+impl MeasureText for UIRenderer {
+    fn measure_text(&mut self, text: &str, text_config: telera_layout::TextConfig) -> Vec2 {
+        self.measurement_buffer.set_metrics_and_size(
+            &mut self.font_system,
+            Metrics {
+                font_size: text_config.font_size as f32 * self.dpi_scale,
+                line_height: match text_config.line_height {
+                    0 => (text_config.font_size as f32 * 1.2) * self.dpi_scale,
+                    _ => text_config.line_height as f32 * self.dpi_scale,
+                },
+            },
+            None,
+            None,
+        );
+        self.measurement_buffer.set_text(
+            &mut self.font_system,
+            text,
+            Attrs::new().family(Family::Serif),
+            Shaping::Advanced,
+        );
+        for ele in self.measurement_buffer.lines.iter_mut() {
+            ele.set_align(Some(Align::Left));
+        }
+        self.measurement_buffer
+            .shape_until_scroll(&mut self.font_system, false);
+
+        let measurement = Vec2 {
+            x: self.measurement_buffer.layout_runs().next().unwrap().line_w/self.dpi_scale,
+            y: self.measurement_buffer.metrics().line_height/self.dpi_scale,
+        };
+
+        //Vec2 { x: 20.0, y: 12.0 }    
+        measurement
+    }
 }
 
 impl UIRenderer {

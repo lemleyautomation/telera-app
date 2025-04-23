@@ -39,43 +39,6 @@ impl App<BasicEvents, (), (), ()> for BasicApp {
         core.create_window(new_window);
     }
 
-    fn update(&self, layout: &mut telera_layout::LayoutEngine<(), (), ()>) -> Vec<telera_layout::RenderCommand::<(), (), ()>> {
-        layout.begin_layout();
-
-        layout.open_element();
-
-        let config = ElementConfiguration::new()
-            .id("hi")
-            .x_grow()
-            .y_grow()
-            .padding_all(5)
-            .color(Color::default())
-            .end();
-        layout.configure_element(&config);
-
-        let text_config = TextConfig::new()
-            .font_id(0)
-            .color(Color::default())
-            .font_size(12)
-            .line_height(14)
-            .end();
-        layout.add_text_element("hi", &text_config, true);
-
-        layout.open_element();
-        let config = ElementConfiguration::new()
-            .id("test")
-            .x_fixed(50.0)
-            .y_fixed(50.0)
-            .color(Color::default())
-            .end();
-        layout.configure_element(&config);
-        layout.close_element();
-
-        layout.close_element();
-
-        layout.end_layout()
-    }
-
     fn event_handler(&self, event: BasicEvents, _core: &mut Core){
         println!("user event handler: {:?}", event);
     }
