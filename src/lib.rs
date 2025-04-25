@@ -306,6 +306,7 @@ where
     fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, _event: InternalEvents) {
         let file = "examples/layout.xml";
         let file = read_to_string(file).unwrap();
+        println!("updating layout");
         self.parser.update_page(&file);
         for (_window_id,viewport) in self.viewports.iter_mut() {
             viewport.window.request_redraw();
@@ -330,7 +331,7 @@ where
 
     let file_watcher = event_loop.create_proxy();
 
-    let watcher = watch_file("examples/layout2.xml", file_watcher);
+    let watcher = watch_file("examples/layout.xml", file_watcher);
 
     let mut app: Application<UserApp, UserEvents, UserPages> = Application::new(event_loop.create_proxy(), user_application, watcher);
 

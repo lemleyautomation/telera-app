@@ -156,10 +156,28 @@
                     <radius-all is="8" />
                 </element-config>
 
+                <element>
+                    <element-config>
+                        <use name="content background color"></use>
+                        <width-grow />
+                        <border-bottom is="3" />
+                    </element-config>
+
+                    <text-element>
+                        <text-config>
+                            <font-id is="16" />
+                            <color is="black" />
+                        </text-config>
+                        <content>Available Articles:</content>
+                    </text-element>
+                </element>
+
                 <list src="Documents">
                     <get-text local="title" from="title" />
                     <get-bool local="selected" from="selected_document" />
                     <get-event local="Clicked" from="Clicked" />
+
+                    
 
                     <element if="selected">
                         <element-config>
