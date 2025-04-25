@@ -156,17 +156,17 @@
                     <radius-all is="8" />
                 </element-config>
 
-                <list src="documents">
+                <list src="Documents">
                     <get-text local="title" from="title" />
                     <get-bool local="selected" from="selected_document" />
-                    <get-event local="clicked" from="clicked" />
+                    <get-event local="Clicked" from="Clicked" />
 
                     <element if="selected">
                         <element-config>
                             <use name="sidebar button"></use>
                             <color is="rgb(120,120,120)" />
                             <radius-all is="8"/>
-                            <clicked>
+                            <clicked emit="Clicked">
                                 <border-color is="white" />
                                 <border-all is="2" />
                             </clicked>
@@ -187,7 +187,7 @@
                                 <color is="rgb(120, 120, 120)" />
                             </hovered>
                             <radius-all is="8" />
-                            <clicked emit="clicked">
+                            <clicked emit="Clicked">
                                 <border-color is="white" />
                                 <border-all is="2" />
                             </clicked>
@@ -221,7 +221,7 @@
                         <line-height is="28" />
                         <color is="white" />
                     </text-config>
-                    <dyn-content from="selected title" />
+                    <dyn-content from="title" />
                 </text-element>
 
                 <text-element>
@@ -230,7 +230,7 @@
                         <line-height is="28" />
                         <color is="white" />
                     </text-config>
-                    <dyn-content from="selected contents" />
+                    <dyn-content from="contents" />
                 </text-element>
             </element>
         </element>

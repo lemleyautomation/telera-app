@@ -4,16 +4,16 @@ use telera_app::Core;
 use telera_app::LogicalSize;
 
 use strum_macros::EnumString;
-use telera_layout::Color;
-use telera_layout::ElementConfiguration;
-use telera_layout::TextConfig;
+use telera_layout::ParserDataAccess;
 
 #[derive(EnumString, Debug, Clone, PartialEq, Default)]
 enum BasicEvents {
     #[default]
     None,
     Open,
-    Clicked
+    Clicked,
+    SquirrelClicked,
+    LoremClicked,
 }
 
 #[derive(EnumString, Debug, Default)]
@@ -39,61 +39,81 @@ impl App<BasicEvents, (), (), ()> for BasicApp {
         core.create_window(new_window);
     }
 
-    fn event_handler(&self, event: BasicEvents, _core: &mut Core){
-        println!("user event handler: {:?}", event);
+    fn event_handler(&mut self, event: BasicEvents, _core: &mut Core){
+        match event {
+            BasicEvents::LoremClicked => self.selected_document = 1,
+            BasicEvents::SquirrelClicked => self.selected_document = 0,
+            _ => {}
+        }
     }
 }
 
-// impl Get for BasicApp {
-//     fn get<'render_pass, 'application>(&'application self, name: &str) -> Option<layout_wrapper::XMLType::<'render_pass>> where 'application: 'render_pass{
-//         match name {
-//             "documents" => Some(layout_wrapper::XMLType::ListLength(self.documents.len())),
-//             "selected title" => {
-//                 match self.documents.get(self.selected_document) {
-//                     Some(document) => {
-//                         Some(layout_wrapper::XMLType::Text(&document.title))
-//                     }
-//                     None => None
-//                 }
-//             }
-//             "selected contents" => {
-//                 match self.documents.get(self.selected_document) {
-//                     Some(document) => {
-//                         Some(layout_wrapper::XMLType::Text(&document.contents))
-//                     }
-//                     None => None
-//                 }
-//             }
-//             _ => None
-//         }
-//     }
-//     fn get_list_member<'render_pass, 'application>(&'application self, list_name: &str, list_index: usize, list_member: &str) -> Option<layout_wrapper::XMLType::<'render_pass>> where 'application: 'render_pass {
-//         if list_name == "documents" {
-//             match list_member {
-//                 "title" => {
-//                     match self.documents.get(list_index) {
-//                         Some(document) => {
-//                             Some(layout_wrapper::XMLType::Text(&document.title))
-//                         }
-//                         None => None
-//                     }
-//                 }
-//                 "contents" => {
-//                     match self.documents.get(list_index) {
-//                         Some(document) => {
-//                             Some(layout_wrapper::XMLType::Text(&document.contents))
-//                         }
-//                         None => None
-//                     }
-//                 }
-//                 _ => return None
-//             }
-//         }
-//         else {
-//             None
-//         }
-//     }
-// }
+impl ParserDataAccess<(), BasicEvents> for BasicApp{
+    fn get_bool(&self, name: &str, list: &Option<telera_layout::ListData>) -> Option<bool> {
+        match list {
+            None => return None,
+            Some(list) => {
+                if list.src == "Documents" {
+                    if name == "selected_document" {
+                        if self.selected_document == list.index as usize {
+                            return Some(true);
+                        }
+                        else {
+                            return Some(false);
+                        }
+                    }
+                }
+                None
+            }
+        }
+    }
+    fn get_text<'render_pass, 'application>(&'application self, name: &str, list: &Option<telera_layout::ListData>) -> Option<&'render_pass str> where 'application: 'render_pass {
+        match list {
+            None => {
+                if name == "title" {
+                    return Some(&self.documents.get(self.selected_document).unwrap().title)
+                }
+                if name == "contents" {
+                    return Some(&self.documents.get(self.selected_document).unwrap().contents)
+                }
+                None
+            }
+            Some(list) => {
+                if list.src == "Documents" {
+                    if name == "title" {
+                        //println!("asking for list element {:?} title", list.index);
+                        return Some(&self.documents.get(list.index as usize).unwrap().title)
+                    }
+                    if name == "contents" {
+                        return Some(&self.documents.get(list.index as usize).unwrap().contents)
+                    }
+                }
+                None
+            }
+        }
+    }
+    fn get_list_length(&self, name: &str, _list: &Option<telera_layout::ListData>) -> Option<i32> {
+        if name == "Documents" {
+            return Some(self.documents.len() as i32)
+        }
+        None
+    }
+    fn get_event<'render_pass, 'application>(&'application self, name: &str, list: &Option<telera_layout::ListData> ) -> Option<BasicEvents> where 'application: 'render_pass {
+        match list {
+            None => return None,
+            Some(list) => {
+                if name == "Clicked" && list.src == "Documents" {
+                    match list.index {
+                        0 => return Some(BasicEvents::SquirrelClicked),
+                        1 => return Some(BasicEvents::LoremClicked),
+                        _ => return None
+                    }
+                }
+                return None;
+            }
+        }
+    }
+}
 
 fn main() {
 

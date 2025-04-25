@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, fmt::Debug, path::Path, rc::Rc, str::FromStr, time::Instant};
+use std::{cell::RefCell, collections::HashMap, fmt::Debug, fs::read_to_string, path::Path, rc::Rc, str::FromStr, time::Instant};
 use notify::ReadDirectoryChangesWatcher;
 use winit::{application::ApplicationHandler, event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent}, event_loop::{ControlFlow, EventLoop, EventLoopProxy}, window::WindowAttributes};
 pub use winit::window::Window;
@@ -18,7 +18,7 @@ mod ui_renderer;
 use ui_renderer::UIRenderer;
 pub use ui_renderer::UIImageDescriptor;
 
-use telera_layout::{Color, ElementConfiguration, LayoutEngine, TextConfig, Vec2};
+use telera_layout::{Color, ElementConfiguration, LayoutEngine, Parser, ParserDataAccess, TextConfig, Vec2};
 use telera_layout::RenderCommand;
 
 mod scene_renderer;
@@ -74,11 +74,17 @@ pub trait App<UserEvents, ImageElementData: Debug, CustomElementData: Debug, Cus
     /// This will be called at the beginning of each render loop
     //fn update(&self, layout: &mut LayoutEngine<UIRenderer, ImageElementData, CustomElementData, CustomLayoutSettings>) -> Vec<RenderCommand::<ImageElementData, CustomElementData, CustomLayoutSettings>>;
     /// handling of user events
-    fn event_handler(&self, event: UserEvents, core: &mut Core);
+    fn event_handler(&mut self, event: UserEvents, core: &mut Core);
 }
 
 #[allow(dead_code)]
-struct Application<UserApp: App<UserEvents,(),(),()>, UserEvents: FromStr+Clone+PartialEq, UserPages: Default>{
+struct Application<UserApp, UserEvents, UserPages>
+where 
+    UserEvents: FromStr+Clone+PartialEq+Default+Debug,
+    <UserEvents as FromStr>::Err: Debug,
+    UserPages: Default,
+    UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
+{
     ctx: GraphicsContext,
     pub scene_renderer: SceneRenderer,
     pub ui_renderer: Option<UIRenderer>,
@@ -92,8 +98,7 @@ struct Application<UserApp: App<UserEvents,(),(),()>, UserEvents: FromStr+Clone+
     scroll_delta_distance: (f32, f32),
 
     pub ui_layout: LayoutEngine<UIRenderer, (), (), ()>,
-    // pub layout_commands: Vec<layout_wrapper::PageTag<UserEvents>>,
-    // pub layout_fragments: HashMap::<String, Vec<layout_wrapper::PageTag<UserEvents>>>,
+    parser: Parser<UserEvents>,
     user_events: Vec<UserEvents>,
 
     viewport_lookup: HashMap<String, WindowId>,
@@ -105,8 +110,12 @@ struct Application<UserApp: App<UserEvents,(),(),()>, UserEvents: FromStr+Clone+
     watcher: ReadDirectoryChangesWatcher,
 }
 
-impl<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserEvents, (),(),()>, UserPages: Default> Application<UserApp, UserEvents, UserPages>
-    where <UserEvents as FromStr>::Err: Debug
+impl<UserEvents, UserApp, UserPages> Application<UserApp, UserEvents, UserPages>
+where 
+    UserEvents: FromStr+Clone+PartialEq+Default+Debug,
+    <UserEvents as FromStr>::Err: Debug,
+    UserPages: Default,
+    UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
 {
     pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp, watcher: ReadDirectoryChangesWatcher) -> Self {
         let ctx = GraphicsContext::new();
@@ -121,25 +130,19 @@ impl<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserEvents,
         user_application.initialize(&mut core);
 
         let mut ui_layout = LayoutEngine::<UIRenderer, (), (), ()>::new((1.0, 1.0));
-        ui_layout.set_debug_mode(true);
+        ui_layout.set_debug_mode(false);
 
-        // let (layout_commands, layout_fragments) = match parse_xml::<UserEvents,UserApp>("examples/basic.xml", &mut user_application) {
-        //     Err(e) => {
-        //         match e {
-        //             ParserError::UnknownTag(tag) => {
-        //                 panic!("Unknown XML tag: {:?}", String::from_utf8(tag).unwrap())
-        //             }
-        //             e => panic!("Can't parse file: {:?}", e)
-        //         }
-        //     }
-        //     Ok(stacks) => stacks
-        // };
+        let mut parser = Parser::default();
+        let file = "examples/layout.xml";
+        let file = read_to_string(file).unwrap();
+        parser.add_page(&file).unwrap();
 
         let app = Application {
             ctx,
             scene_renderer,
             ui_renderer: Some(ui_renderer),
             ui_layout,
+            parser,
             pointer_state: false,
             dimensions: (1.0, 1.0),
             dpi_scale: 1.0,
@@ -147,8 +150,6 @@ impl<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserEvents,
             mouse_poistion: (0.0,0.0),
             scroll_delta_time: Instant::now(),
             scroll_delta_distance: (0.0, 0.0),
-            // layout_commands,
-            // layout_fragments,
             viewport_lookup: HashMap::new(),
             viewports: HashMap::new(),
             core,
@@ -191,8 +192,12 @@ impl<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserEvents,
     }
 }
 
-impl<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserEvents, (),(),()>, UserPages: Default> ApplicationHandler<InternalEvents> for Application<UserApp,UserEvents, UserPages>
-    where <UserEvents as FromStr>::Err: Debug
+impl<UserEvents, UserApp, UserPages> ApplicationHandler<InternalEvents> for Application<UserApp,UserEvents, UserPages>
+where 
+    UserEvents: FromStr+Clone+PartialEq+Default+Debug,
+    <UserEvents as FromStr>::Err: Debug,
+    UserPages: Default,
+    UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.open_staged_windows(event_loop);
@@ -225,6 +230,10 @@ impl<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserEvents,
             WindowEvent::RedrawRequested => {
                 let window_size: (f32, f32) = viewport.window.inner_size().into();
                 let dpi_scale  = viewport.window.scale_factor() as f32;
+                
+                let mut ui_renderer = self.ui_renderer.take().unwrap();
+                ui_renderer.dpi_scale = dpi_scale;
+                ui_renderer.resize((window_size.0 as i32, window_size.1 as i32), &self.ctx.queue);
 
                 self.ui_layout.set_layout_dimensions(window_size.0/dpi_scale, window_size.1/dpi_scale);
                 self.ui_layout.pointer_state(self.mouse_poistion.0/dpi_scale, self.mouse_poistion.1/dpi_scale, self.pointer_state);
@@ -232,62 +241,22 @@ impl<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserEvents,
                 self.scroll_delta_distance = (0.0,0.0);
                 self.scroll_delta_time = Instant::now();
 
-                //let render_commands = self.user_application.update(&mut self.ui_layout);
-                self.ui_layout.begin_layout(self.ui_renderer.take().unwrap());
+                self.ui_layout.begin_layout(ui_renderer);
 
-                self.ui_layout.open_element();
-
-                let config = ElementConfiguration::new()
-                    .id("hi")
-                    .x_grow()
-                    .y_grow()
-                    .padding_all(5)
-                    .color(Color{r:120.0,g:120.0,b:120.0,a:255.0})
-                    .end();
-                self.ui_layout.configure_element(&config);
-
-                let text_config = TextConfig::new()
-                    .font_id(0)
-                    .color(Color::default())
-                    .font_size(12)
-                    .line_height(14)
-                    .end();
-                self.ui_layout.add_text_element("hi1", &text_config, true);
-
-                let text_config = TextConfig::new()
-                    .font_id(0)
-                    .color(Color::default())
-                    .font_size(12)
-                    .line_height(14)
-                    .end();
-                self.ui_layout.add_text_element("hi2", &text_config, true);
-
-                let text_config = TextConfig::new()
-                    .font_id(0)
-                    .color(Color::default())
-                    .font_size(12)
-                    .line_height(14)
-                    .end();
-                self.ui_layout.add_text_element("hi3", &text_config, true);
-
-                self.ui_layout.open_element();
-                let config = ElementConfiguration::new()
-                    .id("test")
-                    .x_fixed(50.0)
-                    .y_fixed(50.0)
-                    .color(Color::default())
-                    .end();
-                self.ui_layout.configure_element(&config);
-                self.ui_layout.close_element();
-
-                self.ui_layout.close_element();
-
-                let (render_commands, ui_renderer) = self.ui_layout.end_layout();
-                self.ui_renderer = Some(ui_renderer);
-
-                let ui_renderer = self.ui_renderer.as_mut().unwrap();
-                ui_renderer.dpi_scale = dpi_scale;
-                ui_renderer.resize((window_size.0 as i32, window_size.1 as i32), &self.ctx.queue);
+                let events = self.parser.set_page("Main", self.clicked, &mut self.ui_layout, &self.user_application);
+                for event in events.iter() {
+                    self.user_application.event_handler(event.clone(), &mut self.core);
+                }
+                self.clicked = false;
+                // self.ui_layout.open_element();
+                // let mut c = ElementConfiguration::default();
+                // c.x_grow();
+                // c.y_grow();
+                // c.color(Color { r: 43.0, g: 41.0, b: 51.0, a: 255.0 });
+                // self.ui_layout.configure_element(&c);
+                // self.ui_layout.close_element();
+                
+                let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
 
                 self.ctx.render(
                     viewport,
@@ -297,6 +266,8 @@ impl<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserEvents,
                         ui_renderer.render_layout::<(), (), ()>(render_commands, render_pass, &device, &queue, &config);
                     }
                 ).unwrap();
+
+                self.ui_renderer = Some(ui_renderer);
 
                 while let Some(event) = self.user_events.pop() {
                     self.user_application.event_handler(event, &mut self.core);
@@ -333,22 +304,22 @@ impl<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserEvents,
     }
 
     fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, _event: InternalEvents) {
-        // match parse_xml("examples/basic.xml", &mut self.user_application) {
-        //     Err(_) => (),
-        //     Ok((layout_commands, layout_fragments)) => {
-        //         self.layout_commands = layout_commands;
-        //         self.layout_fragments = layout_fragments;
-        //         for (_window_id,viewport) in self.viewports.iter_mut() {
-        //             viewport.window.request_redraw();
-        //         }
-        //     }
-        // }
+        let file = "examples/layout.xml";
+        let file = read_to_string(file).unwrap();
+        self.parser.update_page(&file);
+        for (_window_id,viewport) in self.viewports.iter_mut() {
+            viewport.window.request_redraw();
+        }
     }
 }
 
 
-pub fn run<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserEvents, (), (), ()>, UserPages: Default>(user_application: UserApp)
-    where <UserEvents as FromStr>::Err: Debug
+pub fn run<UserEvents, UserApp, UserPages>(user_application: UserApp)
+where 
+    UserEvents: FromStr+Clone+PartialEq+Default+Debug,
+    <UserEvents as FromStr>::Err: Debug,
+    UserPages: Default,
+    UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
 {
 
     let event_loop = match EventLoop::<InternalEvents>::with_user_event().build() {
@@ -359,13 +330,9 @@ pub fn run<UserEvents: FromStr+Clone+PartialEq+Default+Debug, UserApp: App<UserE
 
     let file_watcher = event_loop.create_proxy();
 
-    let watcher = watch_file("examples/layout.xml", file_watcher);
+    let watcher = watch_file("examples/layout2.xml", file_watcher);
 
     let mut app: Application<UserApp, UserEvents, UserPages> = Application::new(event_loop.create_proxy(), user_application, watcher);
 
     event_loop.run_app(&mut app).unwrap();
-}
-
-pub fn measure_text(text: &str, config: &TextConfig, ui: &mut Rc<RefCell<UIRenderer>>) -> Vec2 {
-    ui.borrow_mut().measure_text(text, config.font_size as f32, config.line_height as f32)
 }

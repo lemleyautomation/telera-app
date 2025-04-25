@@ -514,7 +514,7 @@ impl UIRenderer {
         }
     }
 
-    pub fn begin_scissor(&mut self, position: UIPosition, size: UIPosition) -> Result<(), u8>{
+    pub fn begin_scissor(&mut self, position: UIPosition, mut size: UIPosition){
         match self.scissor_active {
             true => {
                 self.end_scissor();
@@ -526,14 +526,17 @@ impl UIRenderer {
 
         let scissor_space = position + size;
 
-        if (scissor_space.x > self.size_uniform.x) || (scissor_space.y > self.size_uniform.y) {
-            return Err(1)
+        if scissor_space.x > self.size_uniform.x {
+            size.x += self.size_uniform.x-scissor_space.x;
+        }
+
+        if scissor_space.y > self.size_uniform.y {
+            size.y += self.size_uniform.y-scissor_space.y;
         }
 
         self.scissor_active = true;
         self.scissor_position = position;
         self.scissor_size = size;
-        Ok(())
     }
 
     pub fn end_scissor(&mut self){
@@ -650,7 +653,9 @@ impl UIRenderer {
 
         for command in render_commands {
             match command {
-                RenderCommand::Rectangle(r) => self.draw_filled_rectangle( 
+                RenderCommand::Rectangle(r) => {
+                    //println!("{:?}", r.bounding_box);
+                    self.draw_filled_rectangle( 
                         UIPosition { 
                             x: r.bounding_box.x*self.dpi_scale, 
                             y: r.bounding_box.y*self.dpi_scale, 
@@ -672,7 +677,8 @@ impl UIRenderer {
                             bottom_left: r.corner_radii.bottom_left*self.dpi_scale, 
                             bottom_right: r.corner_radii.bottom_right*self.dpi_scale 
                         }
-                ),
+                    );
+                },
                 RenderCommand::Border(b) => self.draw_rectangle(
                     UIPosition { 
                         x: b.bounding_box.x*self.dpi_scale,
@@ -724,7 +730,7 @@ impl UIRenderer {
                 RenderCommand::ScissorStart(b) => self.begin_scissor(
                     UIPosition::xy(b.x, b.y)*self.dpi_scale,
                     UIPosition::xy(b.width, b.height)*self.dpi_scale
-                ).unwrap(),
+                ),
                 RenderCommand::ScissorEnd => self.end_scissor(),
                 RenderCommand::Image(_i) => {
                     //             self.draw_image(
