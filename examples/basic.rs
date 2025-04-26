@@ -16,7 +16,7 @@ enum BasicEvents {
     LoremClicked,
 }
 
-#[derive(EnumString, Debug, Default)]
+#[derive(EnumString,Clone,Hash,PartialEq,std::cmp::Eq,Default)]
 enum BasicPages {
     #[default]
     Main,

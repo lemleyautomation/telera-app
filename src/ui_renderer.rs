@@ -28,17 +28,6 @@ pub struct UICornerRadii {
     pub bottom_right: f32,
 }
 
-impl UICornerRadii {
-    pub fn all(rad: f32) -> Self {
-        Self {
-            top_left: rad,
-            top_right: rad,
-            bottom_left: rad,
-            bottom_right: rad
-        }
-    }
-}
-
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct UIColor {
@@ -110,18 +99,6 @@ impl UIPosition {
             y: self.y + y,
             z: self.z,
         }
-    }
-
-    pub fn add_x(&mut self, x: f32) -> &mut Self {
-        self.x += x;
-
-        self
-    }
-
-    pub fn add_y(&mut self, y: f32) -> &mut Self {
-        self.y += y;
-
-        self
     }
 }
 
@@ -241,7 +218,6 @@ impl SizeUniform {
 }
 
 pub enum RenderBatch{
-    None,
     Basic{begin:u32, end:u32},
     Scissor{begin:u32, end:u32, position:UIPosition, size:UIPosition},
     Atlas{begin:u32, end:u32, atlas:String}
@@ -844,37 +820,6 @@ impl UIRenderer {
             color,
             bounds,
         });
-    }
-
-    pub fn measure_text(&mut self, text: &str, font_size: f32, line_height: f32) -> Vec2 {
-        self.measurement_buffer.set_metrics_and_size(
-            &mut self.font_system,
-            Metrics {
-                font_size: font_size * self.dpi_scale,
-                line_height: match line_height {
-                    0.0 => (font_size * 1.2) * self.dpi_scale,
-                    _ => line_height * self.dpi_scale,
-                },
-            },
-            None,
-            None,
-        );
-        self.measurement_buffer.set_text(
-            &mut self.font_system,
-            text,
-            Attrs::new().family(Family::Serif),
-            Shaping::Advanced,
-        );
-        for ele in self.measurement_buffer.lines.iter_mut() {
-            ele.set_align(Some(Align::Left));
-        }
-        self.measurement_buffer
-            .shape_until_scroll(&mut self.font_system, false);
-
-        Vec2 {
-            x: self.measurement_buffer.layout_runs().next().unwrap().line_w/self.dpi_scale,
-            y: self.measurement_buffer.metrics().line_height/self.dpi_scale,
-        }
     }
 
     pub fn draw_triangle(&mut self, positions: &[UIPosition; 3], color: UIColor){

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, fmt::Debug, fs::read_to_string, path::Path, rc::Rc, str::FromStr, time::Instant};
+use std::{collections::HashMap, hash::Hash, fmt::Debug, fs::read_to_string, path::{Path, PathBuf}, str::FromStr, time::Instant};
 use notify::ReadDirectoryChangesWatcher;
 use winit::{application::ApplicationHandler, event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent}, event_loop::{ControlFlow, EventLoop, EventLoopProxy}, window::WindowAttributes};
 pub use winit::window::Window;
@@ -18,8 +18,10 @@ mod ui_renderer;
 use ui_renderer::UIRenderer;
 pub use ui_renderer::UIImageDescriptor;
 
-use telera_layout::{Color, ElementConfiguration, LayoutEngine, Parser, ParserDataAccess, TextConfig, Vec2};
-use telera_layout::RenderCommand;
+use telera_layout::{LayoutEngine, Parser};
+pub use telera_layout::ParserDataAccess;
+pub use telera_layout::EnumString;
+pub use telera_layout::strum;
 
 mod scene_renderer;
 use scene_renderer::SceneRenderer;
@@ -31,13 +33,16 @@ mod model;
 mod texture;
 
 use notify::{RecursiveMode, Result, Watcher};
+#[allow(dead_code)]
 fn watch_file(file: &str, sender: EventLoopProxy<InternalEvents>) -> ReadDirectoryChangesWatcher{
     let expensive_closure = move |event: Result<notify::Event>| {
         match event {
             Err(e) => {println!("{:?}", e)}
             Ok(event) => {
-                if event.kind == notify::EventKind::Modify(notify::event::ModifyKind::Any) {
-                    let _ = sender.send_event(InternalEvents::RebuildLayout);
+                if let Some(path) = event.paths.first(){
+                    if event.kind == notify::EventKind::Modify(notify::event::ModifyKind::Any) {
+                        let _ = sender.send_event(InternalEvents::RebuildLayout(path.to_owned()));
+                    }
                 }
             }
         }
@@ -51,9 +56,9 @@ fn watch_file(file: &str, sender: EventLoopProxy<InternalEvents>) -> ReadDirecto
 }
 
 #[allow(dead_code)]
-enum InternalEvents {
+enum InternalEvents{
     Hi,
-    RebuildLayout,
+    RebuildLayout(PathBuf),
 }
 
 pub struct Core{
@@ -66,6 +71,7 @@ impl Core{
     }
 }
 
+#[allow(unused_variables)]
 pub trait App<UserEvents, ImageElementData: Debug, CustomElementData: Debug, CustomLayoutSettings>{
     /// called once before start
     fn initialize(&self, core: &mut Core);
@@ -74,7 +80,7 @@ pub trait App<UserEvents, ImageElementData: Debug, CustomElementData: Debug, Cus
     /// This will be called at the beginning of each render loop
     //fn update(&self, layout: &mut LayoutEngine<UIRenderer, ImageElementData, CustomElementData, CustomLayoutSettings>) -> Vec<RenderCommand::<ImageElementData, CustomElementData, CustomLayoutSettings>>;
     /// handling of user events
-    fn event_handler(&mut self, event: UserEvents, core: &mut Core);
+    fn event_handler(&mut self, event: UserEvents, core: &mut Core){}
 }
 
 #[allow(dead_code)]
@@ -82,7 +88,8 @@ struct Application<UserApp, UserEvents, UserPages>
 where 
     UserEvents: FromStr+Clone+PartialEq+Default+Debug,
     <UserEvents as FromStr>::Err: Debug,
-    UserPages: Default,
+    UserPages: FromStr+Clone+Hash+Eq+Default,
+    <UserPages as FromStr>::Err: Debug,
     UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
 {
     ctx: GraphicsContext,
@@ -98,7 +105,7 @@ where
     scroll_delta_distance: (f32, f32),
 
     pub ui_layout: LayoutEngine<UIRenderer, (), (), ()>,
-    parser: Parser<UserEvents>,
+    parser: Parser<UserEvents,UserPages>,
     user_events: Vec<UserEvents>,
 
     viewport_lookup: HashMap<String, WindowId>,
@@ -107,17 +114,18 @@ where
     core: Core,
     app_events: EventLoopProxy<InternalEvents>,
     user_application: UserApp,
-    watcher: ReadDirectoryChangesWatcher,
+    watcher: Option<ReadDirectoryChangesWatcher>,
 }
 
 impl<UserEvents, UserApp, UserPages> Application<UserApp, UserEvents, UserPages>
 where 
     UserEvents: FromStr+Clone+PartialEq+Default+Debug,
     <UserEvents as FromStr>::Err: Debug,
-    UserPages: Default,
+    UserPages: FromStr+Clone+Hash+Eq+Default,
+    <UserPages as FromStr>::Err: Debug,
     UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
 {
-    pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp, watcher: ReadDirectoryChangesWatcher) -> Self {
+    pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp, watcher: Option<ReadDirectoryChangesWatcher>) -> Self {
         let ctx = GraphicsContext::new();
         let scene_renderer = SceneRenderer::new(&ctx.device);
 
@@ -129,13 +137,35 @@ where
 
         user_application.initialize(&mut core);
 
-        let mut ui_layout = LayoutEngine::<UIRenderer, (), (), ()>::new((1.0, 1.0));
+        let ui_layout = LayoutEngine::<UIRenderer, (), (), ()>::new((1.0, 1.0));
         ui_layout.set_debug_mode(false);
 
         let mut parser = Parser::default();
-        let file = "examples/layout.xml";
-        let file = read_to_string(file).unwrap();
-        parser.add_page(&file).unwrap();
+
+        #[cfg(debug_assertions)]
+        {
+            for dir in std::fs::read_dir("src/layouts").unwrap() {
+                #[allow(for_loops_over_fallibles)]
+                for dir in dir {
+                    let entry = dir.path();
+                    if entry.is_file() {
+                        let file = read_to_string(entry).unwrap();
+                        parser.add_page(&file).unwrap();
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            use include_dir::{include_dir, Dir};
+            const LAYOUTS: Dir = include_dir!("src/layouts");
+            for layout in LAYOUTS.files(){
+                let file = layout.contents_utf8().unwrap();
+                parser.add_page(file).unwrap();
+            }
+        }
+        
 
         let app = Application {
             ctx,
@@ -174,7 +204,7 @@ where
 
             let window_id = viewport.window.id();
 
-            let mut ui_renderer = self.ui_renderer.as_mut().unwrap();
+            let ui_renderer = self.ui_renderer.as_mut().unwrap();
             match ui_renderer.render_pipeline {
                 Some(_) => {}
                 None => ui_renderer.build_shaders(&self.ctx.device, &self.ctx.queue, &viewport.config)
@@ -196,7 +226,8 @@ impl<UserEvents, UserApp, UserPages> ApplicationHandler<InternalEvents> for Appl
 where 
     UserEvents: FromStr+Clone+PartialEq+Default+Debug,
     <UserEvents as FromStr>::Err: Debug,
-    UserPages: Default,
+    UserPages: FromStr+Clone+Hash+Eq+Default,
+    <UserPages as FromStr>::Err: Debug,
     UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -243,7 +274,7 @@ where
 
                 self.ui_layout.begin_layout(ui_renderer);
 
-                let events = self.parser.set_page("Main", self.clicked, &mut self.ui_layout, &self.user_application);
+                let events = self.parser.set_page(&viewport.page, self.clicked, &mut self.ui_layout, &self.user_application);
                 for event in events.iter() {
                     self.user_application.event_handler(event.clone(), &mut self.core);
                 }
@@ -303,14 +334,21 @@ where
         }
     }
 
-    fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, _event: InternalEvents) {
-        let file = "examples/layout.xml";
-        let file = read_to_string(file).unwrap();
-        println!("updating layout");
-        self.parser.update_page(&file);
-        for (_window_id,viewport) in self.viewports.iter_mut() {
-            viewport.window.request_redraw();
+    fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, event: InternalEvents) {
+        if let InternalEvents::RebuildLayout(path) = event {
+            let xml_string = read_to_string(path).unwrap();
+            self.parser.update_page(&xml_string);
+            for (_window_id,viewport) in self.viewports.iter_mut() {
+                viewport.window.request_redraw();
+            }
         }
+        // let file = "examples/layout.xml";
+        // let file = read_to_string(file).unwrap();
+        // println!("updating layout");
+        // self.parser.update_page(&file);
+        // for (_window_id,viewport) in self.viewports.iter_mut() {
+        //     viewport.window.request_redraw();
+        // }
     }
 }
 
@@ -319,7 +357,8 @@ pub fn run<UserEvents, UserApp, UserPages>(user_application: UserApp)
 where 
     UserEvents: FromStr+Clone+PartialEq+Default+Debug,
     <UserEvents as FromStr>::Err: Debug,
-    UserPages: Default,
+    UserPages: FromStr+Clone+Hash+Eq+Default,
+    <UserPages as FromStr>::Err: Debug,
     UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
 {
 
@@ -329,11 +368,17 @@ where
     };
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let file_watcher = event_loop.create_proxy();
-
-    let watcher = watch_file("examples/layout.xml", file_watcher);
-
-    let mut app: Application<UserApp, UserEvents, UserPages> = Application::new(event_loop.create_proxy(), user_application, watcher);
-
-    event_loop.run_app(&mut app).unwrap();
+    #[cfg(debug_assertions)]
+    {
+        let file_watcher = event_loop.create_proxy();
+        let watcher = watch_file("src/layouts", file_watcher);
+        let mut app: Application<UserApp, UserEvents, UserPages> = Application::new(event_loop.create_proxy(), user_application, Some(watcher));
+        event_loop.run_app(&mut app).unwrap();
+    }
+    
+    #[cfg(not(debug_assertions))]
+    {
+        let mut app: Application<UserApp, UserEvents, UserPages> = Application::new(event_loop.create_proxy(), user_application, None);
+        event_loop.run_app(&mut app).unwrap();
+    }
 }

@@ -22,6 +22,7 @@ gltf = "1.4.1"
 notify = "8.0.0"
 strum = "0.27.1"
 strum_macros = "0.27"
+include_dir = "0.7.4"
 
 [build-dependencies]
 winresource = "0.1.19"

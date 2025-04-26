@@ -7,14 +7,6 @@ use winit::dpi::PhysicalSize;
 use crate::depth_texture::DepthTexture;
 use crate::graphics_context::GraphicsContext;
 
-#[allow(dead_code)]
-pub struct ViewportDesc<UserPages>{
-    pub attributes: WindowAttributes,
-    pub title: String,
-    pub page: UserPages,
-}
-
-#[allow(dead_code)]
 pub struct Viewport<UserPages>{
     pub window: Arc<Window>,
     pub page: UserPages,
@@ -65,44 +57,6 @@ impl<UserPages> BuildViewport<UserPages> for WindowAttributes{
         }
     }
 }
-
-// impl<UserPages> ViewportDesc<UserPages> {
-//     pub fn new(window: Arc<Window>, page:UserPages, instance: &wgpu::Instance) -> Self {
-//         let surface = instance.create_surface(window.clone()).unwrap();
-//         Self {
-//             window,
-//             surface,
-//             page,
-//         }
-//     }
-
-//     pub fn build(self, adapter: &wgpu::Adapter, device: &wgpu::Device) -> Viewport<UserPages> {
-//         let size = self.window.inner_size();
-
-//         let surface_capabilities = self.surface.get_capabilities(&adapter);
-
-//         let surface_format = surface_capabilities.formats.iter()
-//             .copied().filter(|f| f.is_srgb())
-//             .next().unwrap_or(surface_capabilities.formats[0]);
-
-//         let config = wgpu::SurfaceConfiguration {
-//             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-//             format: surface_format,
-//             width: size.width,
-//             height: size.height,
-//             present_mode: surface_capabilities.present_modes[0],
-//             desired_maximum_frame_latency: 2,
-//             alpha_mode: surface_capabilities.alpha_modes[0],
-//             view_formats: vec![],
-//         };
-
-//         self.surface.configure(device, &config);
-
-//         let depth_texture = DepthTexture::new(&device, &config);
-
-//         Viewport { desc: self, config, depth_texture  }
-//     }
-// }
 
 impl<UserPages> Viewport<UserPages>{
     pub fn resize(&mut self, device: &wgpu::Device, size: PhysicalSize<u32>) {
