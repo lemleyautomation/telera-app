@@ -29,3 +29,4 @@ winresource = "0.1.19"
 
 [features]
 logging = ["telera-layout/parse_logger"]
+drm = []

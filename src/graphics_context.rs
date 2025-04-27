@@ -37,6 +37,12 @@ impl GraphicsContext {
         }
     }
 
+    // cargo build --target aarch64-unknown-linux-gnu
+    #[cfg(all(target_arch="aarch64", target_os="linux"))]
+    pub fn drm() {
+
+    }
+
     pub fn render< F: for<'a, 'b> FnOnce(&'b mut RenderPass<'a>, &Device, &Queue, &SurfaceConfiguration), UserPages>
         (&mut self, view_port: &mut Viewport<UserPages>, render_middleware:F) -> Result<(), wgpu::SurfaceError> {
 

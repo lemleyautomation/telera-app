@@ -289,6 +289,9 @@ where
                 
                 let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
 
+                #[cfg(all(target_arch="aarch64", target_os="linux"))]
+                self.ctx.drm();
+
                 self.ctx.render(
                     viewport,
                     |render_pass, device, queue, config| {
