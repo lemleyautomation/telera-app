@@ -6,13 +6,16 @@ edition = "2021"
 [dependencies]
 telera-layout = { path = "../telera-layout" }
 winit = "0.30.9"
-wgpu = "24.0.1"
+wgpu = { version = "25.0.0", default-features = false, features = [
+    "wgsl",
+    "vulkan",
+] }
 env_logger = "0.9"
 log = "0.4"
 pollster = "0.2"
 image = "0.25.5"
 bytemuck = { version = "1.16", features = [ "derive" ] }
-glyphon = "0.8.0"
+glyphon = "0.9.0"
 cgmath = "0.18.0"
 tobj = { version = "3.2", default-features = false, features = ["async"]}
 anyhow = "1.0"
@@ -23,6 +26,12 @@ notify = "8.0.0"
 strum = "0.27.1"
 strum_macros = "0.27"
 include_dir = "0.7.4"
+diretto = "0.0.7"
+rustix = { version = "1.0.0", default-features = false, features = [
+    "event",
+    "fs",
+    "std",
+] }
 
 [build-dependencies]
 winresource = "0.1.19"

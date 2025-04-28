@@ -275,7 +275,7 @@ impl MeasureText for UIRenderer {
         self.measurement_buffer.set_text(
             &mut self.font_system,
             text,
-            Attrs::new().family(Family::Serif),
+            &Attrs::new().family(Family::Serif),
             Shaping::Advanced,
         );
         for ele in self.measurement_buffer.lines.iter_mut() {
@@ -350,6 +350,7 @@ impl UIRenderer {
 
         /* #region Text Renderer Creation */
         let mut font_system = FontSystem::new();
+        font_system.db_mut().load_fonts_dir("/usr/share/fonts");
         let swash_cache = SwashCache::new();
         let measurement_buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
         /* #endregion */
@@ -415,12 +416,12 @@ impl UIRenderer {
 
         self.render_pipeline = Some(render_pipeline);
 
-        let cache = Cache::new(&device);
-        let viewport = Viewport::new(&device, &cache);
+        let cache = Cache::new(device);
+        let viewport = Viewport::new(device, &cache);
         let mut atlas = TextAtlas::new(&device, &queue, &cache, config.format);
         let text_renderer = TextRenderer::new(
             &mut atlas,
-            &device,
+            device,
             MultisampleState::default(),
             Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
@@ -603,7 +604,6 @@ impl UIRenderer {
                                 }
                             }
                         }
-                        _ => {}
                     }
                 }
 
@@ -805,7 +805,7 @@ impl UIRenderer {
         line.set_text(
             &mut self.font_system,
             text,
-            Attrs::new()
+            &Attrs::new()
                 .family(Family::Serif)
                 .metadata((draw_order * 10000.0) as usize),
             Shaping::Advanced,
