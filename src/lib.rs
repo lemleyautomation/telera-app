@@ -1,4 +1,5 @@
 use std::{collections::HashMap, hash::Hash, fmt::Debug, fs::read_to_string, path::{Path, PathBuf}, str::FromStr, time::Instant};
+use image::DynamicImage;
 use notify::ReadDirectoryChangesWatcher;
 use winit::{application::ApplicationHandler, event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent}, event_loop::{ControlFlow, EventLoop, EventLoopProxy}, window::WindowAttributes};
 pub use winit::window::Window;
@@ -22,6 +23,7 @@ use telera_layout::{LayoutEngine, Parser};
 pub use telera_layout::ParserDataAccess;
 pub use telera_layout::EnumString;
 pub use telera_layout::strum;
+pub use telera_layout::ListData;
 
 mod scene_renderer;
 use scene_renderer::SceneRenderer;
@@ -61,26 +63,34 @@ enum InternalEvents{
     RebuildLayout(PathBuf),
 }
 
-pub struct Core{
-    staged_windows: Vec<WindowAttributes>,
+pub struct API<UserPages>{
+    staged_windows: Vec<(String, UserPages, WindowAttributes)>,
+    staged_images: Vec<(String,DynamicImage)>,
+    page_changes: Vec<(String,UserPages)>,
 }
 
-impl Core{
-    pub fn create_window(&mut self, attributes: WindowAttributes){
-        self.staged_windows.push(attributes);
+impl<UserPages> API<UserPages>{
+    pub fn create_window(&mut self, name: &str, page: UserPages, attributes: WindowAttributes){
+        self.staged_windows.push((name.to_string(), page, attributes));
+    }
+    pub fn add_image(&mut self, name: &str, image: DynamicImage) {
+        self.staged_images.push((name.to_string(), image));
+    }
+    pub fn set_viewport_page(&mut self, viewport: &str, page: UserPages){
+        self.page_changes.push((viewport.to_string(), page));
     }
 }
 
 #[allow(unused_variables)]
-pub trait App<UserEvents, ImageElementData: Debug, CustomElementData: Debug, CustomLayoutSettings>{
+pub trait App<UserEvents, UserPages>{
     /// called once before start
-    fn initialize(&self, core: &mut Core);
+    fn initialize(&mut self, api: &mut API<UserPages>);
     /// All application update logic
     /// 
     /// This will be called at the beginning of each render loop
-    //fn update(&self, layout: &mut LayoutEngine<UIRenderer, ImageElementData, CustomElementData, CustomLayoutSettings>) -> Vec<RenderCommand::<ImageElementData, CustomElementData, CustomLayoutSettings>>;
+    fn update(&mut self, api: &mut API<UserPages>){}
     /// handling of user events
-    fn event_handler(&mut self, event: UserEvents, core: &mut Core){}
+    fn event_handler(&mut self, event: UserEvents, api: &mut API<UserPages>){}
 }
 
 #[allow(dead_code)]
@@ -90,7 +100,7 @@ where
     <UserEvents as FromStr>::Err: Debug,
     UserPages: FromStr+Clone+Hash+Eq+Default,
     <UserPages as FromStr>::Err: Debug,
-    UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
+    UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
     ctx: GraphicsContext,
     pub scene_renderer: SceneRenderer,
@@ -104,14 +114,14 @@ where
     scroll_delta_time: Instant,
     scroll_delta_distance: (f32, f32),
 
-    pub ui_layout: LayoutEngine<UIRenderer, (), (), ()>,
+    pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, (), ()>,
     parser: Parser<UserEvents,UserPages>,
     user_events: Vec<UserEvents>,
 
     viewport_lookup: HashMap<String, WindowId>,
     viewports: HashMap<WindowId, Viewport<UserPages>>,
 
-    core: Core,
+    core: API<UserPages>,
     app_events: EventLoopProxy<InternalEvents>,
     user_application: UserApp,
     watcher: Option<ReadDirectoryChangesWatcher>,
@@ -123,21 +133,28 @@ where
     <UserEvents as FromStr>::Err: Debug,
     UserPages: FromStr+Clone+Hash+Eq+Default,
     <UserPages as FromStr>::Err: Debug,
-    UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
+    UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
-    pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp, watcher: Option<ReadDirectoryChangesWatcher>) -> Self {
+    pub fn new(app_events: EventLoopProxy<InternalEvents>, mut user_application: UserApp, watcher: Option<ReadDirectoryChangesWatcher>) -> Self {
         let ctx = GraphicsContext::new();
         let scene_renderer = SceneRenderer::new(&ctx.device);
 
-        let ui_renderer = UIRenderer::new(&ctx.device, &ctx.queue);
+        let mut ui_renderer = UIRenderer::new(&ctx.device, &ctx.queue);
 
-        let mut core =  Core { 
-            staged_windows: Vec::new() 
+        let mut core =  API { 
+            staged_windows: Vec::new(), 
+            staged_images: Vec::new(),
+            page_changes: Vec::new()
         };
 
         user_application.initialize(&mut core);
 
-        let ui_layout = LayoutEngine::<UIRenderer, (), (), ()>::new((1.0, 1.0));
+        for _ in 0..core.staged_images.len() {
+            let (name, image) = core.staged_images.pop().unwrap();
+            ui_renderer.stage_atlas(name, image);
+        }
+
+        let ui_layout = LayoutEngine::<UIRenderer, UIImageDescriptor, (), ()>::new((1.0, 1.0));
         ui_layout.set_debug_mode(false);
 
         let mut parser = Parser::default();
@@ -195,13 +212,13 @@ where
     fn open_staged_windows(&mut self, event_loop: &winit::event_loop::ActiveEventLoop){
         for _ in 0..self.core.staged_windows.len() {
 
-            let attr = self.core.staged_windows.pop().unwrap();
-            let window_title = attr.title.clone();
+            let (name, page, attr) = self.core.staged_windows.pop().unwrap();
             
-            if self.viewport_lookup.get(&window_title).is_some() { continue; }
+            if self.viewport_lookup.get(&name).is_some() { continue; }
 
-            let viewport = attr.build_viewport(event_loop, UserPages::default(), &self.ctx);
+            let viewport = attr.build_viewport(event_loop, page, &self.ctx);
 
+            viewport.window.set_title(&name);
             let window_id = viewport.window.id();
 
             let ui_renderer = self.ui_renderer.as_mut().unwrap();
@@ -215,7 +232,7 @@ where
                 None => self.scene_renderer.build_shaders(&self.ctx.device, &viewport.config)
             }
 
-            self.viewport_lookup.insert(window_title, window_id);
+            self.viewport_lookup.insert(name, window_id);
             self.viewports.insert(window_id, viewport);
         }
         self.core.staged_windows.clear();
@@ -228,7 +245,7 @@ where
     <UserEvents as FromStr>::Err: Debug,
     UserPages: FromStr+Clone+Hash+Eq+Default,
     <UserPages as FromStr>::Err: Debug,
-    UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
+    UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.open_staged_windows(event_loop);
@@ -237,6 +254,18 @@ where
     fn window_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, window_id: WindowId, event: winit::event::WindowEvent) {
         if self.core.staged_windows.len() > 0 {
             self.open_staged_windows(event_loop);
+        }
+
+        self.user_application.update(&mut self.core);
+
+        for _ in 0..self.core.page_changes.len() {
+            let (name, page)  = self.core.page_changes.pop().unwrap();
+            if let Some(window_id) = self.viewport_lookup.get(&name) {
+                if let Some(window) = self.viewports.get_mut(window_id){
+                    window.page = page;
+                    window.window.request_redraw();
+                }
+            }
         }
 
         let num_viewports = self.viewports.len();
@@ -259,6 +288,7 @@ where
                 viewport.resize(&self.ctx.device, size);
             }
             WindowEvent::RedrawRequested => {
+
                 let window_size: (f32, f32) = viewport.window.inner_size().into();
                 let dpi_scale  = viewport.window.scale_factor() as f32;
                 
@@ -289,15 +319,16 @@ where
                 
                 let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
 
-                #[cfg(all(target_arch="aarch64", target_os="linux"))]
-                self.ctx.drm();
+                // for command in render_commands.iter() {
+                //     println!("{:?}",command);
+                // }
 
                 self.ctx.render(
                     viewport,
                     |render_pass, device, queue, config| {
 
                         self.scene_renderer.render(render_pass, &queue);
-                        ui_renderer.render_layout::<(), (), ()>(render_commands, render_pass, &device, &queue, &config);
+                        ui_renderer.render_layout::<UIImageDescriptor, (), ()>(render_commands, render_pass, &device, &queue, &config);
                     }
                 ).unwrap();
 
@@ -362,7 +393,7 @@ where
     <UserEvents as FromStr>::Err: Debug,
     UserPages: FromStr+Clone+Hash+Eq+Default,
     <UserPages as FromStr>::Err: Debug,
-    UserApp: App<UserEvents, (),(),()> + ParserDataAccess<(), UserEvents>,
+    UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
 
     let event_loop = match EventLoop::<InternalEvents>::with_user_event().build() {

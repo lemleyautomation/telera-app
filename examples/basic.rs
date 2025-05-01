@@ -1,7 +1,8 @@
 use telera_app::run;
 use telera_app::App;
-use telera_app::Core;
+use telera_app::API;
 use telera_app::LogicalSize;
+use telera_app::UIImageDescriptor;
 
 use strum_macros::EnumString;
 use telera_layout::ParserDataAccess;
@@ -32,14 +33,14 @@ struct BasicApp {
     selected_document: usize,
 }
 
-impl App<BasicEvents, (), (), ()> for BasicApp {
-    fn initialize(&self, core: &mut Core) {
+impl App<BasicEvents, BasicPages> for BasicApp {
+    fn initialize(&mut self, core: &mut API<BasicPages>) {
         let new_window = winit::window::Window::default_attributes()
             .with_inner_size(LogicalSize::new(800, 600));
-        core.create_window(new_window);
+        core.create_window("Main", BasicPages::Main, new_window);
     }
 
-    fn event_handler(&mut self, event: BasicEvents, _core: &mut Core){
+    fn event_handler(&mut self, event: BasicEvents, _core: &mut API<BasicPages>){
         match event {
             BasicEvents::LoremClicked => self.selected_document = 1,
             BasicEvents::SquirrelClicked => self.selected_document = 0,
@@ -48,7 +49,7 @@ impl App<BasicEvents, (), (), ()> for BasicApp {
     }
 }
 
-impl ParserDataAccess<(), BasicEvents> for BasicApp{
+impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp{
     fn get_bool(&self, name: &str, list: &Option<telera_layout::ListData>) -> Option<bool> {
         match list {
             None => return None,

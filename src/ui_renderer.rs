@@ -603,7 +603,6 @@ impl UIRenderer {
                                 }
                             }
                         }
-                        _ => {}
                     }
                 }
 
@@ -617,7 +616,7 @@ impl UIRenderer {
     
     pub fn render_layout<'render_pass, ImageElementData: 'render_pass, CustomElementData: 'render_pass, CustomlayoutSettings: 'render_pass>(
         &mut self,
-        render_commands: Vec<RenderCommand<'render_pass, ImageElementData, CustomElementData, CustomlayoutSettings>>,
+        render_commands: Vec<RenderCommand<'render_pass, UIImageDescriptor, CustomElementData, CustomlayoutSettings>>,
         render_pass: &mut wgpu::RenderPass,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -708,20 +707,20 @@ impl UIRenderer {
                     UIPosition::xy(b.width, b.height)*self.dpi_scale
                 ),
                 RenderCommand::ScissorEnd => self.end_scissor(),
-                RenderCommand::Image(_i) => {
-                    //             self.draw_image(
-                    //                 image.data.clone(), 
-                    //                 UIPosition {
-                    //                     x: command.bounding_box[0]*self.dpi_scale,
-                    //                     y: command.bounding_box[1]*self.dpi_scale,
-                    //                     z: depth as f32,
-                    //                 },
-                    //                 UIPosition {
-                    //                     x: command.bounding_box[2]*self.dpi_scale,
-                    //                     y: command.bounding_box[3]*self.dpi_scale,
-                    //                     z: depth as f32,
-                    //                 },
-                    //             );
+                RenderCommand::Image(image) => {
+                    self.draw_image(
+                        image.data, 
+                        UIPosition {
+                            x: image.bounding_box.x*self.dpi_scale,
+                            y: image.bounding_box.y*self.dpi_scale,
+                            z: depth as f32,
+                        },
+                        UIPosition {
+                            x: image.bounding_box.width*self.dpi_scale,
+                            y: image.bounding_box.height*self.dpi_scale,
+                            z: depth as f32,
+                        },
+                    );
                 }
                 RenderCommand::Custom(_c) => {}
                 RenderCommand::None => {}
@@ -1107,7 +1106,7 @@ impl UIRenderer {
 
     pub fn draw_image(
         &mut self, 
-        image: UIImageDescriptor,   
+        image: &UIImageDescriptor,   
         mut position: UIPosition,
         size: UIPosition,
     ){
@@ -1286,7 +1285,7 @@ impl UIPipeline {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct UIImageDescriptor{
     pub atlas: String,
     pub u1: f32,
