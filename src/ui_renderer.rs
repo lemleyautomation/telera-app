@@ -1273,7 +1273,7 @@ impl UIPipeline {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: 1,
+                count: 2,
                 mask: 1,
                 alpha_to_coverage_enabled: false,
             },

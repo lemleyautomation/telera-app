@@ -40,7 +40,7 @@ impl App<BasicEvents, BasicPages> for BasicApp {
         core.create_window("Main", BasicPages::Main, new_window);
     }
 
-    fn event_handler(&mut self, event: BasicEvents, _core: &mut API<BasicPages>){
+    fn event_handler(&mut self, event: BasicEvents, _viewport: &str, _core: &mut API<BasicPages>){
         match event {
             BasicEvents::LoremClicked => self.selected_document = 1,
             BasicEvents::SquirrelClicked => self.selected_document = 0,

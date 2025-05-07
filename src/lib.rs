@@ -90,7 +90,7 @@ pub trait App<UserEvents, UserPages>{
     /// This will be called at the beginning of each render loop
     fn update(&mut self, api: &mut API<UserPages>){}
     /// handling of user events
-    fn event_handler(&mut self, event: UserEvents, api: &mut API<UserPages>){}
+    fn event_handler(&mut self, event: UserEvents, viewport: &str, api: &mut API<UserPages>){}
 }
 
 #[allow(dead_code)]
@@ -118,7 +118,7 @@ where
     parser: Parser<UserEvents,UserPages>,
     user_events: Vec<UserEvents>,
 
-    viewport_lookup: HashMap<String, WindowId>,
+    viewport_lookup: bimap::BiMap<String, WindowId>,
     viewports: HashMap<WindowId, Viewport<UserPages>>,
 
     core: API<UserPages>,
@@ -197,7 +197,7 @@ where
             mouse_poistion: (0.0,0.0),
             scroll_delta_time: Instant::now(),
             scroll_delta_distance: (0.0, 0.0),
-            viewport_lookup: HashMap::new(),
+            viewport_lookup: bimap::BiMap::new(),
             viewports: HashMap::new(),
             core,
             app_events,
@@ -214,7 +214,7 @@ where
 
             let (name, page, attr) = self.core.staged_windows.pop().unwrap();
             
-            if self.viewport_lookup.get(&name).is_some() { continue; }
+            if self.viewport_lookup.get_by_left(&name).is_some() { continue; }
 
             let viewport = attr.build_viewport(event_loop, page, &self.ctx);
 
@@ -260,7 +260,7 @@ where
 
         for _ in 0..self.core.page_changes.len() {
             let (name, page)  = self.core.page_changes.pop().unwrap();
-            if let Some(window_id) = self.viewport_lookup.get(&name) {
+            if let Some(window_id) = self.viewport_lookup.get_by_left(&name) {
                 if let Some(window) = self.viewports.get_mut(window_id){
                     window.page = page;
                     window.window.request_redraw();
@@ -269,6 +269,8 @@ where
         }
 
         let num_viewports = self.viewports.len();
+
+        let viewport_name = self.viewport_lookup.get_by_right(&window_id).unwrap();
 
         let viewport = match self.viewports.get_mut(&window_id) {
             Some(window) => window,
@@ -280,7 +282,7 @@ where
                 if num_viewports < 2 {
                     event_loop.exit();
                 }
-                self.viewport_lookup.remove(&viewport.window.title());
+                self.viewport_lookup.remove_by_left(&viewport.window.title());
                 self.viewports.remove(&window_id);
                 return;
             },
@@ -306,7 +308,7 @@ where
 
                 let events = self.parser.set_page(&viewport.page, self.clicked, &mut self.ui_layout, &self.user_application);
                 for event in events.iter() {
-                    self.user_application.event_handler(event.clone(), &mut self.core);
+                    self.user_application.event_handler(event.clone(), &viewport_name, &mut self.core);
                 }
                 self.clicked = false;
                 // self.ui_layout.open_element();
@@ -333,10 +335,6 @@ where
                 ).unwrap();
 
                 self.ui_renderer = Some(ui_renderer);
-
-                while let Some(event) = self.user_events.pop() {
-                    self.user_application.event_handler(event, &mut self.core);
-                }
             }
             WindowEvent::MouseInput { device_id:_, state, button } => {
                 match button {
