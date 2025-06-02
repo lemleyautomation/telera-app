@@ -1,12 +1,11 @@
-pub struct DepthTexture{
-    #[allow(dead_code)]
+#[allow(dead_code)]
+pub struct MultiSampleTexture{
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
-    #[allow(dead_code)]
     pub sampler: wgpu::Sampler
 }
 
-impl DepthTexture {
+impl MultiSampleTexture {
     pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration, multi_sample_count: u32) -> Self {
         let texture = device.create_texture(
             &wgpu::TextureDescriptor {
@@ -18,9 +17,9 @@ impl DepthTexture {
                 mip_level_count: 1,
                 sample_count: multi_sample_count,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Depth32Float,
+                format: config.format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                label: Some("depth_texture"),
+                label: Some("multi_sample_texture"),
                 view_formats: &[],
             }
         );

@@ -9,7 +9,10 @@ pub use winit::window::WindowId;
 mod graphics_context;
 use graphics_context::GraphicsContext;
 
+const MULTI_SAMPLE_COUNT: u32 = 4;
+
 mod depth_texture;
+mod multi_sample_texture;
 
 mod viewport;
 use viewport::Viewport;
@@ -216,7 +219,7 @@ where
             
             if self.viewport_lookup.get_by_left(&name).is_some() { continue; }
 
-            let viewport = attr.build_viewport(event_loop, page, &self.ctx);
+            let viewport = attr.build_viewport(event_loop, page, &self.ctx, MULTI_SAMPLE_COUNT);
 
             viewport.window.set_title(&name);
             let window_id = viewport.window.id();
@@ -224,12 +227,12 @@ where
             let ui_renderer = self.ui_renderer.as_mut().unwrap();
             match ui_renderer.render_pipeline {
                 Some(_) => {}
-                None => ui_renderer.build_shaders(&self.ctx.device, &self.ctx.queue, &viewport.config)
+                None => ui_renderer.build_shaders(&self.ctx.device, &self.ctx.queue, &viewport.config, MULTI_SAMPLE_COUNT)
             }
 
             match self.scene_renderer.render_pipeline {
                 Some(_) => {}
-                None => self.scene_renderer.build_shaders(&self.ctx.device, &viewport.config)
+                None => self.scene_renderer.build_shaders(&self.ctx.device, &viewport.config, MULTI_SAMPLE_COUNT)
             }
 
             self.viewport_lookup.insert(name, window_id);
@@ -287,7 +290,7 @@ where
                 return;
             },
             WindowEvent::Resized(size) => {
-                viewport.resize(&self.ctx.device, size);
+                viewport.resize(&self.ctx.device, size, MULTI_SAMPLE_COUNT);
             }
             WindowEvent::RedrawRequested => {
 
@@ -327,6 +330,7 @@ where
 
                 self.ctx.render(
                     viewport,
+                    MULTI_SAMPLE_COUNT,
                     |render_pass, device, queue, config| {
 
                         self.scene_renderer.render(render_pass, &queue);

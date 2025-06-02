@@ -44,7 +44,7 @@ impl GraphicsContext {
     }
 
     pub fn render< F: for<'a, 'b> FnOnce(&'b mut RenderPass<'a>, &Device, &Queue, &SurfaceConfiguration), UserPages>
-        (&mut self, view_port: &mut Viewport<UserPages>, render_middleware:F) -> Result<(), wgpu::SurfaceError> {
+        (&mut self, view_port: &mut Viewport<UserPages>, multi_sample_count: u32, render_middleware:F) -> Result<(), wgpu::SurfaceError> {
 
         let drawable = view_port.get_current_texture();
 
@@ -52,13 +52,45 @@ impl GraphicsContext {
             label:Some("Render Encoder"),
         });
 
-        {
+        if multi_sample_count == 1 {
             let mut render_pass: RenderPass = command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("RenderPass"),
                 color_attachments: &[Some(
                     wgpu::RenderPassColorAttachment {
-                        view: &drawable.texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                        view: &drawable.texture.create_view(&wgpu::TextureViewDescriptor::default()),//&view_port.multi_sample_texture.view,
                         resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 1.0,
+                                g: 1.0,
+                                b: 1.0,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }
+                )],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &view_port.depth_texture.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None
+            });
+
+            render_middleware(&mut render_pass, &self.device, &self.queue, &view_port.config);
+        }
+        else {
+            let mut render_pass: RenderPass = command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("RenderPass"),
+                color_attachments: &[Some(
+                    wgpu::RenderPassColorAttachment {
+                        view: &view_port.multi_sample_texture.view,
+                        resolve_target: Some(&drawable.texture.create_view(&wgpu::TextureViewDescriptor::default())),
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
                                 r: 1.0,

@@ -108,6 +108,7 @@ impl SceneRenderer {
         &mut self,
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
+        multi_sample_count: u32,
     ){
         let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
@@ -172,7 +173,8 @@ impl SceneRenderer {
                 &camera_bind_group_layout, 
                 &texture_bind_group_layout,
                 &prs_bind_group_layout,
-            ]
+            ],
+            multi_sample_count
         );
 
         self.render_pipeline = Some(render_pipeline);
@@ -255,7 +257,8 @@ impl ScenePipeline {
     pub fn build_pipeline(
         &self,
         device: &wgpu::Device,
-        layouts: &[&wgpu::BindGroupLayout]
+        layouts: &[&wgpu::BindGroupLayout],
+        multi_sample_count: u32,
     ) -> wgpu::RenderPipeline {
         let source_code = include_str!("scene_shader.wgsl");
 
@@ -310,7 +313,7 @@ impl ScenePipeline {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: 1,
+                count: multi_sample_count,
                 mask: 1,
                 alpha_to_coverage_enabled: false,
             },

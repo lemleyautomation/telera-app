@@ -8,7 +8,7 @@ use glyphon::{
 use image::{DynamicImage, RgbImage};
 use std::ops::{Add, Div, Mul, Sub};
 use wgpu::util::DeviceExt;
-use wgpu::MultisampleState;
+
 
 use telera_layout::{MeasureText, RenderCommand, Vec2};
 
@@ -390,6 +390,7 @@ impl UIRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
+        multi_sample_count: u32,
     ){
         let size_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -411,6 +412,11 @@ impl UIRenderer {
         let render_pipeline = ui_pipeline_builder.build_pipeline(
             &device,
             &size_bind_group_layout,
+            wgpu::MultisampleState {
+                count: multi_sample_count,
+                mask: 1,
+                alpha_to_coverage_enabled: false,
+            },
         );
 
         self.render_pipeline = Some(render_pipeline);
@@ -421,7 +427,11 @@ impl UIRenderer {
         let text_renderer = TextRenderer::new(
             &mut atlas,
             &device,
-            MultisampleState::default(),
+            wgpu::MultisampleState {
+                count: multi_sample_count,
+                mask: 1,
+                alpha_to_coverage_enabled: false,
+            },
             Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: true,
@@ -1194,6 +1204,7 @@ impl UIPipeline {
         &self,
         device: &wgpu::Device,
         size_bind_group_layout: &wgpu::BindGroupLayout,
+        multisample: wgpu::MultisampleState,
     ) -> wgpu::RenderPipeline {
         let source_code = include_str!("ui_shader.wgsl");
 
@@ -1272,11 +1283,7 @@ impl UIPipeline {
                 stencil: wgpu::StencilState::default(),       // 2.
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState {
-                count: 2,
-                mask: 1,
-                alpha_to_coverage_enabled: false,
-            },
+            multisample,
             multiview: None,
             cache: None,
         };
