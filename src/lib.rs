@@ -1,15 +1,42 @@
-use std::{collections::HashMap, hash::Hash, fmt::Debug, fs::read_to_string, path::{Path, PathBuf}, str::FromStr, time::Instant};
+use std::{
+    collections::HashMap, 
+    hash::Hash,
+    fmt::Debug,
+    fs::read_to_string,
+    path::{Path, PathBuf},
+    str::FromStr,
+    time::Instant
+};
+
 use image::DynamicImage;
-use notify::ReadDirectoryChangesWatcher;
-use winit::{application::ApplicationHandler, event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent}, event_loop::{ControlFlow, EventLoop, EventLoopProxy}, window::WindowAttributes};
-pub use winit::window::Window;
-pub use winit::dpi::LogicalSize;
-pub use winit::window::WindowId;
+
+use notify::{
+    ReadDirectoryChangesWatcher,
+    RecursiveMode,
+    Result,
+    Watcher
+};
+
+pub use rfd::FileDialog as FileDialog;
+
+use winit::{
+    application::ApplicationHandler,
+    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event_loop::{ControlFlow, EventLoop, EventLoopProxy},
+    window::WindowAttributes
+};
+pub use winit::{
+    window::{
+        Window,
+        WindowId
+    },
+    dpi::LogicalSize
+};
 
 mod graphics_context;
 use graphics_context::GraphicsContext;
 
-const MULTI_SAMPLE_COUNT: u32 = 4;
+const MULTI_SAMPLE_COUNT: u32 = 1;
 
 mod depth_texture;
 mod multi_sample_texture;
@@ -37,7 +64,6 @@ mod model;
 
 mod texture;
 
-use notify::{RecursiveMode, Result, Watcher};
 #[allow(dead_code)]
 fn watch_file(file: &str, sender: EventLoopProxy<InternalEvents>) -> ReadDirectoryChangesWatcher{
     let expensive_closure = move |event: Result<notify::Event>| {
@@ -70,10 +96,11 @@ pub struct API<UserPages>{
     staged_windows: Vec<(String, UserPages, WindowAttributes)>,
     staged_images: Vec<(String,DynamicImage)>,
     page_changes: Vec<(String,UserPages)>,
+    staged_models: Vec<(String, String)>,
 }
 
 impl<UserPages> API<UserPages>{
-    pub fn create_window(&mut self, name: &str, page: UserPages, attributes: WindowAttributes){
+    pub fn create_viewport(&mut self, name: &str, page: UserPages, attributes: WindowAttributes){
         self.staged_windows.push((name.to_string(), page, attributes));
     }
     pub fn add_image(&mut self, name: &str, image: DynamicImage) {
@@ -81,6 +108,9 @@ impl<UserPages> API<UserPages>{
     }
     pub fn set_viewport_page(&mut self, viewport: &str, page: UserPages){
         self.page_changes.push((viewport.to_string(), page));
+    }
+    pub fn load_gltf_model(&mut self, dir: &str, filename: &str, instance_id: Option<String>){
+        self.staged_models.push((dir.to_string(), filename.to_string()));
     }
 }
 
@@ -147,7 +177,8 @@ where
         let mut core =  API { 
             staged_windows: Vec::new(), 
             staged_images: Vec::new(),
-            page_changes: Vec::new()
+            page_changes: Vec::new(),
+            staged_models: Vec::new()
         };
 
         user_application.initialize(&mut core);
@@ -261,6 +292,11 @@ where
 
         self.user_application.update(&mut self.core);
 
+        for _ in 0..self.core.staged_models.len() {
+            let (dir, filename) = self.core.staged_models.pop().unwrap();
+            self.scene_renderer.load_model(&filename, &dir, &self.ctx.device, &self.ctx.queue);
+        }
+
         for _ in 0..self.core.page_changes.len() {
             let (name, page)  = self.core.page_changes.pop().unwrap();
             if let Some(window_id) = self.viewport_lookup.get_by_left(&name) {
@@ -279,6 +315,8 @@ where
             Some(window) => window,
             None => return
         };
+
+        println!("{:?}", self.scene_renderer.camera_controller.process_events(&event));
 
         match event {
             WindowEvent::CloseRequested => {
@@ -314,31 +352,20 @@ where
                     self.user_application.event_handler(event.clone(), &viewport_name, &mut self.core);
                 }
                 self.clicked = false;
-                // self.ui_layout.open_element();
-                // let mut c = ElementConfiguration::default();
-                // c.x_grow();
-                // c.y_grow();
-                // c.color(Color { r: 43.0, g: 41.0, b: 51.0, a: 255.0 });
-                // self.ui_layout.configure_element(&c);
-                // self.ui_layout.close_element();
-                
                 let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
-
-                // for command in render_commands.iter() {
-                //     println!("{:?}",command);
-                // }
 
                 self.ctx.render(
                     viewport,
                     MULTI_SAMPLE_COUNT,
                     |render_pass, device, queue, config| {
-
+                        
                         self.scene_renderer.render(render_pass, &queue);
                         ui_renderer.render_layout::<UIImageDescriptor, (), ()>(render_commands, render_pass, &device, &queue, &config);
                     }
                 ).unwrap();
 
                 self.ui_renderer = Some(ui_renderer);
+                viewport.window.request_redraw();
             }
             WindowEvent::MouseInput { device_id:_, state, button } => {
                 match button {
@@ -397,12 +424,11 @@ where
     <UserPages as FromStr>::Err: Debug,
     UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
-
     let event_loop = match EventLoop::<InternalEvents>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(_) => return
     };
-    event_loop.set_control_flow(ControlFlow::Wait);
+    event_loop.set_control_flow(ControlFlow::Poll);
 
     #[cfg(debug_assertions)]
     {
@@ -418,3 +444,34 @@ where
         event_loop.run_app(&mut app).unwrap();
     }
 }
+
+/*
+CLAY({ .id = CLAY_ID("FileMenu"),
+        .floating = {
+            .attachTo = CLAY_ATTACH_TO_PARENT,
+            .attachPoints = {
+                .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM
+            },
+        },
+        .layout = {
+            .padding = {0, 0, 8, 8 }
+        }
+    })) {
+        CLAY({
+            .layout = {
+                .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                .sizing = {
+                        .width = CLAY_SIZING_FIXED(200)
+                },
+            },
+            .backgroundColor = {40, 40, 40, 255 },
+            .cornerRadius = CLAY_CORNER_RADIUS(8)
+        }) {
+            // Render dropdown items here
+            RenderDropdownMenuItem(CLAY_STRING("New"));
+            RenderDropdownMenuItem(CLAY_STRING("Open"));
+            RenderDropdownMenuItem(CLAY_STRING("Close"));
+        }
+    }
+}
+*/

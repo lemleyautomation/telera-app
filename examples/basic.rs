@@ -15,6 +15,7 @@ enum BasicEvents {
     Clicked,
     SquirrelClicked,
     LoremClicked,
+    FileButtonClicked,
 }
 
 #[derive(EnumString,Clone,Hash,PartialEq,std::cmp::Eq,Default)]
@@ -31,19 +32,21 @@ pub struct Document {
 struct BasicApp {
     documents: Vec<Document>,
     selected_document: usize,
+    file_menu_open: bool,
 }
 
 impl App<BasicEvents, BasicPages> for BasicApp {
     fn initialize(&mut self, core: &mut API<BasicPages>) {
         let new_window = winit::window::Window::default_attributes()
             .with_inner_size(LogicalSize::new(800, 600));
-        core.create_window("Main", BasicPages::Main, new_window);
+        core.create_viewport("Main", BasicPages::Main, new_window);
     }
 
     fn event_handler(&mut self, event: BasicEvents, _viewport: &str, _core: &mut API<BasicPages>){
         match event {
             BasicEvents::LoremClicked => self.selected_document = 1,
             BasicEvents::SquirrelClicked => self.selected_document = 0,
+            BasicEvents::FileButtonClicked => self.file_menu_open = !self.file_menu_open,
             _ => {}
         }
     }
@@ -52,7 +55,12 @@ impl App<BasicEvents, BasicPages> for BasicApp {
 impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp{
     fn get_bool(&self, name: &str, list: &Option<telera_layout::ListData>) -> Option<bool> {
         match list {
-            None => return None,
+            None => {
+                if name == "file-menu-opened" {
+                    return Some(self.file_menu_open)
+                }
+                return None;
+            },
             Some(list) => {
                 if list.src == "Documents" {
                     if name == "selected_document" {
@@ -130,7 +138,7 @@ fn main() {
         contents: "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.".to_string()
     });
 
-    let app = BasicApp{ documents, selected_document: 0 };
+    let app = BasicApp{ documents, selected_document: 0, file_menu_open: false };
 
     run::<BasicEvents,BasicApp,BasicPages>(app);
 }

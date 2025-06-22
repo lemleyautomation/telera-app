@@ -7,9 +7,8 @@ use crate::camera_controller::{
 };
 
 use crate::model::{
-    load_model_gltf, Model, ModelVertex, Vertex
+    load_model_gltf, Model, ModelVertex, TransformMatrix, Vertex
 };
-
 pub struct SceneRenderer {
 
     pub models: Vec<Model>,
@@ -32,7 +31,7 @@ impl SceneRenderer {
         let camera = Camera {
             // position the camera 1 unit up and 2 units back
             // +z is out of the screen
-            eye: (0.0, 1.0, 2.0).into(),
+            eye: (0.0, 1.0, 4.0).into(),
             // have it look at the origin
             target: (0.0, 0.0, 0.0).into(),
             // which way is "up"
@@ -165,8 +164,10 @@ impl SceneRenderer {
             ]
         });
 
+
         let mut pipeline_builder = ScenePipeline::new(config.format);
         pipeline_builder.add_buffer_layout(ModelVertex::desc());
+        //pipeline_builder.add_buffer_layout(TransformMatrix::desc());
         let render_pipeline = pipeline_builder.build_pipeline(
             &device,
             &[
@@ -198,9 +199,8 @@ impl SceneRenderer {
                     render_pass.set_bind_group(2, &model.transform_bind_group, &[]);
                     for mesh in &model.meshes {
                         let material = &model.materials[mesh.material];
-                        //self.draw_mesh_instanced(mesh, material, instances.clone(), camera_bind_group);
-                        render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                        render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                        render_pass.set_vertex_buffer(0, mesh.vertex_buffer_raw.slice(..));
+                        render_pass.set_index_buffer(mesh.index_buffer_raw.slice(..), wgpu::IndexFormat::Uint32);
                         render_pass.set_bind_group(1, &material.bind_group, &[]);
                         render_pass.draw_indexed(0..mesh.num_elements, 0, 0..1);
                     }

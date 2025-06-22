@@ -54,6 +54,10 @@
         <element>
             <element-config>
                 <padding-all is="16" />
+                <width-grow />
+                <hovered>
+                    <color is="rgb(120,120,120)" />
+                </hovered>
             </element-config>
             <text-element>
                 <text-config>
@@ -104,6 +108,10 @@
                         <border-color is="black" />
                         <border-all is="2" />
                     </hovered>
+                    <clicked emit="FileButtonClicked">
+                        <border-color is="rgb(43,41,51)" />
+                        <border-all is="2" />
+                    </clicked>
                 </element-config>
 
                 <text-element>
@@ -115,7 +123,32 @@
                     <content>File</content>
                 </text-element>
 
-                <!-- TODO: add floating dropdown menu -->
+                <element if="file-menu-opened">
+                    <element-config>
+                        <padding-right is="8" />
+                        <padding-bottom is="8" />
+                        <floating />
+                        <floating-offset x="0" y="35" />
+                        <floating-attach-to-parent at="bottom-right" />
+                    </element-config>
+                    <element>
+                        <element-config>
+                            <direction is="ttb" />
+                            <width-fixed at="200" />
+                            <color is="rgb(40,40,40)" />
+                            <radius-all is="8" />
+                        </element-config>
+                        <use name="drop down menu item">
+                            <set-text local="label" to="New" />
+                        </use>
+                        <use name="drop down menu item">
+                            <set-text local="label" to="Open" />
+                        </use>
+                        <use name="drop down menu item">
+                            <set-text local="label" to="Close" />
+                        </use>
+                    </element>
+                </element>
             </element>
 
             <use name="header button">

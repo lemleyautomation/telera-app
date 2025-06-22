@@ -35,8 +35,6 @@ impl<UserPages> BuildViewport<UserPages> for WindowAttributes{
             .copied().filter(|f| f.is_srgb())
             .next().unwrap_or(surface_capabilities.formats[0]);
 
-        println!("{:?}", surface_format);
-
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,

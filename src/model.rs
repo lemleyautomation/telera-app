@@ -1,4 +1,4 @@
-use std::{fs, io::{BufReader, Cursor}, path::Path};
+use std::{collections::HashMap, fs, io::{BufReader, Cursor}, path::Path};
 
 use cgmath::{Quaternion, SquareMatrix};
 use gltf::Gltf;
@@ -18,8 +18,6 @@ pub struct ModelVertex {
     pub tex_coords: [f32; 2],
     pub normal: [f32; 3],
 }
-
-
 
 impl Vertex for ModelVertex {
     fn desc() -> wgpu::VertexBufferLayout<'static> {
@@ -85,6 +83,45 @@ pub struct TransformMatrix {
     model: [[f32; 4]; 4],
 }
 
+impl TransformMatrix {
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        use std::mem;
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<TransformMatrix>() as wgpu::BufferAddress,
+            // We need to switch from using a step mode of Vertex to Instance
+            // This means that our shaders will only change to use the next
+            // instance when the shader starts processing a new instance
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                // A mat4 takes up 4 vertex slots as it is technically 4 vec4s. We need to define a slot
+                // for each vec4. We'll have to reassemble the mat4 in the shader.
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    // While our vertex shader only uses locations 0, and 1 now, in later tutorials, we'll
+                    // be using 2, 3, and 4, for Vertex. We'll start at slot 5, not conflict with them later
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 12]>() as wgpu::BufferAddress,
+                    shader_location: 8,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub struct Model {
     pub meshes: Vec<Mesh>,
@@ -95,6 +132,10 @@ pub struct Model {
     pub transform_bind_group: wgpu::BindGroup,
     pub dir: String,
     pub filename: String,
+
+    pub instance_lookup: HashMap<String, usize>,
+    pub instances: Vec<Transform>,
+    pub instance_buffer: wgpu::Buffer
 }
 
 #[allow(dead_code)]
@@ -115,6 +156,11 @@ impl Model {
         //     );
         // }
     }
+
+    pub fn append_instance(&mut self, instance_name: &str){
+        self.instance_lookup.insert(instance_name.to_string(), self.instances.len());
+        self.instances.push(Transform::new());
+    }
 }
 
 #[allow(dead_code)]
@@ -127,8 +173,8 @@ pub struct Material {
 #[allow(dead_code)]
 pub struct Mesh {
     pub name: String,
-    pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
+    pub vertex_buffer_raw: wgpu::Buffer,
+    pub index_buffer_raw: wgpu::Buffer,
     pub num_elements: u32,
     pub material: usize,
 }
@@ -218,12 +264,12 @@ pub fn load_model(
                 })
                 .collect::<Vec<_>>();
 
-            let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let vertex_buffer_raw = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{:?} Vertex Buffer", file_name)),
                 contents: bytemuck::cast_slice(&vertices),
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             });
-            let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let index_buffer_raw = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{:?} Index Buffer", file_name)),
                 contents: bytemuck::cast_slice(&m.mesh.indices),
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
@@ -231,8 +277,8 @@ pub fn load_model(
 
             Mesh {
                 name: file_name.to_string(),
-                vertex_buffer,
-                index_buffer,
+                vertex_buffer_raw,
+                index_buffer_raw,
                 num_elements: m.mesh.indices.len() as u32,
                 material: m.mesh.material_id.unwrap_or(0),
             }
@@ -271,6 +317,17 @@ pub fn load_model(
         label: None,
     });
 
+    let mut instances = Vec::<Transform>::new();
+    instances.push(Transform::new());
+    let instances_raw = instances.iter().map(|transform|{
+        transform.buffer()
+    }).collect::<Vec<TransformMatrix>>();
+    let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+        label: None,
+        contents: bytemuck::cast_slice(&instances_raw[..]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
     Ok(Model { 
         meshes, 
         materials,
@@ -279,7 +336,11 @@ pub fn load_model(
         transform_buffer,
         transform_dirty: false,
         dir: "".to_string(), 
-        filename: "".to_string() 
+        filename: "".to_string(),
+
+        instance_lookup: HashMap::new(),
+        instances,
+        instance_buffer,
     })
 }
 
@@ -382,67 +443,56 @@ pub fn load_model_gltf(
     }
 
     let mut meshes = Vec::new();
-
     for scene in gltf.scenes() {
         for node in scene.nodes() {
+            if let Some(mesh) = node.mesh() {
+                meshes = mesh.primitives().map(|primitive|{
+                    let reader = primitive.reader(|buffer| Some(&buffer_data[buffer.index()]));
 
-            let mesh = node.mesh().expect("Got mesh");
-            let primitives = mesh.primitives();
-            primitives.for_each(|primitive| {
+                    let mut vertex_buffer = Vec::new();
+                    if let Some(position_buffer) = reader.read_positions() {
+                        if let Some (normal_buffer) = reader.read_normals() {
+                            if let Some (tex_coord_buffer) = reader.read_tex_coords(0).map(|v| v.into_f32()) {
+                                vertex_buffer = position_buffer
+                                    .zip(normal_buffer)
+                                    .zip(tex_coord_buffer)
+                                    .map(|((position, normal), tex_coords)|{
+                                        ModelVertex {
+                                            position,
+                                            tex_coords,
+                                            normal
+                                        }
+                                    })
+                                    .collect::<Vec<ModelVertex>>();
+                            }
+                        }
+                    }
 
-                let reader = primitive.reader(|buffer| Some(&buffer_data[buffer.index()]));
+                    let mut index_buffer = Vec::new();
+                    if let Some(indices_raw) = reader.read_indices() {
+                        index_buffer.append(&mut indices_raw.into_u32().collect::<Vec<u32>>());
+                    }
 
-                let mut vertices = Vec::new();
-                if let Some(vertex_attribute) = reader.read_positions() {
-                    vertex_attribute.for_each(|vertex| {
-                        vertices.push(ModelVertex {
-                            position: vertex,
-                            tex_coords: Default::default(),
-                            normal: Default::default(),
-                        })
+                    let vertex_buffer_raw = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("{:?} Vertex Buffer", file_name)),
+                        contents: bytemuck::cast_slice(&vertex_buffer),
+                        usage: wgpu::BufferUsages::VERTEX,
                     });
-                }
-                if let Some(normal_attribute) = reader.read_normals() {
-                    let mut normal_index = 0;
-                    normal_attribute.for_each(|normal| {
-                        vertices[normal_index].normal = normal;
-
-                        normal_index += 1;
+                    let index_buffer_raw = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("{:?} Index Buffer", file_name)),
+                        contents: bytemuck::cast_slice(&index_buffer),
+                        usage: wgpu::BufferUsages::INDEX,
                     });
-                }
-                if let Some(tex_coord_attribute) = reader.read_tex_coords(0).map(|v| v.into_f32()) {
-                    let mut tex_coord_index = 0;
-                    tex_coord_attribute.for_each(|tex_coord| {
-                        vertices[tex_coord_index].tex_coords = tex_coord;
 
-                        tex_coord_index += 1;
-                    });
-                }
-
-                let mut indices = Vec::new();
-                if let Some(indices_raw) = reader.read_indices() {
-                    indices.append(&mut indices_raw.into_u32().collect::<Vec<u32>>());
-                }
-
-                let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("{:?} Vertex Buffer", file_name)),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-                let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("{:?} Index Buffer", file_name)),
-                    contents: bytemuck::cast_slice(&indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-
-                meshes.push(Mesh {
-                    name: file_name.to_string(),
-                    vertex_buffer,
-                    index_buffer,
-                    num_elements: indices.len() as u32,
-                    material: 0,
-                });
-            });
+                    Mesh {
+                        name: file_name.to_string(),
+                        vertex_buffer_raw,
+                        index_buffer_raw,
+                        num_elements: index_buffer.len() as u32,
+                        material: 0,
+                    }
+                }).collect::<Vec<Mesh>>();
+            }
         }
     }
 
@@ -478,6 +528,19 @@ pub fn load_model_gltf(
         label: None,
     });
 
+    let mut instances = Vec::<Transform>::new();
+    instances.push(Transform::new());
+    let instances_raw = instances.iter().map(|transform|{
+        transform.buffer()
+    }).collect::<Vec<TransformMatrix>>();
+    let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+        label: None,
+        contents: bytemuck::cast_slice(&instances_raw[..]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    println!("loading {:?} mesh complete", meshes.len());
+
     Ok(Model { 
         meshes, 
         materials,
@@ -486,6 +549,10 @@ pub fn load_model_gltf(
         transform_buffer,
         transform_dirty: false,
         dir: "".to_string(), 
-        filename: "".to_string() 
+        filename: "".to_string(),
+
+        instance_lookup: HashMap::new(),
+        instances,
+        instance_buffer
     })
 }
