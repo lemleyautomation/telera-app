@@ -1,14 +1,13 @@
 use core::f32;
-use std::collections::HashMap;
 use glyphon::cosmic_text::Align;
 use glyphon::{
     cosmic_text, Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use image::{DynamicImage, RgbImage};
+use std::collections::HashMap;
 use std::ops::{Add, Div, Mul, Sub};
 use wgpu::util::DeviceExt;
-
 
 use telera_layout::{MeasureText, RenderCommand, Vec2};
 
@@ -60,12 +59,8 @@ impl UIPosition {
         }
     }
 
-    pub fn xy(x:f32, y:f32) -> Self {
-        Self {
-            x,
-            y,
-            z: 0.0
-        }
+    pub fn xy(x: f32, y: f32) -> Self {
+        Self { x, y, z: 0.0 }
     }
 
     pub fn rotate(&mut self, mut degrees: f32) -> UIPosition {
@@ -157,8 +152,8 @@ impl Div<f32> for UIPosition {
         UIPosition {
             x: self.x / rhs,
             y: self.y / rhs,
-            z: self.z
-        }    
+            z: self.z,
+        }
     }
 }
 
@@ -217,10 +212,22 @@ impl SizeUniform {
     }
 }
 
-pub enum RenderBatch{
-    Basic{begin:u32, end:u32},
-    Scissor{begin:u32, end:u32, position:UIPosition, size:UIPosition},
-    Atlas{begin:u32, end:u32, atlas:String}
+pub enum RenderBatch {
+    Basic {
+        begin: u32,
+        end: u32,
+    },
+    Scissor {
+        begin: u32,
+        end: u32,
+        position: UIPosition,
+        size: UIPosition,
+    },
+    Atlas {
+        begin: u32,
+        end: u32,
+        atlas: String,
+    },
 }
 
 #[repr(C)]
@@ -285,27 +292,23 @@ impl MeasureText for UIRenderer {
             .shape_until_scroll(&mut self.font_system, false);
 
         let measurement = Vec2 {
-            x: self.measurement_buffer.layout_runs().next().unwrap().line_w/self.dpi_scale,
-            y: self.measurement_buffer.metrics().line_height/self.dpi_scale,
+            x: self.measurement_buffer.layout_runs().next().unwrap().line_w / self.dpi_scale,
+            y: self.measurement_buffer.metrics().line_height / self.dpi_scale,
         };
 
-        //Vec2 { x: 20.0, y: 12.0 }    
+        //Vec2 { x: 20.0, y: 12.0 }
         measurement
     }
 }
 
 impl UIRenderer {
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> Self {
-        
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let mut atlas_map = HashMap::<String, wgpu::BindGroup>::new();
 
         let default_texture = DynamicImage::ImageRgb8(RgbImage::new(10, 10));
         let default_texture = wgpu::BindGroup::create_atlas(default_texture, &device, &queue);
         atlas_map.insert("default_atlas".to_string(), default_texture);
-        let active_atlas =  "defualt_atlas".to_string();
+        let active_atlas = "defualt_atlas".to_string();
 
         /* #region Size Uniform Creation */
         let mut size_uniform = SizeUniform::new();
@@ -345,7 +348,6 @@ impl UIRenderer {
         /* #region Render Pipeline Creation */
         let (vertex_buffer, vertexes) = make_ui_buffer(&device, "new ui triangles", 20000);
 
-        
         /* #endregion */
 
         /* #region Text Renderer Creation */
@@ -391,7 +393,7 @@ impl UIRenderer {
         queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
         multi_sample_count: u32,
-    ){
+    ) {
         let size_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
@@ -436,7 +438,7 @@ impl UIRenderer {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::LessEqual, // 1.
-                stencil: wgpu::StencilState::default(),     // 2.
+                stencil: wgpu::StencilState::default(),          // 2.
                 bias: wgpu::DepthBiasState::default(),
             }),
         );
@@ -468,13 +470,17 @@ impl UIRenderer {
         }
     }
 
-    pub fn begin(&mut self, render_pass: &mut wgpu::RenderPass, device: &wgpu::Device, queue: &wgpu::Queue){
+    pub fn begin(
+        &mut self,
+        render_pass: &mut wgpu::RenderPass,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
         self.add_atlas(&device, &queue);
         self.vertices.clear();
         self.batches.clear();
         self.batch_index_begin = 0;
         self.batch_index_end = 0;
-
 
         match self.render_pipeline.as_mut() {
             None => return,
@@ -482,8 +488,12 @@ impl UIRenderer {
                 render_pass.set_pipeline(render_pipeline);
                 match self.atlas_map.get(&self.active_atlas) {
                     None => {
-                        render_pass.set_bind_group(0, self.atlas_map.get(&"default_atlas".to_string()).unwrap(), &[]);
-                    },
+                        render_pass.set_bind_group(
+                            0,
+                            self.atlas_map.get(&"default_atlas".to_string()).unwrap(),
+                            &[],
+                        );
+                    }
                     Some(atlas) => {
                         render_pass.set_bind_group(0, atlas, &[]);
                     }
@@ -493,14 +503,17 @@ impl UIRenderer {
         }
     }
 
-    pub fn batch(&mut self){
+    pub fn batch(&mut self) {
         if self.batch_index_end > self.batch_index_begin {
-            self.batches.push(RenderBatch::Basic { begin: self.batch_index_begin, end: self.batch_index_end });
+            self.batches.push(RenderBatch::Basic {
+                begin: self.batch_index_begin,
+                end: self.batch_index_end,
+            });
             self.batch_index_begin = self.batch_index_end;
         }
     }
 
-    pub fn begin_scissor(&mut self, position: UIPosition, mut size: UIPosition){
+    pub fn begin_scissor(&mut self, position: UIPosition, mut size: UIPosition) {
         match self.scissor_active {
             true => {
                 self.end_scissor();
@@ -513,11 +526,11 @@ impl UIRenderer {
         let scissor_space = position + size;
 
         if scissor_space.x > self.size_uniform.x {
-            size.x += self.size_uniform.x-scissor_space.x;
+            size.x += self.size_uniform.x - scissor_space.x;
         }
 
         if scissor_space.y > self.size_uniform.y {
-            size.y += self.size_uniform.y-scissor_space.y;
+            size.y += self.size_uniform.y - scissor_space.y;
         }
 
         self.scissor_active = true;
@@ -525,13 +538,18 @@ impl UIRenderer {
         self.scissor_size = size;
     }
 
-    pub fn end_scissor(&mut self){
-        match self.scissor_active{
+    pub fn end_scissor(&mut self) {
+        match self.scissor_active {
             false => return,
             true => {
                 self.scissor_active = false;
                 if self.batch_index_end > self.batch_index_begin {
-                    self.batches.push(RenderBatch::Scissor { begin: self.batch_index_begin, end: self.batch_index_end, position: self.scissor_position, size: self.scissor_size });
+                    self.batches.push(RenderBatch::Scissor {
+                        begin: self.batch_index_begin,
+                        end: self.batch_index_end,
+                        position: self.scissor_position,
+                        size: self.scissor_size,
+                    });
                     self.batch_index_begin = self.batch_index_end;
                 }
             }
@@ -541,13 +559,18 @@ impl UIRenderer {
     pub fn bind_atlas(&mut self, atlas: &str) {
         if atlas == self.active_atlas.as_str() {
             self.new_atlas_binding_required = false;
-            return
+            return;
         }
 
         match self.scissor_active {
             true => {
                 if self.batch_index_end > self.batch_index_begin {
-                    self.batches.push(RenderBatch::Scissor { begin: self.batch_index_begin, end: self.batch_index_end, position: self.scissor_position, size: self.scissor_size });
+                    self.batches.push(RenderBatch::Scissor {
+                        begin: self.batch_index_begin,
+                        end: self.batch_index_end,
+                        position: self.scissor_position,
+                        size: self.scissor_size,
+                    });
                     self.batch_index_begin = self.batch_index_end;
                 }
             }
@@ -562,30 +585,36 @@ impl UIRenderer {
 
     pub fn end_atlas(&mut self) {
         if !self.new_atlas_binding_required {
-            return
+            return;
         }
 
         if self.batch_index_end > self.batch_index_begin {
-            self.batches.push(RenderBatch::Atlas { begin: self.batch_index_begin, end: self.batch_index_end, atlas: self.active_atlas.clone() });
+            self.batches.push(RenderBatch::Atlas {
+                begin: self.batch_index_begin,
+                end: self.batch_index_end,
+                atlas: self.active_atlas.clone(),
+            });
             self.batch_index_begin = self.batch_index_end;
             self.new_atlas_binding_required = false;
         }
     }
 
-    pub fn end(&mut self, render_pass: &mut wgpu::RenderPass, device: &wgpu::Device, queue: &wgpu::Queue, surface_config: &wgpu::SurfaceConfiguration){
+    pub fn end(
+        &mut self,
+        render_pass: &mut wgpu::RenderPass,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_config: &wgpu::SurfaceConfiguration,
+    ) {
         match self.scissor_active {
             false => self.batch(),
-            true => self.end_scissor()
+            true => self.end_scissor(),
         }
 
         match self.vertices.get(..) {
             None => {}
             Some(vertexes) => {
-                queue.write_buffer(
-                    &self.vertex_buffer,
-                    0,
-                    bytemuck::cast_slice(vertexes),
-                );
+                queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertexes));
             }
         }
 
@@ -599,10 +628,25 @@ impl UIRenderer {
                         RenderBatch::Basic { begin, end } => {
                             render_pass.draw(*begin..*end, 0..1);
                         }
-                        RenderBatch::Scissor { begin, end, position, size } => {
-                            render_pass.set_scissor_rect(position.x as u32, position.y as u32, size.x as u32, size.y as u32);
+                        RenderBatch::Scissor {
+                            begin,
+                            end,
+                            position,
+                            size,
+                        } => {
+                            render_pass.set_scissor_rect(
+                                position.x as u32,
+                                position.y as u32,
+                                size.x as u32,
+                                size.y as u32,
+                            );
                             render_pass.draw(*begin..*end, 0..1);
-                            render_pass.set_scissor_rect(0, 0, self.size_uniform.x as u32, self.size_uniform.y as u32);
+                            render_pass.set_scissor_rect(
+                                0,
+                                0,
+                                self.size_uniform.x as u32,
+                                self.size_uniform.y as u32,
+                            );
                         }
                         RenderBatch::Atlas { begin, end, atlas } => {
                             match self.atlas_map.get(atlas) {
@@ -623,10 +667,16 @@ impl UIRenderer {
         }
     }
 
-    
-    pub fn render_layout<'render_pass, ImageElementData: 'render_pass, CustomElementData: 'render_pass, CustomlayoutSettings: 'render_pass>(
+    pub fn render_layout<
+        'render_pass,
+        ImageElementData: 'render_pass,
+        CustomElementData: 'render_pass,
+        CustomlayoutSettings: 'render_pass,
+    >(
         &mut self,
-        render_commands: Vec<RenderCommand<'render_pass, UIImageDescriptor, CustomElementData, CustomlayoutSettings>>,
+        render_commands: Vec<
+            RenderCommand<'render_pass, UIImageDescriptor, CustomElementData, CustomlayoutSettings>,
+        >,
         render_pass: &mut wgpu::RenderPass,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -640,94 +690,94 @@ impl UIRenderer {
             match command {
                 RenderCommand::Rectangle(r) => {
                     //println!("{:?}", r.bounding_box);
-                    self.draw_filled_rectangle( 
-                        UIPosition { 
-                            x: r.bounding_box.x*self.dpi_scale, 
-                            y: r.bounding_box.y*self.dpi_scale, 
-                            z: depth 
-                        }, 
-                        UIPosition { 
-                            x: r.bounding_box.width*self.dpi_scale, 
-                            y: r.bounding_box.height*self.dpi_scale, 
-                            z: depth
-                        }, 
-                        UIColor { 
-                            r: r.color.r / 255.0, 
-                            g: r.color.g / 255.0, 
-                            b: r.color.b / 255.0
-                        }, 
-                        UICornerRadii { 
-                            top_left: r.corner_radii.top_left*self.dpi_scale, 
-                            top_right: r.corner_radii.top_right*self.dpi_scale, 
-                            bottom_left: r.corner_radii.bottom_left*self.dpi_scale, 
-                            bottom_right: r.corner_radii.bottom_right*self.dpi_scale 
-                        }
+                    self.draw_filled_rectangle(
+                        UIPosition {
+                            x: r.bounding_box.x * self.dpi_scale,
+                            y: r.bounding_box.y * self.dpi_scale,
+                            z: depth,
+                        },
+                        UIPosition {
+                            x: r.bounding_box.width * self.dpi_scale,
+                            y: r.bounding_box.height * self.dpi_scale,
+                            z: depth,
+                        },
+                        UIColor {
+                            r: r.color.r / 255.0,
+                            g: r.color.g / 255.0,
+                            b: r.color.b / 255.0,
+                        },
+                        UICornerRadii {
+                            top_left: r.corner_radii.top_left * self.dpi_scale,
+                            top_right: r.corner_radii.top_right * self.dpi_scale,
+                            bottom_left: r.corner_radii.bottom_left * self.dpi_scale,
+                            bottom_right: r.corner_radii.bottom_right * self.dpi_scale,
+                        },
                     );
-                },
+                }
                 RenderCommand::Border(b) => self.draw_rectangle(
-                    UIPosition { 
-                        x: b.bounding_box.x*self.dpi_scale,
-                        y: b.bounding_box.y*self.dpi_scale,
-                        z: depth
-                    }, 
-                    UIPosition { 
-                        x: b.bounding_box.width*self.dpi_scale,
-                        y: b.bounding_box.height*self.dpi_scale,
-                        z: depth 
-                    }, 
-                    UIBorderThickness { 
-                        top: b.width.top as f32*self.dpi_scale,
-                        left: b.width.left as f32*self.dpi_scale,
-                        bottom: b.width.bottom as f32*self.dpi_scale,
-                        right: b.width.right as f32*self.dpi_scale,
-                    }, 
-                    UIColor { 
-                        r: b.color.r / 255.0, 
-                        g: b.color.g / 255.0, 
-                        b: b.color.b / 255.0
-                    }, 
-                    UICornerRadii { 
-                        top_left: b.corner_radii.top_left*self.dpi_scale, 
-                        top_right: b.corner_radii.top_right*self.dpi_scale,
-                        bottom_left: b.corner_radii.bottom_left*self.dpi_scale,
-                        bottom_right: b.corner_radii.bottom_right*self.dpi_scale,
-                    }
+                    UIPosition {
+                        x: b.bounding_box.x * self.dpi_scale,
+                        y: b.bounding_box.y * self.dpi_scale,
+                        z: depth,
+                    },
+                    UIPosition {
+                        x: b.bounding_box.width * self.dpi_scale,
+                        y: b.bounding_box.height * self.dpi_scale,
+                        z: depth,
+                    },
+                    UIBorderThickness {
+                        top: b.width.top as f32 * self.dpi_scale,
+                        left: b.width.left as f32 * self.dpi_scale,
+                        bottom: b.width.bottom as f32 * self.dpi_scale,
+                        right: b.width.right as f32 * self.dpi_scale,
+                    },
+                    UIColor {
+                        r: b.color.r / 255.0,
+                        g: b.color.g / 255.0,
+                        b: b.color.b / 255.0,
+                    },
+                    UICornerRadii {
+                        top_left: b.corner_radii.top_left * self.dpi_scale,
+                        top_right: b.corner_radii.top_right * self.dpi_scale,
+                        bottom_left: b.corner_radii.bottom_left * self.dpi_scale,
+                        bottom_right: b.corner_radii.bottom_right * self.dpi_scale,
+                    },
                 ),
                 RenderCommand::Text(t) => self.draw_text(
-                    t.text, 
-                    (t.font_size as f32)*self.dpi_scale, 
+                    t.text,
+                    (t.font_size as f32) * self.dpi_scale,
                     match t.line_height {
                         0 => (t.font_size as f32) * 1.2 * self.dpi_scale,
                         _ => (t.line_height as f32) * self.dpi_scale,
                     },
-                    UIPosition { 
-                        x: t.bounding_box.x*self.dpi_scale, 
-                        y: t.bounding_box.y*self.dpi_scale, 
-                        z: depth 
-                    }, 
+                    UIPosition {
+                        x: t.bounding_box.x * self.dpi_scale,
+                        y: t.bounding_box.y * self.dpi_scale,
+                        z: depth,
+                    },
                     match self.scissor_active {
                         true => Some((self.scissor_position.clone(), self.scissor_size.clone())),
                         false => None,
                     },
-                    Color::rgb(t.color.r as u8, t.color.g as u8, t.color.b as u8), 
-                    depth
+                    Color::rgb(t.color.r as u8, t.color.g as u8, t.color.b as u8),
+                    depth,
                 ),
                 RenderCommand::ScissorStart(b) => self.begin_scissor(
-                    UIPosition::xy(b.x, b.y)*self.dpi_scale,
-                    UIPosition::xy(b.width, b.height)*self.dpi_scale
+                    UIPosition::xy(b.x, b.y) * self.dpi_scale,
+                    UIPosition::xy(b.width, b.height) * self.dpi_scale,
                 ),
                 RenderCommand::ScissorEnd => self.end_scissor(),
                 RenderCommand::Image(image) => {
                     self.draw_image(
-                        image.data, 
+                        image.data,
                         UIPosition {
-                            x: image.bounding_box.x*self.dpi_scale,
-                            y: image.bounding_box.y*self.dpi_scale,
+                            x: image.bounding_box.x * self.dpi_scale,
+                            y: image.bounding_box.y * self.dpi_scale,
                             z: depth as f32,
                         },
                         UIPosition {
-                            x: image.bounding_box.width*self.dpi_scale,
-                            y: image.bounding_box.height*self.dpi_scale,
+                            x: image.bounding_box.width * self.dpi_scale,
+                            y: image.bounding_box.height * self.dpi_scale,
                             z: depth as f32,
                         },
                     );
@@ -739,7 +789,6 @@ impl UIRenderer {
         }
 
         self.end(render_pass, &device, &queue, &surface_config);
-
     }
 
     fn render_text(
@@ -752,9 +801,9 @@ impl UIRenderer {
         let atlas = self.text_atlas.as_mut().unwrap();
         let viewport = self.text_viewport.as_mut().unwrap();
         let renderer = self.text_renderer.as_mut().unwrap();
-        
+
         atlas.trim();
-        
+
         let mut areas = Vec::<TextArea>::new();
 
         for text_line in self.lines.iter_mut() {
@@ -782,7 +831,8 @@ impl UIRenderer {
             });
         }
 
-        renderer.prepare_with_depth(
+        renderer
+            .prepare_with_depth(
                 device,
                 queue,
                 &mut self.font_system,
@@ -831,29 +881,64 @@ impl UIRenderer {
         });
     }
 
-    pub fn draw_triangle(&mut self, positions: &[UIPosition; 3], color: UIColor){
+    pub fn draw_triangle(&mut self, positions: &[UIPosition; 3], color: UIColor) {
         for position in positions.iter() {
-            self.vertices.push(UIVertex{position:*position, texture:0, color});
+            self.vertices.push(UIVertex {
+                position: *position,
+                texture: 0,
+                color,
+            });
             self.batch_index_end += 1;
         }
     }
 
     pub fn draw_quad(&mut self, positions: &[UIPosition; 4], color: UIColor) {
-        self.vertices.push(UIVertex{position:positions[0], texture:0, color});
-        self.vertices.push(UIVertex{position:positions[1], texture:0, color});
-        self.vertices.push(UIVertex{position:positions[2], texture:0, color});
-        self.vertices.push(UIVertex{position:positions[0], texture:0, color});
-        self.vertices.push(UIVertex{position:positions[2], texture:0, color});
-        self.vertices.push(UIVertex{position:positions[3], texture:0, color});
+        self.vertices.push(UIVertex {
+            position: positions[0],
+            texture: 0,
+            color,
+        });
+        self.vertices.push(UIVertex {
+            position: positions[1],
+            texture: 0,
+            color,
+        });
+        self.vertices.push(UIVertex {
+            position: positions[2],
+            texture: 0,
+            color,
+        });
+        self.vertices.push(UIVertex {
+            position: positions[0],
+            texture: 0,
+            color,
+        });
+        self.vertices.push(UIVertex {
+            position: positions[2],
+            texture: 0,
+            color,
+        });
+        self.vertices.push(UIVertex {
+            position: positions[3],
+            texture: 0,
+            color,
+        });
         self.batch_index_end += 6;
     }
 
-    pub fn draw_line(&mut self, position: UIPosition, length: f32, angle: f32, thickness: f32, color: UIColor){
+    pub fn draw_line(
+        &mut self,
+        position: UIPosition,
+        length: f32,
+        angle: f32,
+        thickness: f32,
+        color: UIColor,
+    ) {
         let mut points = [
-            UIPosition::new().with_y(-(thickness/2.0)),
-            UIPosition::new().with_y(thickness/2.0),
-            UIPosition::new().with_x(length).with_y(thickness/2.0),
-            UIPosition::new().with_x(length).with_y(-(thickness/2.0)),
+            UIPosition::new().with_y(-(thickness / 2.0)),
+            UIPosition::new().with_y(thickness / 2.0),
+            UIPosition::new().with_x(length).with_y(thickness / 2.0),
+            UIPosition::new().with_x(length).with_y(-(thickness / 2.0)),
         ];
 
         for point in points.iter_mut() {
@@ -861,10 +946,7 @@ impl UIRenderer {
             *point = *point + position;
         }
 
-        self.draw_quad(
-            &points, 
-            color
-        );
+        self.draw_quad(&points, color);
     }
 
     pub fn draw_arc(
@@ -878,19 +960,31 @@ impl UIRenderer {
     ) {
         let number_of_segments = 10;
         let arc_segment_length = arc_length / (number_of_segments as f32);
-        let half_width = thickness/2.0;
+        let half_width = thickness / 2.0;
 
         for i in 0..number_of_segments {
-            let segment_start_angle = start_angle + (arc_segment_length * (i as  f32));
+            let segment_start_angle = start_angle + (arc_segment_length * (i as f32));
 
             self.draw_quad(
                 &[
-                    UIPosition::new().with_x(radius+half_width).rotate(segment_start_angle) + origin,
-                    UIPosition::new().with_x(radius+half_width).rotate(segment_start_angle+arc_segment_length) + origin,
-                    UIPosition::new().with_x(radius-half_width).rotate(segment_start_angle+arc_segment_length) + origin,
-                    UIPosition::new().with_x(radius-half_width).rotate(segment_start_angle) + origin,
-                ], 
-                color
+                    UIPosition::new()
+                        .with_x(radius + half_width)
+                        .rotate(segment_start_angle)
+                        + origin,
+                    UIPosition::new()
+                        .with_x(radius + half_width)
+                        .rotate(segment_start_angle + arc_segment_length)
+                        + origin,
+                    UIPosition::new()
+                        .with_x(radius - half_width)
+                        .rotate(segment_start_angle + arc_segment_length)
+                        + origin,
+                    UIPosition::new()
+                        .with_x(radius - half_width)
+                        .rotate(segment_start_angle)
+                        + origin,
+                ],
+                color,
             );
         }
     }
@@ -909,9 +1003,13 @@ impl UIRenderer {
         for i in 0..number_of_segments as i32 {
             self.draw_triangle(
                 &[
-                    UIPosition::xy(radius, 0.0).rotate(start_angle + (arc_segment_length * (i as f32 + 1.0))) + origin,
+                    UIPosition::xy(radius, 0.0)
+                        .rotate(start_angle + (arc_segment_length * (i as f32 + 1.0)))
+                        + origin,
                     origin,
-                    UIPosition::xy(radius, 0.0).rotate(start_angle + (arc_segment_length * (i as f32))) + origin,
+                    UIPosition::xy(radius, 0.0)
+                        .rotate(start_angle + (arc_segment_length * (i as f32)))
+                        + origin,
                 ],
                 color,
             );
@@ -1000,13 +1098,7 @@ impl UIRenderer {
         color: UIColor,
         radii: UICornerRadii,
     ) {
-        self.draw_filled_arc(
-            position + radii.top_left,
-            radii.top_left,
-            90.0,
-            90.0,
-            color,
-        );
+        self.draw_filled_arc(position + radii.top_left, radii.top_left, 90.0, 90.0, color);
         self.draw_filled_arc(
             position
                 .with_x(size.x - radii.top_right)
@@ -1101,11 +1193,11 @@ impl UIRenderer {
         );
     }
 
-    pub fn stage_atlas(&mut self, name: String, atlas_data: DynamicImage){
+    pub fn stage_atlas(&mut self, name: String, atlas_data: DynamicImage) {
         self.staged_images.push((name, atlas_data));
     }
 
-    fn add_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue){
+    fn add_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         if self.staged_images.len() > 0 {
             let (name, staged_image) = self.staged_images.pop().unwrap();
             let new_atlas = wgpu::BindGroup::create_atlas(staged_image, device, queue);
@@ -1115,49 +1207,73 @@ impl UIRenderer {
     }
 
     pub fn draw_image(
-        &mut self, 
-        image: &UIImageDescriptor,   
+        &mut self,
+        image: &UIImageDescriptor,
         mut position: UIPosition,
         size: UIPosition,
-    ){
+    ) {
         self.bind_atlas(&image.atlas);
 
         let positions = [
             position.clone(),
             position.with_y(size.y),
-            position+size,
-            position.with_x(size.x)
+            position + size,
+            position.with_x(size.x),
         ];
 
-        self.vertices.push(UIVertex{
-            position:positions[0],
-            texture:1,
-            color: UIColor {r: image.u1, g: image.v1, b:0.0}
+        self.vertices.push(UIVertex {
+            position: positions[0],
+            texture: 1,
+            color: UIColor {
+                r: image.u1,
+                g: image.v1,
+                b: 0.0,
+            },
         });
-        self.vertices.push(UIVertex{
-            position:positions[1],
-            texture:1,
-            color: UIColor {r: image.u1, g: image.v2, b:0.0}
+        self.vertices.push(UIVertex {
+            position: positions[1],
+            texture: 1,
+            color: UIColor {
+                r: image.u1,
+                g: image.v2,
+                b: 0.0,
+            },
         });
-        self.vertices.push(UIVertex{
-            position:positions[2],
-            texture:1,
-            color: UIColor {r: image.u2, g: image.v2, b:0.0}
+        self.vertices.push(UIVertex {
+            position: positions[2],
+            texture: 1,
+            color: UIColor {
+                r: image.u2,
+                g: image.v2,
+                b: 0.0,
+            },
         });
-        self.vertices.push(UIVertex{
-            position:positions[0],
-            texture:1,
-            color: UIColor {r: image.u1, g: image.v1, b:0.0}
+        self.vertices.push(UIVertex {
+            position: positions[0],
+            texture: 1,
+            color: UIColor {
+                r: image.u1,
+                g: image.v1,
+                b: 0.0,
+            },
         });
-        self.vertices.push(UIVertex{
-            position:positions[2],
-            texture:1,
-            color: UIColor {r: image.u2, g: image.v2, b:0.0}
+        self.vertices.push(UIVertex {
+            position: positions[2],
+            texture: 1,
+            color: UIColor {
+                r: image.u2,
+                g: image.v2,
+                b: 0.0,
+            },
         });
-        self.vertices.push(UIVertex{
-            position:positions[3],
-            texture:1,
-            color: UIColor {r: image.u2, g: image.v1, b:0.0}
+        self.vertices.push(UIVertex {
+            position: positions[3],
+            texture: 1,
+            color: UIColor {
+                r: image.u2,
+                g: image.v1,
+                b: 0.0,
+            },
         });
         self.batch_index_end += 6;
 
@@ -1214,34 +1330,32 @@ impl UIPipeline {
         };
         let shader_module = device.create_shader_module(shader_module_desc);
 
-        let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-            label: Some("texture_bind_group_layout"),
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
 
         let piplaydesc = wgpu::PipelineLayoutDescriptor {
             label: Some("UI Render Pipeline Layout"),
-            bind_group_layouts: &[
-                &texture_bind_group_layout, 
-                &size_bind_group_layout
-            ],
+            bind_group_layouts: &[&texture_bind_group_layout, &size_bind_group_layout],
             push_constant_ranges: &[],
         };
         let pipeline_layout = device.create_pipeline_layout(&piplaydesc);
@@ -1293,7 +1407,7 @@ impl UIPipeline {
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]
-pub struct UIImageDescriptor{
+pub struct UIImageDescriptor {
     pub atlas: String,
     pub u1: f32,
     pub v1: f32,
@@ -1301,7 +1415,7 @@ pub struct UIImageDescriptor{
     pub v2: f32,
 }
 
-pub trait UIAtlasCreation{
+pub trait UIAtlasCreation {
     fn create_atlas(atlas_data: DynamicImage, device: &wgpu::Device, queue: &wgpu::Queue) -> Self;
 }
 
@@ -1317,7 +1431,7 @@ impl UIAtlasCreation for wgpu::BindGroup {
             height: dimensions.1,
             depth_or_array_layers: 1,
         };
-        
+
         let diffuse_texture = device.create_texture(&wgpu::TextureDescriptor {
             size: texture_size,
             mip_level_count: 1,
@@ -1345,8 +1459,9 @@ impl UIAtlasCreation for wgpu::BindGroup {
             texture_size,
         );
 
-        let diffuse_texture_view = diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            
+        let diffuse_texture_view =
+            diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let diffuse_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -1357,27 +1472,28 @@ impl UIAtlasCreation for wgpu::BindGroup {
             ..Default::default()
         });
 
-        let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-            label: Some("texture_bind_group_layout"),
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
 
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &texture_bind_group_layout,

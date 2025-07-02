@@ -1,18 +1,12 @@
 use wgpu::util::DeviceExt;
 
-use crate::camera_controller::{
-    Camera,
-    CameraController,
-    CameraUniform
-};
+use crate::camera_controller::{Camera, CameraController, CameraUniform};
 
-use crate::model::{
-    load_model_gltf, Model, ModelVertex, TransformMatrix, Vertex
-};
+use crate::model::{Model, Vertex};
+use crate::texture::Texture;
+use crate::Transform;
+
 pub struct SceneRenderer {
-
-    pub models: Vec<Model>,
-
     pub camera_controller: CameraController,
     pub camera: Camera,
     camera_uniform: CameraUniform,
@@ -24,17 +18,10 @@ pub struct SceneRenderer {
 
 #[allow(dead_code)]
 impl SceneRenderer {
-    pub fn new(
-        device: &wgpu::Device
-    ) -> Self {
-
+    pub fn new(device: &wgpu::Device) -> Self {
         let camera = Camera {
-            // position the camera 1 unit up and 2 units back
-            // +z is out of the screen
             eye: (0.0, 1.0, 4.0).into(),
-            // have it look at the origin
             target: (0.0, 0.0, 0.0).into(),
-            // which way is "up"
             up: cgmath::Vector3::unit_y(),
             aspect: 1.0,
             fovy: 45.0,
@@ -45,54 +32,22 @@ impl SceneRenderer {
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update_view_proj(&camera);
 
-        let camera_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Camera Buffer"),
-                contents: bytemuck::cast_slice(&[camera_uniform]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }
-        );
-
-        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }
-            ],
-            label: Some("camera_bind_group_layout"),
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &camera_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: camera_buffer.as_entire_binding(),
-                }
-            ],
+            layout: &Camera::bindgroup_layout(device),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
             label: Some("camera_bind_group"),
         });
-
-       
-        /* #endregion */
-
         
-
-        let models = Vec::<Model>::new();
-
-        // let obj_model = load_model("src/resources/models/cube.obj", &device, &queue, &texture_bind_group_layout).unwrap();
-        // models.push(obj_model);
-
         Self {
-            models,
-
             camera_controller: CameraController::new(5.0),
             camera,
             camera_uniform,
@@ -108,132 +63,68 @@ impl SceneRenderer {
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
         multi_sample_count: u32,
-    ){
-        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }
-            ],
-            label: Some("camera_bind_group_layout"),
-        });
-
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
-        });
-
-        let prs_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { 
-            label: None,
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }
-            ]
-        });
-
-
+    ) {
         let mut pipeline_builder = ScenePipeline::new(config.format);
-        pipeline_builder.add_buffer_layout(ModelVertex::desc());
-        //pipeline_builder.add_buffer_layout(TransformMatrix::desc());
+        pipeline_builder.add_buffer_layout(Vertex::buffer_description());
+        pipeline_builder.add_buffer_layout(Transform::buffer_description());
         let render_pipeline = pipeline_builder.build_pipeline(
             &device,
             &[
-                &camera_bind_group_layout, 
-                &texture_bind_group_layout,
-                &prs_bind_group_layout,
+                &Camera::bindgroup_layout(device),
+                &Texture::bindgroup_layout(device),
+                &Transform::bindgroup_layout(device),
             ],
-            multi_sample_count
+            multi_sample_count,
         );
 
         self.render_pipeline = Some(render_pipeline);
     }
 
-    pub fn render(& mut self, render_pass: & mut wgpu::RenderPass, queue: &wgpu::Queue) {
+    pub fn render(&mut self, models: &mut [Model], render_pass: &mut wgpu::RenderPass, queue: &wgpu::Queue) {
         match self.render_pipeline.as_mut() {
             None => return,
             Some(render_pipeline) => {
                 self.camera_controller.update_camera(&mut self.camera);
                 self.camera_uniform.update_view_proj(&self.camera);
-                queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+                queue.write_buffer(
+                    &self.camera_buffer,
+                    0,
+                    bytemuck::cast_slice(&[self.camera_uniform]),
+                );
 
                 render_pass.set_pipeline(&render_pipeline);
                 render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
 
-                for model in &self.models {
+                for model in models {
                     if model.transform_dirty {
-                        queue.write_buffer(&model.transform_buffer, 0, bytemuck::cast_slice(&[model.transform.buffer()]));
+                        queue.write_buffer(
+                            &model.transform_buffer,
+                            0,
+                            bytemuck::cast_slice(&[model.transform.to_wgpu_buffer()]),
+                        );
+                        model.transform_dirty = false;
                     }
+                    if model.mesh.instances_dirty {
+                        queue.write_buffer(
+                            &model.mesh.instance_buffer, 
+                            0, 
+                            bytemuck::cast_slice(&model.mesh.get_instance_buffer_raw())
+                        );
+                        model.mesh.instances_dirty = false;
+                    }
+                    let material = &model.materials[model.mesh.material];
+                    render_pass.set_bind_group(1, &material.bind_group, &[]);
                     render_pass.set_bind_group(2, &model.transform_bind_group, &[]);
-                    for mesh in &model.meshes {
-                        let material = &model.materials[mesh.material];
-                        render_pass.set_vertex_buffer(0, mesh.vertex_buffer_raw.slice(..));
-                        render_pass.set_index_buffer(mesh.index_buffer_raw.slice(..), wgpu::IndexFormat::Uint32);
-                        render_pass.set_bind_group(1, &material.bind_group, &[]);
-                        render_pass.draw_indexed(0..mesh.num_elements, 0, 0..1);
-                    }
+                    render_pass.set_vertex_buffer(0, model.mesh.vertex_buffer_raw.slice(..));
+                    render_pass.set_vertex_buffer(1, model.mesh.instance_buffer.slice(..));
+                    render_pass.set_index_buffer(
+                        model.mesh.index_buffer_raw.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    render_pass.draw_indexed(0..model.mesh.num_elements, 0, 0..model.mesh.instances.len() as u32);
                 }
             }
         }
-    }
-
-    pub fn load_model(&mut self, filename: &str, directory: &str, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
-        });
-        let gltf_model = load_model_gltf(&filename, &directory, &device, &queue, &texture_bind_group_layout).unwrap();
-        self.models.push(gltf_model);
     }
 }
 
@@ -257,7 +148,7 @@ impl ScenePipeline {
     pub fn build_pipeline(
         &self,
         device: &wgpu::Device,
-        layouts: &[&wgpu::BindGroupLayout],
+        bindgroup_layouts: &[&wgpu::BindGroupLayout],
         multi_sample_count: u32,
     ) -> wgpu::RenderPipeline {
         let source_code = include_str!("scene_shader.wgsl");
@@ -270,7 +161,7 @@ impl ScenePipeline {
 
         let piplaydesc = wgpu::PipelineLayoutDescriptor {
             label: Some("Scene Render Pipeline Layout"),
-            bind_group_layouts: layouts,
+            bind_group_layouts: bindgroup_layouts,
             push_constant_ranges: &[],
         };
         let pipeline_layout = device.create_pipeline_layout(&piplaydesc);

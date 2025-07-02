@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
+use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes};
-use winit::dpi::PhysicalSize;
 
 use crate::depth_texture::DepthTexture;
 use crate::graphics_context::GraphicsContext;
 use crate::multi_sample_texture::MultiSampleTexture;
 
-pub struct Viewport<UserPages>{
+pub struct Viewport<UserPages> {
     pub window: Arc<Window>,
     pub page: UserPages,
     pub surface: wgpu::Surface<'static>,
@@ -17,12 +17,24 @@ pub struct Viewport<UserPages>{
     pub multi_sample_texture: MultiSampleTexture,
 }
 
-pub trait BuildViewport<UserPages>{
-    fn build_viewport(self, event_loop: &ActiveEventLoop, page: UserPages, ctx: &GraphicsContext, multi_sample_count: u32) -> Viewport<UserPages>;
+pub trait BuildViewport<UserPages> {
+    fn build_viewport(
+        self,
+        event_loop: &ActiveEventLoop,
+        page: UserPages,
+        ctx: &GraphicsContext,
+        multi_sample_count: u32,
+    ) -> Viewport<UserPages>;
 }
 
-impl<UserPages> BuildViewport<UserPages> for WindowAttributes{
-    fn build_viewport(self, event_loop: &ActiveEventLoop, page: UserPages, ctx: &GraphicsContext, multi_sample_count: u32) -> Viewport<UserPages> {
+impl<UserPages> BuildViewport<UserPages> for WindowAttributes {
+    fn build_viewport(
+        self,
+        event_loop: &ActiveEventLoop,
+        page: UserPages,
+        ctx: &GraphicsContext,
+        multi_sample_count: u32,
+    ) -> Viewport<UserPages> {
         let window = Arc::new(event_loop.create_window(self).unwrap());
 
         let surface = ctx.instance.create_surface(window.clone()).unwrap();
@@ -31,9 +43,13 @@ impl<UserPages> BuildViewport<UserPages> for WindowAttributes{
 
         let surface_capabilities = surface.get_capabilities(&ctx.adapter);
 
-        let surface_format = surface_capabilities.formats.iter()
-            .copied().filter(|f| f.is_srgb())
-            .next().unwrap_or(surface_capabilities.formats[0]);
+        let surface_format = surface_capabilities
+            .formats
+            .iter()
+            .copied()
+            .filter(|f| f.is_srgb())
+            .next()
+            .unwrap_or(surface_capabilities.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -50,7 +66,8 @@ impl<UserPages> BuildViewport<UserPages> for WindowAttributes{
 
         let depth_texture = DepthTexture::new(&ctx.device, &config, multi_sample_count);
 
-        let multi_sample_texture = MultiSampleTexture::new(&ctx.device, &config, multi_sample_count);
+        let multi_sample_texture =
+            MultiSampleTexture::new(&ctx.device, &config, multi_sample_count);
 
         Viewport {
             window,
@@ -63,15 +80,21 @@ impl<UserPages> BuildViewport<UserPages> for WindowAttributes{
     }
 }
 
-impl<UserPages> Viewport<UserPages>{
-    pub fn resize(&mut self, device: &wgpu::Device, size: PhysicalSize<u32>, multi_sample_count: u32) {
+impl<UserPages> Viewport<UserPages> {
+    pub fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        size: PhysicalSize<u32>,
+        multi_sample_count: u32,
+    ) {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(device, &self.config);
 
         if size.width > 0 && size.height > 0 {
             self.depth_texture = DepthTexture::new(&device, &self.config, multi_sample_count);
-            self.multi_sample_texture = MultiSampleTexture::new(&device, &self.config, multi_sample_count);
+            self.multi_sample_texture =
+                MultiSampleTexture::new(&device, &self.config, multi_sample_count);
         }
     }
     pub fn get_current_texture(&mut self) -> wgpu::SurfaceTexture {

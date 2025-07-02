@@ -1,7 +1,7 @@
 [package]
 name = "telera-app"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 telera-layout = { path = "../telera-layout" }
@@ -25,6 +25,7 @@ strum = "0.27.1"
 strum_macros = "0.27"
 include_dir = "0.7.4"
 bimap = "0.6.3"
+rkyv = "=0.8.10"
 
 [build-dependencies]
 winresource = "0.1.19"

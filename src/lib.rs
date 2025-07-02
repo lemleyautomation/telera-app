@@ -1,12 +1,9 @@
 use std::{
-    collections::HashMap, 
-    hash::Hash,
-    fmt::Debug,
-    fs::read_to_string,
-    path::{Path, PathBuf},
-    str::FromStr,
-    time::Instant
+    collections::HashMap, fmt::Debug, fs::read_to_string, hash::Hash, path::{Path, PathBuf}, str::FromStr, time::Instant
 };
+
+pub use rkyv;
+//pub use rkyv::{deserialize, rancor::Error, Archive, Deserialize, Serialize};
 
 use image::DynamicImage;
 
@@ -58,9 +55,15 @@ pub use telera_layout::ListData;
 mod scene_renderer;
 use scene_renderer::SceneRenderer;
 
+use crate::model::{load_model_gltf, Model};
+pub use crate::model::Transform;
+pub use crate::model::BaseMesh;
+
 mod camera_controller;
 
 mod model;
+pub use model::Quaternion;
+pub use model::Euler;
 
 mod texture;
 
@@ -92,28 +95,6 @@ enum InternalEvents{
     RebuildLayout(PathBuf),
 }
 
-pub struct API<UserPages>{
-    staged_windows: Vec<(String, UserPages, WindowAttributes)>,
-    staged_images: Vec<(String,DynamicImage)>,
-    page_changes: Vec<(String,UserPages)>,
-    staged_models: Vec<(String, String)>,
-}
-
-impl<UserPages> API<UserPages>{
-    pub fn create_viewport(&mut self, name: &str, page: UserPages, attributes: WindowAttributes){
-        self.staged_windows.push((name.to_string(), page, attributes));
-    }
-    pub fn add_image(&mut self, name: &str, image: DynamicImage) {
-        self.staged_images.push((name.to_string(), image));
-    }
-    pub fn set_viewport_page(&mut self, viewport: &str, page: UserPages){
-        self.page_changes.push((viewport.to_string(), page));
-    }
-    pub fn load_gltf_model(&mut self, dir: &str, filename: &str, instance_id: Option<String>){
-        self.staged_models.push((dir.to_string(), filename.to_string()));
-    }
-}
-
 #[allow(unused_variables)]
 pub trait App<UserEvents, UserPages>{
     /// called once before start
@@ -126,6 +107,76 @@ pub trait App<UserEvents, UserPages>{
     fn event_handler(&mut self, event: UserEvents, viewport: &str, api: &mut API<UserPages>){}
 }
 
+pub struct API<UserPages>{
+    staged_windows: Vec<(String, UserPages, WindowAttributes)>,
+
+    ctx: GraphicsContext,
+    ui_renderer: Option<UIRenderer>,
+    model_ids: HashMap<String, usize>,
+    models: Vec<Model>,
+    
+    viewport_lookup: bimap::BiMap<String, WindowId>,
+    viewports: HashMap<WindowId, Viewport<UserPages>>,
+
+}
+
+impl<UserPages> API<UserPages>{
+    pub fn create_viewport(&mut self, name: &str, page: UserPages, attributes: WindowAttributes){
+        self.staged_windows.push((name.to_string(), page, attributes));
+    }
+    pub fn add_image(&mut self, name: &str, image: DynamicImage) {
+        if let Some(ui_renderer) = &mut self.ui_renderer {
+            ui_renderer.stage_atlas(name.to_string(), image);
+        }
+    }
+    pub fn set_viewport_page(&mut self, viewport: &str, page: UserPages){
+        if let Some(window_id) = self.viewport_lookup.get_by_left(viewport) {
+            if let Some(window) = self.viewports.get_mut(window_id){
+                window.page = page;
+                window.window.request_redraw();
+            }
+        }
+    }
+    pub fn load_gltf_model(&mut self, model_name: &str, filename: PathBuf, transfrom: Option<Transform>) -> BaseMesh{
+        self.model_ids.insert(model_name.to_string(), self.models.len());
+        let model = load_model_gltf(filename, &self.ctx.device, &self.ctx.queue, transfrom).unwrap();
+        let base = model.mesh.base.clone();
+        self.models.push(model);
+
+        base
+    }
+    pub fn transform_model(&mut self, model_name: &str) -> Result<&mut Transform> {
+        if let Some(model_index) = self.model_ids.get(model_name) {
+            if let Some(model_reference) = self.models.get_mut(*model_index) {
+                model_reference.transform_dirty = true;
+                return Ok(&mut model_reference.transform)
+            }
+        }
+
+        Err(notify::Error::path_not_found())
+    }
+    pub fn add_instance(&mut self, model_name: &str, instance_name: &str, transfrom: Option<Transform>){
+        if let Some(model_index) = self.model_ids.get(model_name) {
+            if let Some(model) = self.models.get_mut(*model_index) {
+                model.mesh.add_instance(instance_name.to_string(), &self.ctx.device, transfrom);
+            }
+        }
+    }
+    pub fn transform_instance(&mut self, model_name: &str, instance_name: &str) -> Result<&mut Transform> {
+        if let Some(model_index) = self.model_ids.get(model_name) {
+            if let Some(model_reference) = self.models.get_mut(*model_index) {
+                if let Some(instance) = model_reference.mesh.instance_lookup.get(instance_name) {
+                    if let Some(instance_reference) = model_reference.mesh.instances.get_mut(*instance) {
+                        model_reference.mesh.instances_dirty = true;
+                        return Ok(instance_reference)
+                    }
+                }
+            }
+        }
+        Err(notify::Error::path_not_found())
+    }
+}
+
 #[allow(dead_code)]
 struct Application<UserApp, UserEvents, UserPages>
 where 
@@ -135,9 +186,7 @@ where
     <UserPages as FromStr>::Err: Debug,
     UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
-    ctx: GraphicsContext,
     pub scene_renderer: SceneRenderer,
-    pub ui_renderer: Option<UIRenderer>,
 
     pointer_state: bool,
     dimensions: (f32, f32),
@@ -150,9 +199,6 @@ where
     pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, (), ()>,
     parser: Parser<UserEvents,UserPages>,
     user_events: Vec<UserEvents>,
-
-    viewport_lookup: bimap::BiMap<String, WindowId>,
-    viewports: HashMap<WindowId, Viewport<UserPages>>,
 
     core: API<UserPages>,
     app_events: EventLoopProxy<InternalEvents>,
@@ -168,29 +214,18 @@ where
     <UserPages as FromStr>::Err: Debug,
     UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
-    pub fn new(app_events: EventLoopProxy<InternalEvents>, mut user_application: UserApp, watcher: Option<ReadDirectoryChangesWatcher>) -> Self {
-        let ctx = GraphicsContext::new();
-        let scene_renderer = SceneRenderer::new(&ctx.device);
-
-        let mut ui_renderer = UIRenderer::new(&ctx.device, &ctx.queue);
-
+    pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp, watcher: Option<ReadDirectoryChangesWatcher>) -> Self {
         let mut core =  API { 
             staged_windows: Vec::new(), 
-            staged_images: Vec::new(),
-            page_changes: Vec::new(),
-            staged_models: Vec::new()
+            ctx: GraphicsContext::new(),
+            ui_renderer: None,
+            model_ids: HashMap::new(),
+            models: Vec::<Model>::new(),
+            viewport_lookup: bimap::BiMap::new(),
+            viewports: HashMap::new(),
         };
-
-        user_application.initialize(&mut core);
-
-        for _ in 0..core.staged_images.len() {
-            let (name, image) = core.staged_images.pop().unwrap();
-            ui_renderer.stage_atlas(name, image);
-        }
-
-        let ui_layout = LayoutEngine::<UIRenderer, UIImageDescriptor, (), ()>::new((1.0, 1.0));
-        ui_layout.set_debug_mode(false);
-
+        core.ui_renderer = Some(UIRenderer::new(&core.ctx.device, &core.ctx.queue));
+        
         let mut parser = Parser::default();
 
         #[cfg(debug_assertions)]
@@ -218,11 +253,9 @@ where
         }
         
 
-        let app = Application {
-            ctx,
-            scene_renderer,
-            ui_renderer: Some(ui_renderer),
-            ui_layout,
+        Application {
+            scene_renderer: SceneRenderer::new(&core.ctx.device),
+            ui_layout: LayoutEngine::<UIRenderer, UIImageDescriptor, (), ()>::new((1.0, 1.0)),
             parser,
             pointer_state: false,
             dimensions: (1.0, 1.0),
@@ -231,16 +264,12 @@ where
             mouse_poistion: (0.0,0.0),
             scroll_delta_time: Instant::now(),
             scroll_delta_distance: (0.0, 0.0),
-            viewport_lookup: bimap::BiMap::new(),
-            viewports: HashMap::new(),
             core,
             app_events,
             user_events: Vec::new(),
             user_application,
             watcher
-        };
-
-        app
+        }
     }
 
     fn open_staged_windows(&mut self, event_loop: &winit::event_loop::ActiveEventLoop){
@@ -248,26 +277,26 @@ where
 
             let (name, page, attr) = self.core.staged_windows.pop().unwrap();
             
-            if self.viewport_lookup.get_by_left(&name).is_some() { continue; }
+            if self.core.viewport_lookup.get_by_left(&name).is_some() { continue; }
 
-            let viewport = attr.build_viewport(event_loop, page, &self.ctx, MULTI_SAMPLE_COUNT);
+            let viewport = attr.build_viewport(event_loop, page, &self.core.ctx, MULTI_SAMPLE_COUNT);
 
             viewport.window.set_title(&name);
             let window_id = viewport.window.id();
 
-            let ui_renderer = self.ui_renderer.as_mut().unwrap();
+            let ui_renderer = self.core.ui_renderer.as_mut().unwrap();
             match ui_renderer.render_pipeline {
                 Some(_) => {}
-                None => ui_renderer.build_shaders(&self.ctx.device, &self.ctx.queue, &viewport.config, MULTI_SAMPLE_COUNT)
+                None => ui_renderer.build_shaders(&self.core.ctx.device, &self.core.ctx.queue, &viewport.config, MULTI_SAMPLE_COUNT)
             }
 
             match self.scene_renderer.render_pipeline {
                 Some(_) => {}
-                None => self.scene_renderer.build_shaders(&self.ctx.device, &viewport.config, MULTI_SAMPLE_COUNT)
+                None => self.scene_renderer.build_shaders(&self.core.ctx.device, &viewport.config, MULTI_SAMPLE_COUNT)
             }
 
-            self.viewport_lookup.insert(name, window_id);
-            self.viewports.insert(window_id, viewport);
+            self.core.viewport_lookup.insert(name, window_id);
+            self.core.viewports.insert(window_id, viewport);
         }
         self.core.staged_windows.clear();
     }
@@ -282,6 +311,7 @@ where
     UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.user_application.initialize(&mut self.core);
         self.open_staged_windows(event_loop);
     }
 
@@ -292,52 +322,38 @@ where
 
         self.user_application.update(&mut self.core);
 
-        for _ in 0..self.core.staged_models.len() {
-            let (dir, filename) = self.core.staged_models.pop().unwrap();
-            self.scene_renderer.load_model(&filename, &dir, &self.ctx.device, &self.ctx.queue);
-        }
+        let num_viewports = self.core.viewports.len();
 
-        for _ in 0..self.core.page_changes.len() {
-            let (name, page)  = self.core.page_changes.pop().unwrap();
-            if let Some(window_id) = self.viewport_lookup.get_by_left(&name) {
-                if let Some(window) = self.viewports.get_mut(window_id){
-                    window.page = page;
-                    window.window.request_redraw();
-                }
-            }
-        }
+        let mut events = Vec::<UserEvents>::new();
 
-        let num_viewports = self.viewports.len();
-
-        let viewport_name = self.viewport_lookup.get_by_right(&window_id).unwrap();
-
-        let viewport = match self.viewports.get_mut(&window_id) {
+        let viewport = match self.core.viewports.get_mut(&window_id) {
             Some(window) => window,
             None => return
         };
 
-        println!("{:?}", self.scene_renderer.camera_controller.process_events(&event));
+        self.scene_renderer.camera_controller.process_events(&event);
+        //println!("{:?}", self.scene_renderer.camera_controller.process_events(&event));
 
         match event {
             WindowEvent::CloseRequested => {
                 if num_viewports < 2 {
                     event_loop.exit();
                 }
-                self.viewport_lookup.remove_by_left(&viewport.window.title());
-                self.viewports.remove(&window_id);
+                self.core.viewport_lookup.remove_by_left(&viewport.window.title());
+                self.core.viewports.remove(&window_id);
                 return;
             },
             WindowEvent::Resized(size) => {
-                viewport.resize(&self.ctx.device, size, MULTI_SAMPLE_COUNT);
+                viewport.resize(&self.core.ctx.device, size, MULTI_SAMPLE_COUNT);
             }
             WindowEvent::RedrawRequested => {
 
                 let window_size: (f32, f32) = viewport.window.inner_size().into();
                 let dpi_scale  = viewport.window.scale_factor() as f32;
                 
-                let mut ui_renderer = self.ui_renderer.take().unwrap();
+                let mut ui_renderer = self.core.ui_renderer.take().unwrap();
                 ui_renderer.dpi_scale = dpi_scale;
-                ui_renderer.resize((window_size.0 as i32, window_size.1 as i32), &self.ctx.queue);
+                ui_renderer.resize((window_size.0 as i32, window_size.1 as i32), &self.core.ctx.queue);
 
                 self.ui_layout.set_layout_dimensions(window_size.0/dpi_scale, window_size.1/dpi_scale);
                 self.ui_layout.pointer_state(self.mouse_poistion.0/dpi_scale, self.mouse_poistion.1/dpi_scale, self.pointer_state);
@@ -346,25 +362,21 @@ where
                 self.scroll_delta_time = Instant::now();
 
                 self.ui_layout.begin_layout(ui_renderer);
-
-                let events = self.parser.set_page(&viewport.page, self.clicked, &mut self.ui_layout, &self.user_application);
-                for event in events.iter() {
-                    self.user_application.event_handler(event.clone(), &viewport_name, &mut self.core);
-                }
+                events = self.parser.set_page(&viewport.page, self.clicked, &mut self.ui_layout, &self.user_application);
                 self.clicked = false;
                 let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
 
-                self.ctx.render(
+                self.core.ctx.render(
                     viewport,
                     MULTI_SAMPLE_COUNT,
                     |render_pass, device, queue, config| {
                         
-                        self.scene_renderer.render(render_pass, &queue);
+                        self.scene_renderer.render(&mut self.core.models, render_pass, &queue);
                         ui_renderer.render_layout::<UIImageDescriptor, (), ()>(render_commands, render_pass, &device, &queue, &config);
                     }
                 ).unwrap();
 
-                self.ui_renderer = Some(ui_renderer);
+                self.core.ui_renderer = Some(ui_renderer);
                 viewport.window.request_redraw();
             }
             WindowEvent::MouseInput { device_id:_, state, button } => {
@@ -395,23 +407,21 @@ where
             }
             _ => {}
         }
+
+        for event in events.iter() {
+            let viewport_name = self.core.viewport_lookup.get_by_right(&window_id).unwrap().clone();
+            self.user_application.event_handler(event.clone(), &viewport_name, &mut self.core);
+        }
     }
 
     fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, event: InternalEvents) {
         if let InternalEvents::RebuildLayout(path) = event {
             let xml_string = read_to_string(path).unwrap();
             self.parser.update_page(&xml_string);
-            for (_window_id,viewport) in self.viewports.iter_mut() {
+            for (_window_id,viewport) in self.core.viewports.iter_mut() {
                 viewport.window.request_redraw();
             }
         }
-        // let file = "examples/layout.xml";
-        // let file = read_to_string(file).unwrap();
-        // println!("updating layout");
-        // self.parser.update_page(&file);
-        // for (_window_id,viewport) in self.viewports.iter_mut() {
-        //     viewport.window.request_redraw();
-        // }
     }
 }
 
@@ -461,6 +471,20 @@ CLAY({ .id = CLAY_ID("FileMenu"),
             .layout = {
                 .layoutDirection = CLAY_TOP_TO_BOTTOM,
                 .sizing = {
+                        .width = CLAY_SIZING_FIXED(200)
+                },
+            },
+            .backgroundColor = {40, 40, 40, 255 },
+            .cornerRadius = CLAY_CORNER_RADIUS(8)
+        }) {
+            // Render dropdown items here
+            RenderDropdownMenuItem(CLAY_STRING("New"));
+            RenderDropdownMenuItem(CLAY_STRING("Open"));
+            RenderDropdownMenuItem(CLAY_STRING("Close"));
+        }
+    }
+}
+              .sizing = {
                         .width = CLAY_SIZING_FIXED(200)
                 },
             },

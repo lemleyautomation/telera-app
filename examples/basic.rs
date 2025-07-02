@@ -1,8 +1,8 @@
 use telera_app::run;
 use telera_app::App;
-use telera_app::API;
 use telera_app::LogicalSize;
 use telera_app::UIImageDescriptor;
+use telera_app::API;
 
 use strum_macros::EnumString;
 use telera_layout::ParserDataAccess;
@@ -18,7 +18,7 @@ enum BasicEvents {
     FileButtonClicked,
 }
 
-#[derive(EnumString,Clone,Hash,PartialEq,std::cmp::Eq,Default)]
+#[derive(EnumString, Clone, Hash, PartialEq, std::cmp::Eq, Default)]
 enum BasicPages {
     #[default]
     Main,
@@ -37,12 +37,12 @@ struct BasicApp {
 
 impl App<BasicEvents, BasicPages> for BasicApp {
     fn initialize(&mut self, core: &mut API<BasicPages>) {
-        let new_window = winit::window::Window::default_attributes()
-            .with_inner_size(LogicalSize::new(800, 600));
+        let new_window =
+            winit::window::Window::default_attributes().with_inner_size(LogicalSize::new(800, 600));
         core.create_viewport("Main", BasicPages::Main, new_window);
     }
 
-    fn event_handler(&mut self, event: BasicEvents, _viewport: &str, _core: &mut API<BasicPages>){
+    fn event_handler(&mut self, event: BasicEvents, _viewport: &str, _core: &mut API<BasicPages>) {
         match event {
             BasicEvents::LoremClicked => self.selected_document = 1,
             BasicEvents::SquirrelClicked => self.selected_document = 0,
@@ -52,22 +52,21 @@ impl App<BasicEvents, BasicPages> for BasicApp {
     }
 }
 
-impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp{
+impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
     fn get_bool(&self, name: &str, list: &Option<telera_layout::ListData>) -> Option<bool> {
         match list {
             None => {
                 if name == "file-menu-opened" {
-                    return Some(self.file_menu_open)
+                    return Some(self.file_menu_open);
                 }
                 return None;
-            },
+            }
             Some(list) => {
                 if list.src == "Documents" {
                     if name == "selected_document" {
                         if self.selected_document == list.index as usize {
                             return Some(true);
-                        }
-                        else {
+                        } else {
                             return Some(false);
                         }
                     }
@@ -76,14 +75,21 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp{
             }
         }
     }
-    fn get_text<'render_pass, 'application>(&'application self, name: &str, list: &Option<telera_layout::ListData>) -> Option<&'render_pass str> where 'application: 'render_pass {
+    fn get_text<'render_pass, 'application>(
+        &'application self,
+        name: &str,
+        list: &Option<telera_layout::ListData>,
+    ) -> Option<&'render_pass str>
+    where
+        'application: 'render_pass,
+    {
         match list {
             None => {
                 if name == "title" {
-                    return Some(&self.documents.get(self.selected_document).unwrap().title)
+                    return Some(&self.documents.get(self.selected_document).unwrap().title);
                 }
                 if name == "contents" {
-                    return Some(&self.documents.get(self.selected_document).unwrap().contents)
+                    return Some(&self.documents.get(self.selected_document).unwrap().contents);
                 }
                 None
             }
@@ -91,10 +97,10 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp{
                 if list.src == "Documents" {
                     if name == "title" {
                         //println!("asking for list element {:?} title", list.index);
-                        return Some(&self.documents.get(list.index as usize).unwrap().title)
+                        return Some(&self.documents.get(list.index as usize).unwrap().title);
                     }
                     if name == "contents" {
-                        return Some(&self.documents.get(list.index as usize).unwrap().contents)
+                        return Some(&self.documents.get(list.index as usize).unwrap().contents);
                     }
                 }
                 None
@@ -103,11 +109,18 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp{
     }
     fn get_list_length(&self, name: &str, _list: &Option<telera_layout::ListData>) -> Option<i32> {
         if name == "Documents" {
-            return Some(self.documents.len() as i32)
+            return Some(self.documents.len() as i32);
         }
         None
     }
-    fn get_event<'render_pass, 'application>(&'application self, name: &str, list: &Option<telera_layout::ListData> ) -> Option<BasicEvents> where 'application: 'render_pass {
+    fn get_event<'render_pass, 'application>(
+        &'application self,
+        name: &str,
+        list: &Option<telera_layout::ListData>,
+    ) -> Option<BasicEvents>
+    where
+        'application: 'render_pass,
+    {
         match list {
             None => return None,
             Some(list) => {
@@ -115,7 +128,7 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp{
                     match list.index {
                         0 => return Some(BasicEvents::SquirrelClicked),
                         1 => return Some(BasicEvents::LoremClicked),
-                        _ => return None
+                        _ => return None,
                     }
                 }
                 return None;
@@ -125,7 +138,6 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp{
 }
 
 fn main() {
-
     let mut documents = Vec::<Document>::new();
 
     documents.push(Document{
@@ -138,7 +150,11 @@ fn main() {
         contents: "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.".to_string()
     });
 
-    let app = BasicApp{ documents, selected_document: 0, file_menu_open: false };
+    let app = BasicApp {
+        documents,
+        selected_document: 0,
+        file_menu_open: false,
+    };
 
-    run::<BasicEvents,BasicApp,BasicPages>(app);
+    run::<BasicEvents, BasicApp, BasicPages>(app);
 }
