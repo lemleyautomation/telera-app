@@ -159,6 +159,7 @@ impl<UserPages> API<UserPages>{
         if let Some(model_index) = self.model_ids.get(model_name) {
             if let Some(model) = self.models.get_mut(*model_index) {
                 model.mesh.add_instance(instance_name.to_string(), &self.ctx.device, transfrom);
+                //println!("hi {:?}", model.mesh.instances);
             }
         }
     }

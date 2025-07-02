@@ -167,7 +167,7 @@ impl Transform {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
 pub struct TransformMatrix {
     model: [[f32; 4]; 4],
 }
@@ -268,6 +268,7 @@ pub struct BaseMesh {
 
 impl Mesh {
     pub fn add_instance(&mut self, instance_name: String, device: &wgpu::Device, transform: Option<Transform>){
+        self.instances_dirty = true;
         self.instance_lookup.insert(instance_name, self.instances.len());
         let transform = match transform {
             Some(transform) => transform,
@@ -292,11 +293,15 @@ impl Mesh {
     }
 
     pub fn get_instance_buffer_raw(&self) -> Vec<TransformMatrix> {
-        self.instances.iter().map(
+        let raw_buffer = self.instances.iter().map(
             |data| {
                 data.to_wgpu_buffer()
             }
-        ).collect::<Vec<TransformMatrix>>()
+        ).collect::<Vec<TransformMatrix>>();
+
+        println!("{:?}", raw_buffer);
+
+        raw_buffer
     }
 }
 
