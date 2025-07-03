@@ -129,6 +129,13 @@ impl<UserPages> API<UserPages>{
             ui_renderer.stage_atlas(name.to_string(), image);
         }
     }
+    pub fn set_viewport_title(&mut self, viewport: &str, title: &str) {
+        if let Some(window_id) = self.viewport_lookup.get_by_left(viewport) {
+            if let Some (viewport) = self.viewports.get_mut(window_id) {
+                viewport.window.set_title(title);
+            }
+        }
+    }
     pub fn set_viewport_page(&mut self, viewport: &str, page: UserPages){
         if let Some(window_id) = self.viewport_lookup.get_by_left(viewport) {
             if let Some(window) = self.viewports.get_mut(window_id){
