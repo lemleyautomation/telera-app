@@ -57,6 +57,7 @@ use scene_renderer::SceneRenderer;
 
 use crate::model::{load_model_gltf, Model};
 pub use crate::model::Transform;
+pub use crate::model::TransformMatrix;
 pub use crate::model::BaseMesh;
 
 mod camera_controller;

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-telera-layout = { path = "../telera-layout" }
+telera-layout = { path = "../telera-layout"}
 winit = "0.30.9"
 rfd = "0.15.3"
 wgpu = "24.0.1"

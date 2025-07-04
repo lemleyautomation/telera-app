@@ -121,7 +121,9 @@ impl SceneRenderer {
                         model.mesh.index_buffer_raw.slice(..),
                         wgpu::IndexFormat::Uint32,
                     );
-                    render_pass.draw_indexed(0..model.mesh.num_elements, 0, 0..model.mesh.instances.len() as u32);
+                    if model.mesh.instances_shown > 0 {
+                        render_pass.draw_indexed(0..model.mesh.num_elements, 0, 1..model.mesh.instances_shown+1);
+                    }
                 }
             }
         }

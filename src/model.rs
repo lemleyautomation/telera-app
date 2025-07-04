@@ -46,7 +46,6 @@ impl Vertex {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Copy, Clone, Debug)]
 pub struct Transform {
     pub position: cgmath::Vector3<f32>,
@@ -167,7 +166,8 @@ impl Transform {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
+#[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+#[rkyv(compare(PartialEq), derive(Debug),)]
 pub struct TransformMatrix {
     model: [[f32; 4]; 4],
 }
@@ -249,6 +249,7 @@ pub struct Mesh {
     pub num_elements: u32,
     pub material: usize,
     
+    pub instances_shown: u32,
     pub instance_lookup: HashMap<String, usize>,
     pub instances_dirty: bool,
     pub instances: Vec<Transform>,
@@ -269,6 +270,7 @@ pub struct BaseMesh {
 impl Mesh {
     pub fn add_instance(&mut self, instance_name: String, device: &wgpu::Device, transform: Option<Transform>){
         self.instances_dirty = true;
+        self.instances_shown += 1;
         self.instance_lookup.insert(instance_name, self.instances.len());
         let transform = match transform {
             Some(transform) => transform,
@@ -299,7 +301,7 @@ impl Mesh {
             }
         ).collect::<Vec<TransformMatrix>>();
 
-        println!("{:?}", raw_buffer);
+        //println!("{:?}", raw_buffer);
 
         raw_buffer
     }
@@ -558,6 +560,7 @@ pub fn load_model_gltf(
         num_elements: index_buffer_len,
         material: 0,
 
+        instances_shown: 0,
         instance_lookup,
         instances_dirty: false,
         instances,
