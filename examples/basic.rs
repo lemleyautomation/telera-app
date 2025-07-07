@@ -1,27 +1,25 @@
-use telera_app::run;
-use telera_app::App;
-use telera_app::LogicalSize;
-use telera_app::UIImageDescriptor;
-use telera_app::API;
+use telera_app::{*, event_handler_derive::EventHandler};
+use strum::EnumString;
 
-use strum_macros::EnumString;
-use telera_layout::ParserDataAccess;
-
-#[derive(EnumString, Debug, Clone, PartialEq, Default)]
+#[derive(EnumString, Debug, Clone, PartialEq, EventHandler)]
+#[handler_for(BasicApp)]
+#[strum(crate = "self::strum")] 
 enum BasicEvents {
-    #[default]
-    None,
-    Open,
-    Clicked,
     SquirrelClicked,
     LoremClicked,
     FileButtonClicked,
 }
 
-#[derive(EnumString, Clone, Hash, PartialEq, std::cmp::Eq, Default)]
-enum BasicPages {
-    #[default]
-    Main,
+fn squirrel_clicked_handler(app: &mut BasicApp, _api: &mut API){
+    app.selected_document = 0;
+}
+
+fn lorem_clicked_handler(app: &mut BasicApp, _api: &mut API){
+    app.selected_document = 1;
+}
+
+fn file_button_clicked_handler(app: &mut BasicApp, _api: &mut API){
+    app.file_menu_open = !app.file_menu_open;
 }
 
 pub struct Document {
@@ -35,25 +33,16 @@ struct BasicApp {
     file_menu_open: bool,
 }
 
-impl App<BasicEvents, BasicPages> for BasicApp {
-    fn initialize(&mut self, core: &mut API<BasicPages>) {
+impl App for BasicApp {
+    fn initialize(&mut self, core: &mut API) {
         let new_window =
             winit::window::Window::default_attributes().with_inner_size(LogicalSize::new(800, 600));
-        core.create_viewport("Main", BasicPages::Main, new_window);
-    }
-
-    fn event_handler(&mut self, event: BasicEvents, _viewport: &str, _core: &mut API<BasicPages>) {
-        match event {
-            BasicEvents::LoremClicked => self.selected_document = 1,
-            BasicEvents::SquirrelClicked => self.selected_document = 0,
-            BasicEvents::FileButtonClicked => self.file_menu_open = !self.file_menu_open,
-            _ => {}
-        }
+        core.create_viewport("Main", "Main", new_window);
     }
 }
 
 impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
-    fn get_bool(&self, name: &str, list: &Option<telera_layout::ListData>) -> Option<bool> {
+    fn get_bool(&self, name: &str, list: &Option<ListData>) -> Option<bool> {
         match list {
             None => {
                 if name == "file-menu-opened" {
@@ -78,7 +67,7 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
     fn get_text<'render_pass, 'application>(
         &'application self,
         name: &str,
-        list: &Option<telera_layout::ListData>,
+        list: &Option<ListData>,
     ) -> Option<&'render_pass str>
     where
         'application: 'render_pass,
@@ -107,7 +96,7 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
             }
         }
     }
-    fn get_list_length(&self, name: &str, _list: &Option<telera_layout::ListData>) -> Option<i32> {
+    fn get_list_length(&self, name: &str, _list: &Option<ListData>) -> Option<i32> {
         if name == "Documents" {
             return Some(self.documents.len() as i32);
         }
@@ -116,7 +105,7 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
     fn get_event<'render_pass, 'application>(
         &'application self,
         name: &str,
-        list: &Option<telera_layout::ListData>,
+        list: &Option<ListData>,
     ) -> Option<BasicEvents>
     where
         'application: 'render_pass,
@@ -156,5 +145,5 @@ fn main() {
         file_menu_open: false,
     };
 
-    run::<BasicEvents, BasicApp, BasicPages>(app);
+    run::<BasicEvents, BasicApp>(app);
 }

@@ -1,0 +1,348 @@
+<!ELEMENT page (element|grow|reusable)*>
+<!ATTLIST page name CDATA #REQUIRED>
+
+<!ELEMENT element (element-config,(element|text-element|hovered|clicked|grow|use|list|tk)*)>
+<!ATTLIST element id CDATA "element">
+<!ATTLIST element if CDATA #IMPLIED>
+<!ATTLIST element if-not CDATA #IMPLIED>
+
+<!ELEMENT text-element (text-config,(content|dyn-content))>
+
+<!ELEMENT element-config (
+    use|hovered|clicked|
+    id|
+    width-grow|width-fit|width-fixed|width-percent|
+    height-grow|height-fit|height-fixed|height-percent|
+    padding-all|padding-left|padding-bottom|padding-right|padding-top|
+    child-gap|
+    direction|
+    align-children-x|align-children-y|
+    (color|dyn-color)|
+    radius-all|radius-top-left|radius-top-right|
+    radius-bottom-left|radius-bottom-right|
+    border-color|border-all|border-top|border-bottom|
+    border-left|border-right|border-between-children|
+    scroll|
+    floating|floating-offset|floating-size|
+    floating-z-index|floating-attach-to-parent|
+    floating-attach-element|floating-capture-pointer|
+    floating-attach-to-element|floating-attach-to-root|
+    image
+    )*>
+<!ATTLIST element-config use ID #IMPLIED>
+
+<!ELEMENT text-config (
+    use|hovered|clicked|
+    font-id|
+    (text-align-left|text-align-right|text-align-center)|
+    font-size|
+    line-height|
+    (color|dyn-color)|editable
+    )*>
+<!ATTLIST text-config use CDATA #IMPLIED>
+
+<!ELEMENT hovered (
+    element|element-config|text-element|text-config|
+    use|hovered|clicked|tk|
+    id|
+    width-grow|width-fit|width-fixed|width-percent|
+    height-grow|height-fit|height-fixed|height-percent|
+    padding-all|padding-left|padding-bottom|padding-right|padding-top|
+    child-gap|
+    direction|
+    align-children-x|align-children-y|
+    (color|dyn-color)|
+    radius-all|radius-top-left|radius-top-right|
+    radius-bottom-left|radius-bottom-right|
+    border-color|border-all|border-top|border-bottom|
+    border-left|border-right|border-between-children|
+    scroll|
+    floating|floating-offset|floating-size|
+    floating-z-index|floating-attach-to-parent|
+    floating-attach-element|floating-capture-pointer|
+    floating-attach-to-element|floating-attach-to-root|
+    image
+    )*>
+<!ATTLIST hovered emit CDATA #IMPLIED>
+
+<!ELEMENT clicked (
+    element|element-config|text-element|text-config|
+    use|hovered|clicked|tk|
+    id|
+    width-grow|width-fit|width-fixed|width-percent|
+    height-grow|height-fit|height-fixed|height-percent|
+    padding-all|padding-left|padding-bottom|padding-right|padding-top|
+    child-gap|
+    direction|
+    align-children-x|align-children-y|
+    (color|dyn-color)|
+    radius-all|radius-top-left|radius-top-right|
+    radius-bottom-left|radius-bottom-right|
+    border-color|border-all|border-top|border-bottom|
+    border-left|border-right|border-between-children|
+    scroll|
+    floating|floating-offset|floating-size|
+    floating-z-index|floating-attach-to-parent|
+    floating-attach-element|floating-capture-pointer|
+    floating-attach-to-element|floating-attach-to-root|
+    image
+    )*>
+<!ATTLIST clicked emit CDATA #IMPLIED>
+
+<!ELEMENT reusable (reusable-config?, (element|text-element|element-config|text-config|tk)*)>
+<!ATTLIST reusable name CDATA #REQUIRED>
+
+<!ELEMENT reusable-config (
+    get-bool|get-numeric|get-text|
+    get-image|get-color|get-event|
+    set-bool|set-numeric|set-text|
+    set-image|set-color|set-event
+    )*>
+
+<!ELEMENT tk (
+    get-bool|get-numeric|get-text|
+    get-image|get-color|get-event|
+    set-bool|set-numeric|set-text|
+    set-image|set-color|set-event
+    )*>
+<!ATTLIST tk type CDATA #REQUIRED>
+<!ATTLIST tk if CDATA #IMPLIED>
+<!ATTLIST tk if-not CDATA #IMPLIED>
+
+<!ELEMENT use (
+    get-bool|get-numeric|get-text|
+    get-image|get-color|get-event|
+    set-bool|set-numeric|set-text|
+    set-image|set-color|set-event
+    )*>
+<!ATTLIST use name CDATA #REQUIRED>
+<!ATTLIST use if CDATA #IMPLIED>
+<!ATTLIST use if-not CDATA #IMPLIED>
+
+<!ELEMENT set-bool EMPTY>
+<!ATTLIST set-bool local CDATA #REQUIRED>
+<!ATTLIST set-bool to (true|false) #REQUIRED>
+
+<!ELEMENT set-numeric EMPTY>
+<!ATTLIST set-numeric local CDATA #REQUIRED>
+<!ATTLIST set-numeric to CDATA #REQUIRED>
+
+<!ELEMENT set-text EMPTY>
+<!ATTLIST set-text local CDATA #REQUIRED>
+<!ATTLIST set-text to CDATA #REQUIRED>
+
+<!ELEMENT set-image EMPTY>
+<!ATTLIST set-image local CDATA #REQUIRED>
+<!ATTLIST set-image to CDATA #REQUIRED>
+
+<!ELEMENT set-color EMPTY>
+<!ATTLIST set-color local CDATA #REQUIRED>
+<!ATTLIST set-color to CDATA #REQUIRED>
+
+<!ELEMENT set-event EMPTY>
+<!ATTLIST set-event local CDATA #REQUIRED>
+<!ATTLIST set-event to CDATA #REQUIRED>
+
+<!ELEMENT get-bool EMPTY>
+<!ATTLIST get-bool local CDATA #REQUIRED>
+<!ATTLIST get-bool from CDATA #REQUIRED>
+
+<!ELEMENT get-numeric EMPTY>
+<!ATTLIST get-numeric local CDATA #REQUIRED>
+<!ATTLIST get-numeric from CDATA #REQUIRED>
+
+<!ELEMENT get-text EMPTY>
+<!ATTLIST get-text local CDATA #REQUIRED>
+<!ATTLIST get-text from CDATA #REQUIRED>
+
+<!ELEMENT get-image EMPTY>
+<!ATTLIST get-image local CDATA #REQUIRED>
+<!ATTLIST get-image from CDATA #REQUIRED>
+
+<!ELEMENT get-color EMPTY>
+<!ATTLIST get-color local CDATA #REQUIRED>
+<!ATTLIST get-color from CDATA #REQUIRED>
+
+<!ELEMENT get-event EMPTY>
+<!ATTLIST get-event local CDATA #REQUIRED>
+<!ATTLIST get-event from CDATA #REQUIRED>
+
+<!ELEMENT list (
+    (get-bool|get-numeric|get-text|get-image|get-color|get-event)*
+    ,(element|use)*)>
+<!ATTLIST list src CDATA #REQUIRED>
+
+<!ELEMENT grow EMPTY>
+
+<!ELEMENT id EMPTY>
+<!ATTLIST id is CDATA "id">
+<!ATTLIST id from CDATA #IMPLIED>
+
+<!ELEMENT width-grow EMPTY>
+<!ATTLIST width-grow min CDATA #IMPLIED>
+<!ATTLIST width-grow max CDATA #IMPLIED>
+
+<!ELEMENT width-fit EMPTY>
+<!ATTLIST width-fit min CDATA #IMPLIED>
+<!ATTLIST width-fit max CDATA #IMPLIED>
+
+<!ELEMENT width-fixed EMPTY>
+<!ATTLIST width-fixed at CDATA #REQUIRED>
+
+<!ELEMENT width-percent EMPTY>
+<!ATTLIST width-percent at CDATA #REQUIRED>
+
+<!ELEMENT height-grow EMPTY>
+<!ATTLIST height-grow min CDATA #IMPLIED>
+<!ATTLIST height-grow max CDATA #IMPLIED>
+
+<!ELEMENT height-fit EMPTY>
+<!ATTLIST height-fit min CDATA #IMPLIED>
+<!ATTLIST height-fit max CDATA #IMPLIED>
+
+<!ELEMENT height-fixed EMPTY>
+<!ATTLIST height-fixed at CDATA #REQUIRED>
+
+<!ELEMENT height-percent EMPTY>
+<!ATTLIST height-percent at CDATA #REQUIRED>
+
+<!ELEMENT padding-all EMPTY>
+<!ATTLIST padding-all is CDATA #REQUIRED>
+
+<!ELEMENT padding-top EMPTY>
+<!ATTLIST padding-top is CDATA #REQUIRED>
+
+<!ELEMENT padding-left EMPTY>
+<!ATTLIST padding-left is CDATA #REQUIRED>
+
+<!ELEMENT padding-right EMPTY>
+<!ATTLIST padding-right is CDATA #REQUIRED>
+
+<!ELEMENT padding-bottom EMPTY>
+<!ATTLIST padding-bottom is CDATA #REQUIRED>
+
+<!ELEMENT child-gap EMPTY>
+<!ATTLIST child-gap is CDATA #REQUIRED>
+
+<!ELEMENT direction EMPTY>
+<!ATTLIST direction is (rtl|ttb) #REQUIRED>
+
+<!ELEMENT align-children-x EMPTY>
+<!ATTLIST align-children-x to (left|right|center) #REQUIRED>
+
+<!ELEMENT align-children-y EMPTY>
+<!ATTLIST align-children-y to (top|bottom|center) #REQUIRED>
+
+<!ELEMENT color EMPTY>
+<!ATTLIST color is CDATA "rgb(0,96,255)">
+
+<!ELEMENT dyn-color EMPTY>
+<!ATTLIST dyn-color from CDATA #REQUIRED>
+
+<!ELEMENT radius-all EMPTY>
+<!ATTLIST radius-all is CDATA #REQUIRED>
+
+<!ELEMENT radius-top-left EMPTY>
+<!ATTLIST radius-top-left is CDATA #REQUIRED>
+
+<!ELEMENT radius-top-right EMPTY>
+<!ATTLIST radius-top-right is CDATA #REQUIRED>
+
+<!ELEMENT radius-bottom-left EMPTY>
+<!ATTLIST radius-bottom-left is CDATA #REQUIRED>
+
+<!ELEMENT radius-bottom-right EMPTY>
+<!ATTLIST radius-bottom-right is CDATA #REQUIRED>
+
+<!ELEMENT border-color EMPTY>
+<!ATTLIST border-color is CDATA #REQUIRED>
+<!ELEMENT border-dynamic-color EMPTY>
+<!ATTLIST border-dynamic-color from CDATA #REQUIRED>
+
+<!ELEMENT border-all EMPTY>
+<!ATTLIST border-all is CDATA #REQUIRED>
+
+<!ELEMENT border-top EMPTY>
+<!ATTLIST border-top is CDATA #REQUIRED>
+
+<!ELEMENT border-bottom EMPTY>
+<!ATTLIST border-bottom is CDATA #REQUIRED>
+
+<!ELEMENT border-right EMPTY>
+<!ATTLIST border-right is CDATA #REQUIRED>
+
+<!ELEMENT border-left EMPTY>
+<!ATTLIST border-left is CDATA #REQUIRED>
+
+<!ELEMENT border-between-children EMPTY>
+<!ATTLIST border-between-children is CDATA #REQUIRED>
+
+<!ELEMENT scroll EMPTY>
+<!ATTLIST scroll vertical (true|false) "false">
+<!ATTLIST scroll horizontal (true|false) "false">
+
+<!ELEMENT floating EMPTY>
+
+<!ELEMENT floating-offset EMPTY>
+<!ATTLIST floating-offset x CDATA #REQUIRED>
+<!ATTLIST floating-offset y CDATA #REQUIRED>
+
+<!ELEMENT floating-size EMPTY>
+<!ATTLIST floating-size width CDATA #REQUIRED>
+<!ATTLIST floating-size height CDATA #REQUIRED>
+
+<!ELEMENT floating-z-index EMPTY>
+<!ATTLIST floating-z-index z CDATA #REQUIRED>
+
+<!ELEMENT floating-attach-to-parent EMPTY>
+<!ATTLIST floating-attach-to-parent at (
+    top-left|center-left|bottom-left|
+    top-center|center|bottom-center|
+    top-right|center-right|bottom-right
+) #REQUIRED>
+
+<!ELEMENT floating-attach-element EMPTY>
+<!ATTLIST floating-attach-element at (
+    top-left|center-left|bottom-left|
+    top-center|center|bottom-center|
+    top-right|center-right|bottom-right
+) #REQUIRED>
+
+<!ELEMENT floating-capture-pointer EMPTY>
+<!ATTLIST floating-capture-pointer state (true|false) #REQUIRED>
+
+<!ELEMENT floating-attach-to-element EMPTY>
+<!ATTLIST floating-attach-to-element id CDATA #REQUIRED>
+
+<!ELEMENT floating-attach-to-root EMPTY>
+
+<!ELEMENT image EMPTY>
+<!ATTLIST image src CDATA #REQUIRED>
+
+<!ELEMENT font-id EMPTY>
+<!ATTLIST font-id is CDATA #REQUIRED>
+
+<!ELEMENT font-size EMPTY>
+<!ATTLIST font-size is CDATA #REQUIRED>
+
+<!ELEMENT font-letter-spacing EMPTY>
+<!ATTLIST font-letter-spacing is CDATA #REQUIRED>
+
+<!ELEMENT line-height EMPTY>
+<!ATTLIST line-height is CDATA #IMPLIED>
+
+<!ELEMENT text-wrap-words EMPTY>
+<!ELEMENT text-wrap-new-lines EMPTY>
+<!ELEMENT text-wrap-none EMPTY>
+
+<!ELEMENT text-align-left EMPTY>
+<!ELEMENT text-align-right EMPTY>
+<!ELEMENT text-align-center EMPTY>
+
+<!ELEMENT editable EMPTY>
+<!ATTLIST editable state (true|false) #REQUIRED>
+
+<!ELEMENT content (#PCDATA)>
+
+<!ELEMENT dyn-content EMPTY>
+<!ATTLIST dyn-content from CDATA #REQUIRED>

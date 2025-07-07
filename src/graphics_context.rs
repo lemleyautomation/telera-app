@@ -45,10 +45,9 @@ impl GraphicsContext {
 
     pub fn render<
         F: for<'a, 'b> FnOnce(&'b mut RenderPass<'a>, &Device, &Queue, &SurfaceConfiguration),
-        UserPages,
     >(
         &mut self,
-        view_port: &mut Viewport<UserPages>,
+        view_port: &mut Viewport,
         multi_sample_count: u32,
         render_middleware: F,
     ) -> Result<(), wgpu::SurfaceError> {
@@ -71,10 +70,10 @@ impl GraphicsContext {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 1.0,
-                                g: 1.0,
-                                b: 1.0,
-                                a: 1.0,
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0,
                             }),
                             store: wgpu::StoreOp::Store,
                         },

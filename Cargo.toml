@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+event-handler-derive = { path = "event-handler-derive" }
 telera-layout = { path = "../telera-layout"}
 winit = "0.30.9"
 rfd = "0.15.3"
@@ -21,15 +22,19 @@ fs_extra = "1.2"
 glob = "0.3"
 gltf = "1.4.1"
 notify = "8.0.0"
-strum = "0.27.1"
-strum_macros = "0.27"
 include_dir = "0.7.4"
 bimap = "0.6.3"
 rkyv = "=0.8.10"
+strum = { version = "0.27.1", features = ["derive"] }
+strum_macros = "0.27"
+quick-xml = "0.37.3"
+csscolorparser = { version = "0.7.0", features = [ "named-colors" ] }
+
 
 [build-dependencies]
 winresource = "0.1.19"
 
 [features]
 logging = ["telera-layout/parse_logger"]
+parse_logger = []
 drm = []

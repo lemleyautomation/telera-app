@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap, fmt::Debug, fs::read_to_string, hash::Hash, path::{Path, PathBuf}, str::FromStr, time::Instant
+    collections::HashMap, fmt::Debug, fs::read_to_string, path::{Path, PathBuf}, str::FromStr, time::Instant
 };
 
 pub use rkyv;
@@ -15,6 +15,7 @@ use notify::{
 };
 
 pub use rfd::FileDialog as FileDialog;
+pub use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 
 use winit::{
     application::ApplicationHandler,
@@ -46,11 +47,10 @@ mod ui_renderer;
 use ui_renderer::UIRenderer;
 pub use ui_renderer::UIImageDescriptor;
 
-use telera_layout::{LayoutEngine, Parser};
-pub use telera_layout::ParserDataAccess;
-pub use telera_layout::EnumString;
-pub use telera_layout::strum;
-pub use telera_layout::ListData;
+use telera_layout::LayoutEngine;
+
+mod xml_parse;
+pub use xml_parse::*;
 
 mod scene_renderer;
 use scene_renderer::SceneRenderer;
@@ -71,14 +71,10 @@ mod texture;
 #[allow(dead_code)]
 fn watch_file(file: &str, sender: EventLoopProxy<InternalEvents>) -> ReadDirectoryChangesWatcher{
     let expensive_closure = move |event: Result<notify::Event>| {
-        match event {
-            Err(e) => {println!("{:?}", e)}
-            Ok(event) => {
-                if let Some(path) = event.paths.first(){
-                    if event.kind == notify::EventKind::Modify(notify::event::ModifyKind::Any) {
-                        let _ = sender.send_event(InternalEvents::RebuildLayout(path.to_owned()));
-                    }
-                }
+        if  let Ok(event) = event &&
+            let Some(path) = event.paths.first()  {
+            if event.kind == notify::EventKind::Modify(notify::event::ModifyKind::Any) {
+                let _ = sender.send_event(InternalEvents::RebuildLayout(path.to_owned()));
             }
         }
     };
@@ -97,19 +93,17 @@ enum InternalEvents{
 }
 
 #[allow(unused_variables)]
-pub trait App<UserEvents, UserPages>{
+pub trait App{
     /// called once before start
-    fn initialize(&mut self, api: &mut API<UserPages>);
+    fn initialize(&mut self, api: &mut API);
     /// All application update logic
     /// 
     /// This will be called at the beginning of each render loop
-    fn update(&mut self, api: &mut API<UserPages>){}
-    /// handling of user events
-    fn event_handler(&mut self, event: UserEvents, viewport: &str, api: &mut API<UserPages>){}
+    fn update(&mut self, api: &mut API){}
 }
 
-pub struct API<UserPages>{
-    staged_windows: Vec<(String, UserPages, WindowAttributes)>,
+pub struct API{
+    staged_windows: Vec<(String, String, WindowAttributes)>,
 
     ctx: GraphicsContext,
     ui_renderer: Option<UIRenderer>,
@@ -117,13 +111,13 @@ pub struct API<UserPages>{
     models: Vec<Model>,
     
     viewport_lookup: bimap::BiMap<String, WindowId>,
-    viewports: HashMap<WindowId, Viewport<UserPages>>,
+    viewports: HashMap<WindowId, Viewport>,
 
 }
 
-impl<UserPages> API<UserPages>{
-    pub fn create_viewport(&mut self, name: &str, page: UserPages, attributes: WindowAttributes){
-        self.staged_windows.push((name.to_string(), page, attributes));
+impl API{
+    pub fn create_viewport(&mut self, name: &str, page: &str, attributes: WindowAttributes){
+        self.staged_windows.push((name.to_string(), page.to_string(), attributes));
     }
     pub fn add_image(&mut self, name: &str, image: DynamicImage) {
         if let Some(ui_renderer) = &mut self.ui_renderer {
@@ -131,18 +125,19 @@ impl<UserPages> API<UserPages>{
         }
     }
     pub fn set_viewport_title(&mut self, viewport: &str, title: &str) {
-        if let Some(window_id) = self.viewport_lookup.get_by_left(viewport) {
-            if let Some (viewport) = self.viewports.get_mut(window_id) {
-                viewport.window.set_title(title);
-            }
+        if  let Some(window_id) = self.viewport_lookup.get_by_left(viewport) && 
+            let Some (viewport) = self.viewports.get_mut(window_id) {
+            viewport.window.set_title(title);
         }
     }
-    pub fn set_viewport_page(&mut self, viewport: &str, page: UserPages){
-        if let Some(window_id) = self.viewport_lookup.get_by_left(viewport) {
-            if let Some(window) = self.viewports.get_mut(window_id){
-                window.page = page;
-                window.window.request_redraw();
-            }
+    pub fn set_current_viewport_page(&mut self, page: &str) {
+        // TODO !
+    }
+    pub fn set_viewport_page(&mut self, viewport: &str, page: &str){
+        if  let Some(window_id) = self.viewport_lookup.get_by_left(viewport) &&
+            let Some(window) = self.viewports.get_mut(window_id) {
+            window.page = page.to_string();
+            window.window.request_redraw();
         }
     }
     pub fn load_gltf_model(&mut self, model_name: &str, filename: PathBuf, transfrom: Option<Transform>) -> BaseMesh{
@@ -172,28 +167,30 @@ impl<UserPages> API<UserPages>{
         }
     }
     pub fn transform_instance(&mut self, model_name: &str, instance_name: &str) -> Result<&mut Transform> {
-        if let Some(model_index) = self.model_ids.get(model_name) {
-            if let Some(model_reference) = self.models.get_mut(*model_index) {
-                if let Some(instance) = model_reference.mesh.instance_lookup.get(instance_name) {
-                    if let Some(instance_reference) = model_reference.mesh.instances.get_mut(*instance) {
-                        model_reference.mesh.instances_dirty = true;
-                        return Ok(instance_reference)
-                    }
-                }
-            }
+        if  let Some(model_index) = self.model_ids.get(model_name) &&
+            let Some(model_reference) = self.models.get_mut(*model_index) &&
+            let Some(instance) = model_reference.mesh.instance_lookup.get(instance_name) &&
+            let Some(instance_reference) = model_reference.mesh.instances.get_mut(*instance)
+            {
+            model_reference.mesh.instances_dirty = true;
+            return Ok(instance_reference)
         }
         Err(notify::Error::path_not_found())
     }
 }
 
+pub use event_handler_derive;
+pub trait EventHandler {
+    type UserApplication;
+    fn dispatch(&self, app: &mut Self::UserApplication, api: &mut API) {}
+}
+
 #[allow(dead_code)]
-struct Application<UserApp, UserEvents, UserPages>
+struct Application<UserApp, UserEvents>
 where 
-    UserEvents: FromStr+Clone+PartialEq+Default+Debug,
+    UserEvents: FromStr+Clone+PartialEq+Debug+EventHandler,
     <UserEvents as FromStr>::Err: Debug,
-    UserPages: FromStr+Clone+Hash+Eq+Default,
-    <UserPages as FromStr>::Err: Debug,
-    UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
+    UserApp: App + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
     pub scene_renderer: SceneRenderer,
 
@@ -206,22 +203,20 @@ where
     scroll_delta_distance: (f32, f32),
 
     pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, (), ()>,
-    parser: Parser<UserEvents,UserPages>,
+    parser: Parser<UserEvents>,
     user_events: Vec<UserEvents>,
 
-    core: API<UserPages>,
+    core: API,
     app_events: EventLoopProxy<InternalEvents>,
     user_application: UserApp,
     watcher: Option<ReadDirectoryChangesWatcher>,
 }
 
-impl<UserEvents, UserApp, UserPages> Application<UserApp, UserEvents, UserPages>
+impl<UserEvents, UserApp> Application<UserApp, UserEvents>
 where 
-    UserEvents: FromStr+Clone+PartialEq+Default+Debug,
+    UserEvents: FromStr+Clone+PartialEq+Debug+EventHandler,
     <UserEvents as FromStr>::Err: Debug,
-    UserPages: FromStr+Clone+Hash+Eq+Default,
-    <UserPages as FromStr>::Err: Debug,
-    UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
+    UserApp: App + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
     pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp, watcher: Option<ReadDirectoryChangesWatcher>) -> Self {
         let mut core =  API { 
@@ -235,7 +230,7 @@ where
         };
         core.ui_renderer = Some(UIRenderer::new(&core.ctx.device, &core.ctx.queue));
         
-        let mut parser = Parser::default();
+        let mut parser = Parser::new();
 
         #[cfg(debug_assertions)]
         {
@@ -311,13 +306,12 @@ where
     }
 }
 
-impl<UserEvents, UserApp, UserPages> ApplicationHandler<InternalEvents> for Application<UserApp,UserEvents, UserPages>
+impl<UserEvents, UserApp> ApplicationHandler<InternalEvents> for Application<UserApp,UserEvents>
 where 
-    UserEvents: FromStr+Clone+PartialEq+Default+Debug,
+    UserEvents: FromStr+Clone+PartialEq+Debug+EventHandler,
+    UserEvents: EventHandler<UserApplication = UserApp>, 
     <UserEvents as FromStr>::Err: Debug,
-    UserPages: FromStr+Clone+Hash+Eq+Default,
-    <UserPages as FromStr>::Err: Debug,
-    UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
+    UserApp: App + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.user_application.initialize(&mut self.core);
@@ -371,7 +365,7 @@ where
                 self.scroll_delta_time = Instant::now();
 
                 self.ui_layout.begin_layout(ui_renderer);
-                events = self.parser.set_page(&viewport.page, self.clicked, &mut self.ui_layout, &self.user_application);
+                events = self.parser.set_page(&viewport.page, self.clicked, &mut self.ui_layout, &self.user_application, None);
                 self.clicked = false;
                 let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
 
@@ -418,8 +412,7 @@ where
         }
 
         for event in events.iter() {
-            let viewport_name = self.core.viewport_lookup.get_by_right(&window_id).unwrap().clone();
-            self.user_application.event_handler(event.clone(), &viewport_name, &mut self.core);
+            event.dispatch(&mut self.user_application, &mut self.core);
         }
     }
 
@@ -434,14 +427,12 @@ where
     }
 }
 
-
-pub fn run<UserEvents, UserApp, UserPages>(user_application: UserApp)
+pub fn run<UserEvents, UserApp>(user_application: UserApp)
 where 
-    UserEvents: FromStr+Clone+PartialEq+Default+Debug,
+    UserEvents: FromStr+Clone+PartialEq+Debug+EventHandler,
+    UserEvents: EventHandler<UserApplication = UserApp>, 
     <UserEvents as FromStr>::Err: Debug,
-    UserPages: FromStr+Clone+Hash+Eq+Default,
-    <UserPages as FromStr>::Err: Debug,
-    UserApp: App<UserEvents, UserPages> + ParserDataAccess<UIImageDescriptor, UserEvents>,
+    UserApp: App + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
     let event_loop = match EventLoop::<InternalEvents>::with_user_event().build() {
         Ok(event_loop) => event_loop,
@@ -453,13 +444,13 @@ where
     {
         let file_watcher = event_loop.create_proxy();
         let watcher = watch_file("src/layouts", file_watcher);
-        let mut app: Application<UserApp, UserEvents, UserPages> = Application::new(event_loop.create_proxy(), user_application, Some(watcher));
+        let mut app: Application<UserApp, UserEvents> = Application::new(event_loop.create_proxy(), user_application, Some(watcher));
         event_loop.run_app(&mut app).unwrap();
     }
     
     #[cfg(not(debug_assertions))]
     {
-        let mut app: Application<UserApp, UserEvents, UserPages> = Application::new(event_loop.create_proxy(), user_application, None);
+        let mut app: Application<UserApp, UserEvents> = Application::new(event_loop.create_proxy(), user_application, None);
         event_loop.run_app(&mut app).unwrap();
     }
 }

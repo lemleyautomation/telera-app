@@ -8,33 +8,33 @@ use crate::depth_texture::DepthTexture;
 use crate::graphics_context::GraphicsContext;
 use crate::multi_sample_texture::MultiSampleTexture;
 
-pub struct Viewport<UserPages> {
+pub struct Viewport {
     pub window: Arc<Window>,
-    pub page: UserPages,
+    pub page: String,
     pub surface: wgpu::Surface<'static>,
     pub config: wgpu::SurfaceConfiguration,
     pub depth_texture: DepthTexture,
     pub multi_sample_texture: MultiSampleTexture,
 }
 
-pub trait BuildViewport<UserPages> {
+pub trait BuildViewport {
     fn build_viewport(
         self,
         event_loop: &ActiveEventLoop,
-        page: UserPages,
+        page: String,
         ctx: &GraphicsContext,
         multi_sample_count: u32,
-    ) -> Viewport<UserPages>;
+    ) -> Viewport;
 }
 
-impl<UserPages> BuildViewport<UserPages> for WindowAttributes {
+impl BuildViewport for WindowAttributes {
     fn build_viewport(
         self,
         event_loop: &ActiveEventLoop,
-        page: UserPages,
+        page: String,
         ctx: &GraphicsContext,
         multi_sample_count: u32,
-    ) -> Viewport<UserPages> {
+    ) -> Viewport {
         let window = Arc::new(event_loop.create_window(self).unwrap());
 
         let surface = ctx.instance.create_surface(window.clone()).unwrap();
@@ -80,7 +80,7 @@ impl<UserPages> BuildViewport<UserPages> for WindowAttributes {
     }
 }
 
-impl<UserPages> Viewport<UserPages> {
+impl Viewport {
     pub fn resize(
         &mut self,
         device: &wgpu::Device,
