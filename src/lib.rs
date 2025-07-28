@@ -46,11 +46,16 @@ use viewport::BuildViewport;
 mod ui_renderer;
 use ui_renderer::UIRenderer;
 pub use ui_renderer::UIImageDescriptor;
+mod ui_shapes;
+use ui_shapes::Shapes;
 
 use telera_layout::LayoutEngine;
 
 mod xml_parse;
 pub use xml_parse::*;
+mod treeview;
+pub use treeview::TreeViewItem;
+mod toolkit;
 
 mod scene_renderer;
 use scene_renderer::SceneRenderer;
@@ -132,6 +137,7 @@ impl API{
     }
     pub fn set_current_viewport_page(&mut self, page: &str) {
         // TODO !
+        println!("{:?}", page);
     }
     pub fn set_viewport_page(&mut self, viewport: &str, page: &str){
         if  let Some(window_id) = self.viewport_lookup.get_by_left(viewport) &&
@@ -182,6 +188,7 @@ impl API{
 pub use event_handler_derive;
 pub trait EventHandler {
     type UserApplication;
+    #[allow(unused_variables)]
     fn dispatch(&self, app: &mut Self::UserApplication, api: &mut API) {}
 }
 
@@ -202,8 +209,8 @@ where
     scroll_delta_time: Instant,
     scroll_delta_distance: (f32, f32),
 
-    pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, (), ()>,
-    parser: Parser<UserEvents>,
+    pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, Shapes, ()>,
+    binder: Binder<UserEvents>,
     user_events: Vec<UserEvents>,
 
     core: API,
@@ -230,7 +237,7 @@ where
         };
         core.ui_renderer = Some(UIRenderer::new(&core.ctx.device, &core.ctx.queue));
         
-        let mut parser = Parser::new();
+        let mut binder = Binder::new();
 
         #[cfg(debug_assertions)]
         {
@@ -240,7 +247,12 @@ where
                     let entry = dir.path();
                     if entry.is_file() {
                         let file = read_to_string(entry).unwrap();
-                        parser.add_page(&file).unwrap();
+                        let (page_name, page, reusables) = Parser::<UserEvents>::add_page(&file).unwrap();
+
+                        binder.add_page(page_name.as_str(), page);
+                        for (name, reusable) in reusables {
+                            binder.add_reusables(name.as_str(), reusable);
+                        }
                     }
                 }
             }
@@ -259,8 +271,8 @@ where
 
         Application {
             scene_renderer: SceneRenderer::new(&core.ctx.device),
-            ui_layout: LayoutEngine::<UIRenderer, UIImageDescriptor, (), ()>::new((1.0, 1.0)),
-            parser,
+            ui_layout: LayoutEngine::<UIRenderer, UIImageDescriptor, Shapes, ()>::new((1.0, 1.0)),
+            binder,
             pointer_state: false,
             dimensions: (1.0, 1.0),
             dpi_scale: 1.0,
@@ -315,6 +327,7 @@ where
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.user_application.initialize(&mut self.core);
+        self.ui_layout.set_debug_mode(true);
         self.open_staged_windows(event_loop);
     }
 
@@ -365,7 +378,7 @@ where
                 self.scroll_delta_time = Instant::now();
 
                 self.ui_layout.begin_layout(ui_renderer);
-                events = self.parser.set_page(&viewport.page, self.clicked, &mut self.ui_layout, &self.user_application, None);
+                events = self.binder.set_page(&viewport.page, self.clicked, &mut self.ui_layout, &self.user_application);
                 self.clicked = false;
                 let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
 
@@ -375,7 +388,7 @@ where
                     |render_pass, device, queue, config| {
                         
                         self.scene_renderer.render(&mut self.core.models, render_pass, &queue);
-                        ui_renderer.render_layout::<UIImageDescriptor, (), ()>(render_commands, render_pass, &device, &queue, &config);
+                        ui_renderer.render_layout(render_commands, render_pass, &device, &queue, &config);
                     }
                 ).unwrap();
 
@@ -419,7 +432,12 @@ where
     fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, event: InternalEvents) {
         if let InternalEvents::RebuildLayout(path) = event {
             let xml_string = read_to_string(path).unwrap();
-            self.parser.update_page(&xml_string);
+            if let Ok((name, page, reuseables)) = Parser::add_page(&xml_string) {
+                let _ = self.binder.replace_page(name.as_str(), page);
+                for (name, reusable) in reuseables {
+                    let _ = self.binder.replace_reusable(name.as_str(), reusable);
+                }
+            }
             for (_window_id,viewport) in self.core.viewports.iter_mut() {
                 viewport.window.request_redraw();
             }

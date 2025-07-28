@@ -1,36 +1,30 @@
+//use crate::UIImageDescriptor;
 
-#[derive(Default)]
-struct TreeViewIcons {
-    root_empty: UIImageDescriptor,
-    root_hidden: UIImageDescriptor,
-    root_expanded: UIImageDescriptor,
-    item_hidden_last: UIImageDescriptor,
-    item_expanded_last: UIImageDescriptor,
-    item_hidden: UIImageDescriptor,
-    item_expanded: UIImageDescriptor,
-    item_empty: UIImageDescriptor,
-    item_empty_last: UIImageDescriptor,
-    extension: UIImageDescriptor
-}
 
-#[derive(Default)]
-enum TreeViewItemType{
-    #[default]
-    EmptyRoot,
-    CollapsedRoot,
-    ExpandedRoot,
+// #[derive(Default)]
+// pub struct TreeViewIcons {
+//     root_empty: UIImageDescriptor,
+//     root_hidden: UIImageDescriptor,
+//     root_expanded: UIImageDescriptor,
+//     item_hidden_last: UIImageDescriptor,
+//     item_expanded_last: UIImageDescriptor,
+//     item_hidden: UIImageDescriptor,
+//     item_expanded: UIImageDescriptor,
+//     item_empty: UIImageDescriptor,
+//     item_empty_last: UIImageDescriptor,
+//     extension: UIImageDescriptor
+// }
 
-    EmptyItem,
-    CollapsedItem,
-    ExpandedItem,
+#[derive(Clone)]
+pub enum TreeViewItem<'frame>{
+    EmptyRoot{label: &'frame str},
+    Root{label: &'frame str, items: Vec<TreeViewItem<'frame>>},
 
-    EmptyLastItem,
-    CollapsedLastItem,
-    ExpandedLastItem,
-}
+    EmptyItem{label: &'frame str},
+    CollapsedItem{label: &'frame str, items: Vec<TreeViewItem<'frame>>},
+    ExpandedItem{label: &'frame str, items: Vec<TreeViewItem<'frame>>},
 
-#[derive(Default)]
-struct TreeViewItem {
-    item_type: TreeViewItemType,
-    sub_items: Vec<TreeViewItem>,
+    EmptyLastItem{label: &'frame str},
+    CollapsedLastItem{label: &'frame str, items: Vec<TreeViewItem<'frame>>},
+    ExpandedLastItem{label: &'frame str, items: Vec<TreeViewItem<'frame>>},
 }

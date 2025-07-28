@@ -16,6 +16,9 @@ pub use strum;
 pub use strum_macros::Display;
 pub use strum_macros::EnumString;
 
+use crate::toolkit;
+use crate::TreeViewItem;
+
 use telera_layout::{Color, ElementConfiguration, LayoutEngine, MeasureText, TextConfig};
 
 #[derive(Debug, Display)]
@@ -305,6 +308,7 @@ pub trait ParserDataAccess<Image, Event: FromStr+Clone+PartialEq>{
     fn get_event<'render_pass, 'application>(&'application self, name: &str, list: &Option<ListData> ) -> Option<Event> where 'application: 'render_pass{
         None
     }
+    fn get_treeview<'render_pass, 'application>(&'application self, name: &'render_pass str) -> Option<TreeViewItem<'render_pass>> where 'application: 'render_pass {None}
 }
 
 enum SsizeType {
@@ -385,10 +389,8 @@ pub struct Parser<Event>
 where
     Event: Clone+Debug+PartialEq+FromStr,
 {
-    pages: HashMap<String, Vec<LayoutCommandType<Event>>>,
-    reusable: HashMap<String, Vec<LayoutCommandType<Event>>>,
-
     page: HashMap<String, XMLPage<Event>>,
+    reusable: HashMap<String, Vec<LayoutCommandType<Event>>>,
 
     mode: ParsingMode,
 
@@ -411,32 +413,12 @@ where
     <Event as FromStr>::Err: Debug,
 {
     pub fn new() -> Self {
-        Parser { pages: HashMap::new(), reusable: HashMap::new(), page: HashMap::new(), mode: ParsingMode::default(), current_page: Vec::new(), current_page_name: String::new(), current_reusable: Vec::new(), reusable_name: String::new(), nesting_level: 0, xml_nesting_stack: Vec::new(), text_opened: false, text_content: None }
+        Parser { page: HashMap::new(), reusable: HashMap::new(),  mode: ParsingMode::default(), current_page: Vec::new(), current_page_name: String::new(), current_reusable: Vec::new(), reusable_name: String::new(), nesting_level: 0, xml_nesting_stack: Vec::new(), text_opened: false, text_content: None }
     }
 
-    pub fn update_page(&mut self, xml_string: &str){
-        // let pages_copy = self.pages.clone();
-        // let reusables_compy = self.reusable.clone();
-        // self.pages.clear();
-        // self.reusable.clear();
+    pub fn add_page(xml_string: &str) -> Result<(String, Vec<LayoutCommandType<Event>>,HashMap<String, Vec<LayoutCommandType<Event>>>), ParserError>{
+        let mut parser = Parser::new();
 
-        let mut temp = self.clone();
-
-        match temp.add_page(xml_string) {
-            Ok(()) => {
-                *self = temp;
-            },
-            Err(_) => {
-                println!("! <------------------invalid layout file------------------/>");
-                // self.pages.clear();
-                // self.reusable.clear();
-                // self.pages = pages_copy;
-                // self.reusable = reusables_compy;
-            }
-        }
-    }
-
-    pub fn add_page(&mut self, xml_string: &str) -> Result<(), ParserError>{
         let mut reader = Reader::from_str(xml_string);
         reader.config_mut().trim_text(true);
         let mut buf = Vec::<u8>::new();
@@ -456,85 +438,85 @@ where
                 },
                 Ok(XMLEvent::Eof) => break,
                 Ok(XMLEvent::Start(mut e)) => {
-                    self.nest();
+                    parser.nest();
                     match e.name().as_ref() {
                         b"reusable" => match e.cdata("name") {
                             None => return Err(ParserError::UnNamedReusable),
-                            Some(reusable_name) => self.open_reusable(reusable_name),
+                            Some(reusable_name) => parser.open_reusable(reusable_name),
                         }
                         b"page" => match e.cdata("name") {
                             None => return Err(ParserError::UnNamedPage),
                             Some(name) => {
                                 //println!("page: {:?}", &name);
-                                self.current_page_name = name;
+                                parser.current_page_name = name;
                             }
                         }
                         b"element" => {
                             num_elements_opened += 1;
                             if let Some(condition) = e.cdata("if") {
-                                self.push_nest(FlowControlCommand::IfOpened{condition});
+                                parser.push_nest(FlowControlCommand::IfOpened{condition});
                             }
                             if let Some(condition) = e.cdata("if-not") {
-                                self.push_nest(FlowControlCommand::IfNotOpened{condition});
+                                parser.push_nest(FlowControlCommand::IfNotOpened{condition});
                             }
-                            self.flow_control(FlowControlCommand::ElementOpened{id:e.cdata("id")});
+                            parser.flow_control(FlowControlCommand::ElementOpened{id:e.cdata("id")});
                         }
                         b"text-element" =>      {
-                            self.flow_control(FlowControlCommand::TextElementOpened);
+                            parser.flow_control(FlowControlCommand::TextElementOpened);
                             text_opened = true;
                         }
                         b"element-config" =>    {
                             num_configs_opened += 1;
-                            self.flow_control(FlowControlCommand::ConfigOpened)
+                            parser.flow_control(FlowControlCommand::ConfigOpened)
                         }
-                        b"text-config" =>       self.flow_control(FlowControlCommand::TextConfigOpened),
-                        b"content" =>           self.text_content = None,
+                        b"text-config" =>       parser.flow_control(FlowControlCommand::TextConfigOpened),
+                        b"content" =>           parser.text_content = None,
                         b"use" => match e.cdata("name") {
                             None => return Err(ParserError::UnnamedUseTag),
-                            Some(fragment_name) => self.flow_control(FlowControlCommand::UseOpened{name:fragment_name.clone()}),
+                            Some(fragment_name) => parser.flow_control(FlowControlCommand::UseOpened{name:fragment_name.clone()}),
                         }
                         b"tk" => match e.cdata("type") {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
                             Some(name) => {
                                 match try_parse::<u32>("version", &mut e) {
-                                    None => self.flow_control(FlowControlCommand::TKOpened { name: name, version: 0 }),
-                                    Some(version) => self.flow_control(FlowControlCommand::TKOpened { name: name, version: version }),
+                                    None => parser.flow_control(FlowControlCommand::TKOpened { name: name, version: 0 }),
+                                    Some(version) => parser.flow_control(FlowControlCommand::TKOpened { name: name, version: version }),
                                 }
                             }
                         }
-                        b"hovered" =>           self.flow_control(FlowControlCommand::HoveredOpened),
-                        b"clicked" =>           self.flow_control(FlowControlCommand::ClickedOpened{event: e.cdata("emit")}),
+                        b"hovered" =>           parser.flow_control(FlowControlCommand::HoveredOpened),
+                        b"clicked" =>           parser.flow_control(FlowControlCommand::ClickedOpened{event: e.cdata("emit")}),
                         b"list" => match e.cdata("src") {
                             None => return Err(ParserError::ListWithoutSource),
-                            Some(src) => self.flow_control(FlowControlCommand::ListOpened { src }),
+                            Some(src) => parser.flow_control(FlowControlCommand::ListOpened { src }),
                         }
                         other => return Err(ParserError::UnknownTag(unsafe{String::from_raw_parts(other.to_owned().as_mut_ptr(), other.len(), other.len()*2)}))
                     }
                 }
                 Ok(XMLEvent::End(e)) => {
-                    self.denest();
+                    parser.denest();
                     match e.name().as_ref() {
-                        b"reusable" =>          self.close_reusable(),
+                        b"reusable" =>          parser.close_reusable(),
                         b"page" => (),
                         b"element" => {
                             num_elements_closed += 1;
-                            self.try_pop_nest()
+                            parser.try_pop_nest()
                         }
                         b"element-config" => {
                             num_configs_closed += 1;
-                            self.flow_control(FlowControlCommand::ConfigClosed)
+                            parser.flow_control(FlowControlCommand::ConfigClosed)
                         }
-                        b"text-config" =>       self.flow_control(FlowControlCommand::TextConfigClosed),
+                        b"text-config" =>       parser.flow_control(FlowControlCommand::TextConfigClosed),
                         b"text-element" =>      {
-                            self.flow_control(FlowControlCommand::TextElementClosed);
+                            parser.flow_control(FlowControlCommand::TextElementClosed);
                             text_opened = false;
                         }
-                        b"content" =>           self.close_text_content(),
-                        b"use" =>               self.flow_control(FlowControlCommand::UseClosed),
-                        b"tk" =>                self.flow_control(FlowControlCommand::TKClosed),
-                        b"hovered" =>           self.flow_control(FlowControlCommand::HoveredClosed),
-                        b"clicked" =>           self.flow_control(FlowControlCommand::ClickedClosed),
-                        b"list" =>              self.flow_control(FlowControlCommand::ListClosed),
+                        b"content" =>           parser.close_text_content(),
+                        b"use" =>               parser.flow_control(FlowControlCommand::UseClosed),
+                        b"tk" =>                parser.flow_control(FlowControlCommand::TKClosed),
+                        b"hovered" =>           parser.flow_control(FlowControlCommand::HoveredClosed),
+                        b"clicked" =>           parser.flow_control(FlowControlCommand::ClickedClosed),
+                        b"list" =>              parser.flow_control(FlowControlCommand::ListClosed),
                         other => return Err(ParserError::UnknownTag(unsafe{String::from_raw_parts(other.to_owned().as_mut_ptr(), other.len(), other.len()*2)}))
                     }
                 }
@@ -552,7 +534,7 @@ where
                                     Ok(value) => value
                                 }
                             };
-                            self.page_data(PageDataCommand::SetBool{local, to});
+                            parser.page_data(PageDataCommand::SetBool{local, to});
                         }
                         b"set-numeric" => {
                             let local = match e.cdata("local") {
@@ -566,7 +548,7 @@ where
                                     Ok(value) => value
                                 }
                             };
-                            self.page_data(PageDataCommand::SetNumeric{local, to});
+                            parser.page_data(PageDataCommand::SetNumeric{local, to});
                         }
                         b"set-text" => {
                             let local = match e.cdata("local") {
@@ -577,7 +559,7 @@ where
                                 None => return Err(ParserError::RequiredAttributeValueMissing),
                                 Some(value) => value
                             };
-                            self.page_data(PageDataCommand::SetText{local, to});
+                            parser.page_data(PageDataCommand::SetText{local, to});
                         }
                         b"set-color" => {
                             let local = match e.cdata("local") {
@@ -591,7 +573,7 @@ where
                                     Ok(value) => value.to_rgba8().into()
                                 }
                             };
-                            self.page_data(PageDataCommand::SetColor{local, to});
+                            parser.page_data(PageDataCommand::SetColor{local, to});
                         }
                         b"set-event" => {
                             let local = match e.cdata("local") {
@@ -605,7 +587,7 @@ where
                                     Ok(value) => value
                                 }
                             };
-                            self.page_data(PageDataCommand::SetEvent{local, to});
+                            parser.page_data(PageDataCommand::SetEvent{local, to});
                         }
                         b"get-bool" => {
                             let local = match e.cdata("local") {
@@ -616,7 +598,7 @@ where
                                 None => return Err(ParserError::RequiredAttributeValueMissing),
                                 Some(value) => value
                             };
-                            self.page_data(PageDataCommand::GetBool { local, from });
+                            parser.page_data(PageDataCommand::GetBool { local, from });
                         }
                         b"get-numeric" => {
                             let local = match e.cdata("local") {
@@ -627,7 +609,7 @@ where
                                 None => return Err(ParserError::RequiredAttributeValueMissing),
                                 Some(value) => value
                             };
-                            self.page_data(PageDataCommand::GetNumeric { local, from });
+                            parser.page_data(PageDataCommand::GetNumeric { local, from });
                         }
                         b"get-text" => {
                             let local = match e.cdata("local") {
@@ -638,7 +620,7 @@ where
                                 None => return Err(ParserError::RequiredAttributeValueMissing),
                                 Some(value) => value
                             };
-                            self.page_data(PageDataCommand::GetText { local, from });
+                            parser.page_data(PageDataCommand::GetText { local, from });
                         }
                         b"get-image" => {
                             let local = match e.cdata("local") {
@@ -649,7 +631,7 @@ where
                                 None => return Err(ParserError::RequiredAttributeValueMissing),
                                 Some(value) => value
                             };
-                            self.page_data(PageDataCommand::GetImage { local, from });
+                            parser.page_data(PageDataCommand::GetImage { local, from });
                         }
                         b"get-color" => {
                             let local = match e.cdata("local") {
@@ -660,7 +642,7 @@ where
                                 None => return Err(ParserError::RequiredAttributeValueMissing),
                                 Some(value) => value
                             };
-                            self.page_data(PageDataCommand::GetColor { local, from });
+                            parser.page_data(PageDataCommand::GetColor { local, from });
                         }
                         b"get-event" => {
                             let local = match e.cdata("local") {
@@ -671,83 +653,83 @@ where
                                 None => return Err(ParserError::RequiredAttributeValueMissing),
                                 Some(value) => value
                             };
-                            self.page_data(PageDataCommand::GetEvent { local, from });
+                            parser.page_data(PageDataCommand::GetEvent { local, from });
                         }
                         b"id" => match dyn_or_stat(&mut e) {
                             Err(e) => return Err(e),
                             Ok(id) => match id {
-                                ValueRef::Dynamic(dyn_id) => self.config_command(ConfigCommand::DynamicId(dyn_id)),
-                                ValueRef::Static(stat_id) => self.config_command(ConfigCommand::StaticId(stat_id)),
+                                ValueRef::Dynamic(dyn_id) => parser.config_command(ConfigCommand::DynamicId(dyn_id)),
+                                ValueRef::Static(stat_id) => parser.config_command(ConfigCommand::StaticId(stat_id)),
                             }
                         }
-                        b"grow" => self.config_command(ConfigCommand::GrowAll),
+                        b"grow" => parser.config_command(ConfigCommand::GrowAll),
                         b"width-fit" => match set_sizing_attributes(&mut e) {
-                            SsizeType::MinMax { min, max } => self.config_command(ConfigCommand::FitXminmax { min, max }),
-                            SsizeType::Min { min } => self.config_command(ConfigCommand::FitXmin { min }),
-                            SsizeType::None => self.config_command(ConfigCommand::FitX),
+                            SsizeType::MinMax { min, max } => parser.config_command(ConfigCommand::FitXminmax { min, max }),
+                            SsizeType::Min { min } => parser.config_command(ConfigCommand::FitXmin { min }),
+                            SsizeType::None => parser.config_command(ConfigCommand::FitX),
                             _ => ()
                         }
                         b"width-grow" => match set_sizing_attributes(&mut e) {
-                            SsizeType::MinMax { min, max } => self.config_command(ConfigCommand::GrowXminmax { min, max }),
-                            SsizeType::Min { min } => self.config_command(ConfigCommand::GrowXmin { min }),
-                            SsizeType::None => self.config_command(ConfigCommand::GrowX),
+                            SsizeType::MinMax { min, max } => parser.config_command(ConfigCommand::GrowXminmax { min, max }),
+                            SsizeType::Min { min } => parser.config_command(ConfigCommand::GrowXmin { min }),
+                            SsizeType::None => parser.config_command(ConfigCommand::GrowX),
                             _ => ()
                         }
                         b"width-fixed" => if let SsizeType::At { at } = set_sizing_attributes(&mut e) {
-                            self.config_command(ConfigCommand::FixedX(at));
+                            parser.config_command(ConfigCommand::FixedX(at));
                         }
                         b"width-percent" => if let SsizeType::At { at } = set_sizing_attributes(&mut e) {
-                            self.config_command(ConfigCommand::PercentX(at));
+                            parser.config_command(ConfigCommand::PercentX(at));
                         }
                         b"height-fit" => match set_sizing_attributes(&mut e) {
-                            SsizeType::MinMax { min, max } => self.config_command(ConfigCommand::FitYminmax { min, max }),
-                            SsizeType::Min { min } => self.config_command(ConfigCommand::FitYmin { min }),
-                            SsizeType::None => self.config_command(ConfigCommand::FitY),
+                            SsizeType::MinMax { min, max } => parser.config_command(ConfigCommand::FitYminmax { min, max }),
+                            SsizeType::Min { min } => parser.config_command(ConfigCommand::FitYmin { min }),
+                            SsizeType::None => parser.config_command(ConfigCommand::FitY),
                             _ => ()
                         }
                         b"height-grow" => match set_sizing_attributes(&mut e) {
-                            SsizeType::MinMax { min, max } => self.config_command(ConfigCommand::GrowYminmax { min, max }),
-                            SsizeType::Min { min } => self.config_command(ConfigCommand::GrowYmin { min }),
-                            SsizeType::None => self.config_command(ConfigCommand::GrowY),
+                            SsizeType::MinMax { min, max } => parser.config_command(ConfigCommand::GrowYminmax { min, max }),
+                            SsizeType::Min { min } => parser.config_command(ConfigCommand::GrowYmin { min }),
+                            SsizeType::None => parser.config_command(ConfigCommand::GrowY),
                             _ => ()
                         }
                         b"height-fixed" => if let SsizeType::At { at } = set_sizing_attributes(&mut e) {
-                            self.config_command(ConfigCommand::FixedY(at));
+                            parser.config_command(ConfigCommand::FixedY(at));
                         }
                         b"height-percent" => if let SsizeType::At { at } = set_sizing_attributes(&mut e) {
-                            self.config_command(ConfigCommand::PercentY(at));
+                            parser.config_command(ConfigCommand::PercentY(at));
                         }
                         b"padding-all" => match try_parse::<u16>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(value) => self.config_command(ConfigCommand::PaddingAll(value)),
+                            Some(value) => parser.config_command(ConfigCommand::PaddingAll(value)),
                         }
                         b"padding-left" => match try_parse::<u16>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(value) => self.config_command(ConfigCommand::PaddingLeft(value)),
+                            Some(value) => parser.config_command(ConfigCommand::PaddingLeft(value)),
                         }
                         b"padding-bottom" => match try_parse::<u16>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(value) => self.config_command(ConfigCommand::PaddingBottom(value)),
+                            Some(value) => parser.config_command(ConfigCommand::PaddingBottom(value)),
                         }
                         b"padding-right" => match try_parse::<u16>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(value) => self.config_command(ConfigCommand::PaddingRight(value)),
+                            Some(value) => parser.config_command(ConfigCommand::PaddingRight(value)),
                         }
                         b"padding-top" => match try_parse::<u16>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(value) => self.config_command(ConfigCommand::PaddingTop(value)),
+                            Some(value) => parser.config_command(ConfigCommand::PaddingTop(value)),
                         }
                         b"child-gap" => match try_parse::<u16>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(value) => self.config_command(ConfigCommand::ChildGap(value)),
+                            Some(value) => parser.config_command(ConfigCommand::ChildGap(value)),
                         }
                         b"direction" =>  match e.cdata("is") {
                             Some(direction) => {
                                 if &direction == "ttb" {
-                                    self.config_command(ConfigCommand::DirectionTTB);
+                                    parser.config_command(ConfigCommand::DirectionTTB);
                                 }
                                 else {
-                                    self.config_command(ConfigCommand::DirectionLTR);
+                                    parser.config_command(ConfigCommand::DirectionLTR);
                                 }
                             }
                             None => return Err(ParserError::RequiredAttributeValueMissing)
@@ -757,9 +739,9 @@ where
                                 Err(_) => return Err(ParserError::RequiredAttributeValueMissing),
                                 Ok(direction) => {
                                     match direction {
-                                        AlignmentDirection::left => self.config_command(ConfigCommand::ChildAlignmentXLeft),
-                                        AlignmentDirection::center => self.config_command(ConfigCommand::ChildAlignmentXCenter),
-                                        AlignmentDirection::right => self.config_command(ConfigCommand::ChildAlignmentXRight),
+                                        AlignmentDirection::left => parser.config_command(ConfigCommand::ChildAlignmentXLeft),
+                                        AlignmentDirection::center => parser.config_command(ConfigCommand::ChildAlignmentXCenter),
+                                        AlignmentDirection::right => parser.config_command(ConfigCommand::ChildAlignmentXRight),
                                         _ => {}
                                     }
                                 }
@@ -770,9 +752,9 @@ where
                                 Err(_) => return Err(ParserError::RequiredAttributeValueMissing),
                                 Ok(direction) => {
                                     match direction {
-                                        AlignmentDirection::top => self.config_command(ConfigCommand::ChildAlignmentYTop),
-                                        AlignmentDirection::center => self.config_command(ConfigCommand::ChildAlignmentYCenter),
-                                        AlignmentDirection::bottom => self.config_command(ConfigCommand::ChildAlignmentYBottom),
+                                        AlignmentDirection::top => parser.config_command(ConfigCommand::ChildAlignmentYTop),
+                                        AlignmentDirection::center => parser.config_command(ConfigCommand::ChildAlignmentYCenter),
+                                        AlignmentDirection::bottom => parser.config_command(ConfigCommand::ChildAlignmentYBottom),
                                         _ => {}
                                     }
                                 }
@@ -781,73 +763,73 @@ where
                         b"color" => if let Some(color) = e.cdata("is") {
                             if text_opened {
                                 match csscolorparser::parse(&color) {
-                                    Err(_) => self.text_config(TextConfigCommand::Color(Color::default())),
-                                    Ok(color) => self.text_config(TextConfigCommand::Color(color.to_rgba8().into())),
+                                    Err(_) => parser.text_config(TextConfigCommand::Color(Color::default())),
+                                    Ok(color) => parser.text_config(TextConfigCommand::Color(color.to_rgba8().into())),
                                 }
                             }
                             else {
                                 match csscolorparser::parse(&color) {
-                                    Err(_) => self.config_command(ConfigCommand::Color(Color::default())),
-                                    Ok(color) => self.config_command(ConfigCommand::Color(color.to_rgba8().into())),
+                                    Err(_) => parser.config_command(ConfigCommand::Color(Color::default())),
+                                    Ok(color) => parser.config_command(ConfigCommand::Color(color.to_rgba8().into())),
                                 }
                             }
                         }
                         b"dyn-color" => if let Some(color) = e.cdata("from") {
-                            self.config_command(ConfigCommand::DynamicColor(color));
+                            parser.config_command(ConfigCommand::DynamicColor(color));
                         }
                         b"radius-all" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::RadiusAll(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::RadiusAll(radius)),
                         }
                         b"radius-top-left" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::RadiusTopLeft(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::RadiusTopLeft(radius)),
                         }
                         b"radius-top-right" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::RadiusTopLeft(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::RadiusTopLeft(radius)),
                         }
                         b"radius-bottom-left" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::RadiusBottomLeft(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::RadiusBottomLeft(radius)),
                         }
                         b"radius-bottom-right" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::RadiusBottomRight(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::RadiusBottomRight(radius)),
                         }
                         b"border-color" => if let Some(color) = e.cdata("is") {
                             match csscolorparser::parse(&color) {
-                                Err(_) => self.config_command(ConfigCommand::BorderColor(Color::default())),
-                                Ok(color) => self.config_command(ConfigCommand::BorderColor(color.to_rgba8().into())),
+                                Err(_) => parser.config_command(ConfigCommand::BorderColor(Color::default())),
+                                Ok(color) => parser.config_command(ConfigCommand::BorderColor(color.to_rgba8().into())),
                             }
                         }
                         b"border-dynamic-color" => match e.cdata("from") {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(color) => self.config_command(ConfigCommand::BorderDynamicColor(color)),
+                            Some(color) => parser.config_command(ConfigCommand::BorderDynamicColor(color)),
                         }
                         b"border-all" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::BorderAll(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::BorderAll(radius)),
                         }
                         b"border-top" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::BorderTop(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::BorderTop(radius)),
                         }
                         b"border-left" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::BorderLeft(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::BorderLeft(radius)),
                         }
                         b"border-bottom" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::BorderBottom(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::BorderBottom(radius)),
                         }
                         b"border-right" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::BorderRight(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::BorderRight(radius)),
                         }
                         b"border-between-children" => match try_parse::<f32>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(radius) => self.config_command(ConfigCommand::BorderBetweenChildren(radius)),
+                            Some(radius) => parser.config_command(ConfigCommand::BorderBetweenChildren(radius)),
                         }
                         b"scroll" => {
                             let vertical = match e.cdata("vertical") {
@@ -859,7 +841,7 @@ where
                                 Some(value) => bool::from_str(&value).unwrap()
                             };
     
-                            self.config_command(ConfigCommand::Clip{vertical, horizontal});
+                            parser.config_command(ConfigCommand::Clip{vertical, horizontal});
                         }
                         b"image" => {
                             let name = e.cdata("src");
@@ -867,145 +849,145 @@ where
                             if name.is_some() {
                                 let name = name.unwrap();
 
-                                self.config_command(ConfigCommand::Image { name });
+                                parser.config_command(ConfigCommand::Image { name });
                             }
                         }
                         // todo:
                         // - custom element
                         // - custom layout
                         b"floating" => {
-                            self.config_command(ConfigCommand::Floating);
+                            parser.config_command(ConfigCommand::Floating);
                         }
                         b"floating-offset" => {
                             let (x, x_exists) = parse::<f32>("x", &mut e);
                             let (y, y_exists) = parse::<f32>("y", &mut e);
                             if x_exists && y_exists {
-                                self.config_command(ConfigCommand::FloatingOffset { x, y });
+                                parser.config_command(ConfigCommand::FloatingOffset { x, y });
                             }
                         }
                         b"floating-size" => {
                             let (width, width_exists) = parse::<f32>("width", &mut e);
                             let (height, height_exists) = parse::<f32>("height", &mut e);
                             if width_exists && height_exists {
-                                self.config_command(ConfigCommand::FloatingDimensions { width, height });
+                                parser.config_command(ConfigCommand::FloatingDimensions { width, height });
                             }
                         }
                         b"floating-z-index" => {
                             let (z, z_exists) = parse::<i16>("z", &mut e);
                             if z_exists {
-                                self.config_command(ConfigCommand::FloatingZIndex { z });
+                                parser.config_command(ConfigCommand::FloatingZIndex { z });
                             }
                         }
                         b"floating-attach-to-parent" => {
                             if e.cdata("top-left").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchToParentAtTopLeft);
+                                parser.config_command(ConfigCommand::FloatingAttatchToParentAtTopLeft);
                                 continue
                             }
                             if e.cdata("center-left").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchToParentAtCenterLeft);
+                                parser.config_command(ConfigCommand::FloatingAttatchToParentAtCenterLeft);
                                 continue
                             }
                             if e.cdata("bottom-left").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchToParentAtBottomLeft);
+                                parser.config_command(ConfigCommand::FloatingAttatchToParentAtBottomLeft);
                                 continue
                             }
                             if e.cdata("top-center").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchToParentAtTopCenter);
+                                parser.config_command(ConfigCommand::FloatingAttatchToParentAtTopCenter);
                                 continue
                             }
                             if e.cdata("center").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchToParentAtCenter);
+                                parser.config_command(ConfigCommand::FloatingAttatchToParentAtCenter);
                                 continue
                             }
                             if e.cdata("bottom-center").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchToParentAtBottomCenter);
+                                parser.config_command(ConfigCommand::FloatingAttatchToParentAtBottomCenter);
                                 continue
                             }
                             if e.cdata("top-right").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchToParentAtTopRight);
+                                parser.config_command(ConfigCommand::FloatingAttatchToParentAtTopRight);
                                 continue
                             }
                             if e.cdata("center-right").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchToParentAtCenterRight);
+                                parser.config_command(ConfigCommand::FloatingAttatchToParentAtCenterRight);
                                 continue
                             }
                             if e.cdata("bottom-right").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchToParentAtBottomRight);
+                                parser.config_command(ConfigCommand::FloatingAttatchToParentAtBottomRight);
                                 continue
                             }
                         }
                         b"floating-attach-element" => {
                             if e.cdata("top-left").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchElementAtTopLeft);
+                                parser.config_command(ConfigCommand::FloatingAttatchElementAtTopLeft);
                                 continue
                             }
                             if e.cdata("center-left").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchElementAtCenterLeft);
+                                parser.config_command(ConfigCommand::FloatingAttatchElementAtCenterLeft);
                                 continue
                             }
                             if e.cdata("bottom-left").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchElementAtBottomLeft);
+                                parser.config_command(ConfigCommand::FloatingAttatchElementAtBottomLeft);
                                 continue
                             }
                             if e.cdata("top-center").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchElementAtTopCenter);
+                                parser.config_command(ConfigCommand::FloatingAttatchElementAtTopCenter);
                                 continue
                             }
                             if e.cdata("center").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchElementAtCenter);
+                                parser.config_command(ConfigCommand::FloatingAttatchElementAtCenter);
                                 continue
                             }
                             if e.cdata("bottom-center").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchElementAtBottomCenter);
+                                parser.config_command(ConfigCommand::FloatingAttatchElementAtBottomCenter);
                                 continue
                             }
                             if e.cdata("top-right").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchElementAtTopRight);
+                                parser.config_command(ConfigCommand::FloatingAttatchElementAtTopRight);
                                 continue
                             }
                             if e.cdata("center-right").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchElementAtCenterRight);
+                                parser.config_command(ConfigCommand::FloatingAttatchElementAtCenterRight);
                                 continue
                             }
                             if e.cdata("bottom-right").is_some() {
-                                self.config_command(ConfigCommand::FloatingAttatchElementAtBottomRight);
+                                parser.config_command(ConfigCommand::FloatingAttatchElementAtBottomRight);
                                 continue
                             }
                         }
                         b"floating-capture-pointer" => {
                             let (state, state_exists) = parse::<bool>("state", &mut e);
                             if state_exists && !state {
-                                self.config_command(ConfigCommand::FloatingPointerPassThrough);
+                                parser.config_command(ConfigCommand::FloatingPointerPassThrough);
                             }
                         }
                         b"floating-attach-to-element" => {
                             let (other_element_id, exists) = parse::<String>("id", &mut e);
                             if exists {
-                                self.config_command(ConfigCommand::FloatingAttachElementToElement { other_element_id });
+                                parser.config_command(ConfigCommand::FloatingAttachElementToElement { other_element_id });
                             }
                         }
                         b"floating-attach-to-root" => {
-                            self.config_command(ConfigCommand::FloatingAttachElementToRoot);
+                            parser.config_command(ConfigCommand::FloatingAttachElementToRoot);
                         }
                         b"font-id" => match try_parse::<u16>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(id) => self.text_config(TextConfigCommand::FontId(id)),
+                            Some(id) => parser.text_config(TextConfigCommand::FontId(id)),
                         }
-                        b"text-align-left" => self.text_config(TextConfigCommand::AlignLeft),
-                        b"text-align-right" => self.text_config(TextConfigCommand::AlignRight),
-                        b"text-align-center" => self.text_config(TextConfigCommand::AlignCenter),
+                        b"text-align-left" => parser.text_config(TextConfigCommand::AlignLeft),
+                        b"text-align-right" => parser.text_config(TextConfigCommand::AlignRight),
+                        b"text-align-center" => parser.text_config(TextConfigCommand::AlignCenter),
                         b"font-size" => match try_parse::<u16>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(value) => self.text_config(TextConfigCommand::FontSize(value)),
+                            Some(value) => parser.text_config(TextConfigCommand::FontSize(value)),
                         }
                         b"line-height" => match try_parse::<u16>("is", &mut e) {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(value) => self.text_config(TextConfigCommand::LineHeight(value)),
+                            Some(value) => parser.text_config(TextConfigCommand::LineHeight(value)),
                         }
-                        b"editable" => self.text_config(TextConfigCommand::Editable(true)),
+                        b"editable" => parser.text_config(TextConfigCommand::Editable(true)),
                         b"dyn-content" => match e.cdata("from") {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
-                            Some(name) => self.text_config(TextConfigCommand::DynamicContent(name)),
+                            Some(name) => parser.text_config(TextConfigCommand::DynamicContent(name)),
                         }
                         _ => {
                             panic!("hi")
@@ -1013,7 +995,7 @@ where
                     }
                 }
                 Ok(XMLEvent::Text(e)) => {
-                    self.receive_text_content(e.unescape().unwrap().to_string())
+                    parser.receive_text_content(e.unescape().unwrap().to_string())
                 },
                 _ => {}
             }
@@ -1033,21 +1015,20 @@ where
             return Err(ParserError::ReaderError);
         }
 
-        match self.page.contains_key(&self.current_page_name) {
-            true => self.page.remove(&self.current_page_name),
-            false => self.page.insert(self.current_page_name.clone(),
+        match parser.page.contains_key(&parser.current_page_name) {
+            true => parser.page.remove(&parser.current_page_name),
+            false => parser.page.insert(parser.current_page_name.clone(),
             XMLPage {
-                    commands: self.current_page.clone(),
-                    reusables: self.reusable.clone(),                     
+                    commands: parser.current_page.clone(),
+                    reusables: parser.reusable.clone(),                     
                     editable_text: HashMap::new(),
                 }
             )
         };
         
-        self.pages.insert(self.current_page_name.clone(), self.current_page.clone());
-        self.current_page.clear();
-        Ok(())
+        Ok((parser.current_page_name, parser.current_page, parser.reusable))
     }
+
     fn flow_control(&mut self, command: FlowControlCommand){
         match command {
             FlowControlCommand::TextConfigOpened => self.text_opened = true,
@@ -1115,6 +1096,57 @@ where
         let new_fragment = self.current_reusable.clone();
         self.reusable.insert(self.reusable_name.clone(), new_fragment);
         self.mode = ParsingMode::Normal;
+    }    
+}
+
+pub struct Binder<Event>
+where
+    Event: Clone+Debug+PartialEq+FromStr
+{
+    pages: HashMap<String, Vec<LayoutCommandType<Event>>>,
+    reusable: HashMap<String, Vec<LayoutCommandType<Event>>>,
+}
+
+impl<Event> Binder<Event>
+where 
+    Event: Clone+Debug+PartialEq+FromStr,
+    <Event as FromStr>::Err: Debug,
+{
+    pub fn new() -> Self {
+        Self {
+            pages: HashMap::new(),
+            reusable: HashMap::new()
+        }
+    }
+
+    pub fn add_page(&mut self, name: &str, page: Vec<LayoutCommandType<Event>>) {
+        if self.pages.get(name).is_none() {
+            self.pages.insert(name.to_string(), page);
+        }
+    }
+
+    pub fn add_reusables(&mut self, name: &str, page: Vec<LayoutCommandType<Event>>) {
+        if self.reusable.get(name).is_none() {
+            self.reusable.insert(name.to_string(), page);
+        }
+    }
+
+    pub fn replace_page(&mut self, name: &str, page: Vec<LayoutCommandType<Event>>) -> Result<(), ()> {
+        if self.pages.get(name).is_some() {
+            self.pages.remove(name);
+            self.pages.insert(name.to_string(), page);
+        }
+
+        Err(())
+    }
+
+    pub fn replace_reusable(&mut self, name: &str, reusable: Vec<LayoutCommandType<Event>>) -> Result<(), ()> {
+        if self.reusable.get(name).is_some() {
+            self.reusable.remove(name);
+            self.reusable.insert(name.to_string(), reusable);
+        }
+
+        Err(())
     }
 
     pub fn set_page<'render_pass, Renderer, Image, Custom, CustomLayout, UserApp>(
@@ -1123,7 +1155,6 @@ where
         clicked: bool,
         layout_engine: &mut LayoutEngine<Renderer, Image, Custom, CustomLayout>,
         user_app: &UserApp,
-        extensions: Option<&HashMap<String, Vec<LayoutCommandType<Event>>>>,
     ) -> Vec<Event>
     where 
         Renderer: MeasureText,
@@ -1150,7 +1181,6 @@ where
                 &mut None,
                 layout_engine, 
                 user_app,
-                extensions,
             );
             #[cfg(feature="parse_logger")]
             println!("Page set");
@@ -1170,7 +1200,6 @@ fn set_layout<'render_pass, Renderer: MeasureText, Image, Event, Custom, CustomL
     append_text_config: &mut Option<TextConfig>,
     layout_engine: &mut LayoutEngine<Renderer, Image, Custom, CustomLayout>,
     user_app: &UserApp,
-    extensions: Option<&HashMap<String, Vec<LayoutCommandType<Event>>>>,
 )
 where 
     Image: Clone+Debug+Default+PartialEq, 
@@ -1194,7 +1223,7 @@ where
 
     let mut recursive_commands = Vec::<&LayoutCommandType<Event>>::new();
     let mut recursive_source = String::new();
-    let mut recursive_version: u32 = 0;
+    //let mut recursive_version: u32 = 0;
     let mut recursive_call_stack = HashMap::<String, &PageDataCommand<Event>>::new();
     let mut collect_recursive_declarations = false;
 
@@ -1411,7 +1440,6 @@ where
                                         &mut None, 
                                         layout_engine, 
                                         user_app,
-                                        extensions
                                     );
                                 }
                             }
@@ -1481,7 +1509,6 @@ where
                                         &mut text_config,
                                         layout_engine,
                                         user_app,
-                                        extensions
                                     );
                                 }
                                 else {
@@ -1496,7 +1523,6 @@ where
                                         &mut text_config,
                                         layout_engine, 
                                         user_app,
-                                        extensions
                                     );
                                 }
                             }
@@ -1511,7 +1537,7 @@ where
                             recursive_call_stack.clear();
                             collect_recursive_declarations = true;
                             recursive_source = name.to_string();
-                            recursive_version = *version;
+                            //recursive_version = *version;
                         }
                     }
                     FlowControlCommand::TKClosed => {
@@ -1519,43 +1545,13 @@ where
 
                         if skip.is_none() {
                             collect_recursive_declarations = false;
-                            if  let Some(extensions) = extensions &&
-                                let Some(extension) = extensions.get(&recursive_source){
-                                for command in extension.iter() {
-                                    recursive_commands.push(command);
-                                }
-                                if recursive_call_stack.len() > 0 {
-                                    set_layout(
-                                        clicked,
-                                        events,
-                                        &recursive_commands,
-                                        reusables,
-                                        Some(&recursive_call_stack),
-                                        None,
-                                        &mut config,
-                                        &mut text_config,
-                                        layout_engine,
-                                        user_app,
-                                        Some(extensions)
-                                    );
-                                }
-                                else {
-                                    set_layout(
-                                        clicked,
-                                        events,
-                                        &recursive_commands,
-                                        reusables,
-                                        None,
-                                        None,
-                                        &mut config,
-                                        &mut text_config,
-                                        layout_engine,
-                                        user_app,
-                                        Some(extensions)
-                                    );
-                                }
-                            }
                             
+                            match recursive_source.as_str() {
+                                "treeview" => {
+                                    toolkit::treeview(clicked, &recursive_source, layout_engine, user_app);
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     FlowControlCommand::TextElementOpened => {

@@ -11,6 +11,8 @@ use wgpu::util::DeviceExt;
 
 use telera_layout::{MeasureText, RenderCommand, Vec2};
 
+use crate::ui_shapes::Shapes;
+
 pub struct TextLine {
     line: glyphon::Buffer,
     left: f32,
@@ -346,7 +348,7 @@ impl UIRenderer {
         /* #endregion */
 
         /* #region Render Pipeline Creation */
-        let (vertex_buffer, vertexes) = make_ui_buffer(&device, "new ui triangles", 20000);
+        let (vertex_buffer, vertexes) = make_ui_buffer(&device, "new ui triangles", 80000);
 
         /* #endregion */
 
@@ -667,21 +669,18 @@ impl UIRenderer {
         }
     }
 
-    pub fn render_layout<
-        'render_pass,
-        ImageElementData: 'render_pass,
-        CustomElementData: 'render_pass,
-        CustomlayoutSettings: 'render_pass,
-    >(
+    pub fn render_layout<'render_pass>
+    (
         &mut self,
         render_commands: Vec<
-            RenderCommand<'render_pass, UIImageDescriptor, CustomElementData, CustomlayoutSettings>,
+            RenderCommand<'render_pass, UIImageDescriptor, Shapes, ()>,
         >,
         render_pass: &mut wgpu::RenderPass,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         surface_config: &wgpu::SurfaceConfiguration,
-    ) {
+    ) 
+    {
         let mut depth: f32 = 0.1;
 
         self.begin(render_pass, device, queue);
@@ -782,7 +781,60 @@ impl UIRenderer {
                         },
                     );
                 }
-                RenderCommand::Custom(_c) => {}
+                RenderCommand::Custom(shape) => {
+                    match shape.data {
+                        Shapes::Circle => {
+                            self.draw_filled_rectangle(
+                                UIPosition {
+                                    x: shape.bounding_box.x * self.dpi_scale,
+                                    y: shape.bounding_box.y * self.dpi_scale,
+                                    z: depth,
+                                },
+                                UIPosition {
+                                    x: shape.bounding_box.width * self.dpi_scale,
+                                    y: shape.bounding_box.height * self.dpi_scale,
+                                    z: depth,
+                                },
+                                UIColor {
+                                    r: shape.background_color.r / 255.0,
+                                    g: shape.background_color.g / 255.0,
+                                    b: shape.background_color.b / 255.0,
+                                },
+                                UICornerRadii {
+                                    top_left: (shape.bounding_box.width/2.0) * self.dpi_scale,
+                                    top_right: (shape.bounding_box.width/2.0) * self.dpi_scale,
+                                    bottom_left: (shape.bounding_box.width/2.0) * self.dpi_scale,
+                                    bottom_right: (shape.bounding_box.width/2.0) * self.dpi_scale,
+                                },
+                            );
+                        }
+                        Shapes::Line{width} => {
+                            self.draw_filled_rectangle(
+                                UIPosition {
+                                    x: (shape.bounding_box.x+(shape.bounding_box.width/2.0)-(*width/2.0)) * self.dpi_scale,
+                                    y: shape.bounding_box.y * self.dpi_scale,
+                                    z: depth,
+                                },
+                                UIPosition {
+                                    x: (*width) * self.dpi_scale,
+                                    y: shape.bounding_box.height * self.dpi_scale,
+                                    z: depth,
+                                },
+                                UIColor {
+                                    r: shape.background_color.r / 255.0,
+                                    g: shape.background_color.g / 255.0,
+                                    b: shape.background_color.b / 255.0,
+                                },
+                                UICornerRadii {
+                                    top_left: 0.0,
+                                    top_right: 0.0,
+                                    bottom_left: 0.0,
+                                    bottom_right: 0.0,
+                                },
+                            );
+                        }
+                    }
+                }
                 RenderCommand::None => {}
             }
             depth -= 0.0001;
