@@ -990,7 +990,7 @@ where
                             Some(name) => parser.text_config(TextConfigCommand::DynamicContent(name)),
                         }
                         _ => {
-                            panic!("hi")
+                            return Err(ParserError::UnparsableEvent)
                         }
                     }
                 }
@@ -1368,6 +1368,7 @@ where
                         }
                     }
                     FlowControlCommand::ClickedOpened { event } => {
+                        //println!("event at click opened: {:?}", event);
                         if skip.is_none() {
                             skip = Some(nesting_level);
 
@@ -1386,6 +1387,7 @@ where
                                             events.push(event);
                                         }
                                         else if let PageDataCommand::SetEvent { local, to } = event {
+                                            //println!("{:?}",to);
                                             events.push(to.clone());
                                         }
                                     }

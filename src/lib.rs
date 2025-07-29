@@ -192,7 +192,6 @@ pub trait EventHandler {
     fn dispatch(&self, app: &mut Self::UserApplication, api: &mut API) {}
 }
 
-#[allow(dead_code)]
 struct Application<UserApp, UserEvents>
 where 
     UserEvents: FromStr+Clone+PartialEq+Debug+EventHandler,
@@ -202,8 +201,6 @@ where
     pub scene_renderer: SceneRenderer,
 
     pointer_state: bool,
-    dimensions: (f32, f32),
-    dpi_scale: f32,
     clicked: bool,
     mouse_poistion: (f32, f32),
     scroll_delta_time: Instant,
@@ -211,11 +208,13 @@ where
 
     pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, Shapes, ()>,
     binder: Binder<UserEvents>,
-    user_events: Vec<UserEvents>,
 
     core: API,
-    app_events: EventLoopProxy<InternalEvents>,
     user_application: UserApp,
+
+    #[allow(dead_code)]
+    app_events: EventLoopProxy<InternalEvents>,
+    #[allow(dead_code)]
     watcher: Option<ReadDirectoryChangesWatcher>,
 }
 
@@ -264,7 +263,15 @@ where
             const LAYOUTS: Dir = include_dir!("src/layouts");
             for layout in LAYOUTS.files(){
                 let file = layout.contents_utf8().unwrap();
-                parser.add_page(file).unwrap();
+
+                let (page_name, page, reusables) = Parser::<UserEvents>::add_page(&file).unwrap();
+
+                //println!("page: {:?} = {:?} ", page_name, page);
+
+                binder.add_page(page_name.as_str(), page);
+                for (name, reusable) in reusables {
+                    binder.add_reusables(name.as_str(), reusable);
+                }
             }
         }
         
@@ -274,15 +281,12 @@ where
             ui_layout: LayoutEngine::<UIRenderer, UIImageDescriptor, Shapes, ()>::new((1.0, 1.0)),
             binder,
             pointer_state: false,
-            dimensions: (1.0, 1.0),
-            dpi_scale: 1.0,
             clicked: false,
             mouse_poistion: (0.0,0.0),
             scroll_delta_time: Instant::now(),
             scroll_delta_distance: (0.0, 0.0),
             core,
             app_events,
-            user_events: Vec::new(),
             user_application,
             watcher
         }
@@ -327,7 +331,7 @@ where
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.user_application.initialize(&mut self.core);
-        self.ui_layout.set_debug_mode(true);
+        //self.ui_layout.set_debug_mode(true);
         self.open_staged_windows(event_loop);
     }
 
@@ -379,6 +383,9 @@ where
 
                 self.ui_layout.begin_layout(ui_renderer);
                 events = self.binder.set_page(&viewport.page, self.clicked, &mut self.ui_layout, &self.user_application);
+                if events.len() > 0 {
+                    println!("number of events: {:?}", events.len());
+                }
                 self.clicked = false;
                 let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
 
@@ -393,7 +400,6 @@ where
                 ).unwrap();
 
                 self.core.ui_renderer = Some(ui_renderer);
-                viewport.window.request_redraw();
             }
             WindowEvent::MouseInput { device_id:_, state, button } => {
                 match button {
@@ -408,25 +414,28 @@ where
                     }
                     _ => {}
                 }
-                viewport.window.request_redraw();
+                //viewport.window.request_redraw();
             }
             WindowEvent::MouseWheel { device_id:_, delta, phase:_ } => {
                 self.scroll_delta_distance = match delta {
                     MouseScrollDelta::LineDelta(x,y ) => (x,y),
                     MouseScrollDelta::PixelDelta(position) => position.into()
                 };
-                viewport.window.request_redraw();
+                //viewport.window.request_redraw();
             }
             WindowEvent::CursorMoved { device_id:_, position } => {
                 self.mouse_poistion = position.into();
-                viewport.window.request_redraw();
+                //viewport.window.request_redraw();
             }
             _ => {}
         }
+        
+        viewport.window.request_redraw();
 
         for event in events.iter() {
             event.dispatch(&mut self.user_application, &mut self.core);
         }
+        
     }
 
     fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, event: InternalEvents) {
