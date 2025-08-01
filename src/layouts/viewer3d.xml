@@ -15,17 +15,18 @@
             <element>
                 <element-config>
                     <padding-all is="50" />
-                    <color is="rgb(140,140,140)" />
+                    <!-- <color is="rgb(0,96,255)" /> -->
                     <width-fixed at="40" />
                     <height-fixed at="40" />
                     <hovered>
                         <radius-all is="10" />
                         <border-all is="3" />
+                        <border-color is="rgb(0,90,255)" />
                     </hovered>
                     <clicked emit="Clicked">
                         <radius-all is="10" />
                         <border-all is="4" />
-                        <border-color is="rgb(0,96,255)" />
+                        <border-color is="rgb(0,90,255)" />
                     </clicked>
                     <image src="icon" />
                 </element-config>
@@ -60,6 +61,7 @@
                     <hovered>
                         <radius-all is="5" />
                         <border-all is="2" />
+                        <border-color is="rgb(0,96,255)" />
                     </hovered>
                     <clicked emit="Clicked">
                         <radius-all is="5" />
@@ -145,6 +147,7 @@
             <color is="rgb(120,120,120)" />
             <!-- <border-all is="1" /> -->
             <border-right is="1" />
+            <right-clicked emit="TreeViewClicked"></right-clicked>
         </element-config>
 
         <tk type="treeview"></tk>
@@ -265,7 +268,7 @@
                         </element-config>
                     </element>
 
-                    <element>
+                    <!-- <element>
                         <element-config>
                             <color is="grey" />
                             <hovered>
@@ -284,7 +287,7 @@
                             </text-config>
                             <content>||</content>
                         </text-element>
-                    </element>
+                    </element> -->
 
                     <element>
                         <element-config>
@@ -356,6 +359,7 @@
                 <element>
                     <element-config>
                         <id is="performance info" />
+                        <width-fit min="110" />
                         <padding-all is="3" />
                         <child-gap is="3" />
                         <align-children-x to="right" />
@@ -372,7 +376,8 @@
                             <font-size is="12" />
                             <color is="rgb(0,96,255)" />
                         </text-config>
-                        <content>Frames /s: 60</content>
+                        <!-- <content>Frames /s: 60</content> -->
+                         <dyn-content from="fps" />
                     </text-element>
 
                     <text-element>
@@ -584,7 +589,7 @@
                         </element-config>
                     </element>
 
-                    <element>
+                    <!-- <element>
                         <element-config>
                             <color is="grey" />
                             <hovered>
@@ -603,7 +608,7 @@
                             </text-config>
                             <content>||</content>
                         </text-element>
-                    </element>
+                    </element> -->
 
                     <element>
                         <element-config>

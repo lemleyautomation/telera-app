@@ -68,7 +68,7 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
         &'application self,
         name: &str,
         list: &Option<ListData>,
-    ) -> Option<&'render_pass str>
+    ) -> Option<&'render_pass String>
     where
         'application: 'render_pass,
     {

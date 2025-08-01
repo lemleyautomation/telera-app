@@ -19,7 +19,10 @@ pub use strum_macros::EnumString;
 use crate::toolkit;
 use crate::TreeViewItem;
 
-use telera_layout::{Color, ElementConfiguration, LayoutEngine, MeasureText, TextConfig};
+use crate::EventHandler;
+use crate::API;
+
+use telera_layout::{Color, ElementConfiguration, TextConfig};
 
 #[derive(Debug, Display)]
 pub enum ParserError{
@@ -81,6 +84,9 @@ pub enum FlowControlCommand{
     // use clay_onhover and retreive the pointerdata from it
     ClickedOpened{event: Option<String>},
     ClickedClosed,
+
+    RightClickOpened{event: Option<String>},
+    RightClickClosed,
 }
 
 #[derive(Clone, Debug, Display, PartialEq)]
@@ -141,7 +147,9 @@ pub enum ConfigCommand{
     FitYmin{min: f32},
     FitYminmax{min: f32, max:f32},
     FixedX(f32),
+    FixedXFrom(String),
     FixedY(f32),
+    FixedYFrom(String),
     PercentX(f32),
     PercentY(f32),
 
@@ -186,7 +194,7 @@ pub enum ConfigCommand{
     Image{name: String},
 
     Floating,
-    FloatingOffset{x:f32,y:f32},
+    FloatingOffset{x:f32,y:f32,x_from:Option<String>,y_from:Option<String>},
     FloatingDimensions{width:f32,height:f32},
     FloatingZIndex{z:i16},
     FloatingAttatchToParentAtTopLeft,
@@ -286,7 +294,7 @@ impl Cdata for BytesStart<'_>{
 }
 
 #[allow(unused_variables)]
-pub trait ParserDataAccess<Image, Event: FromStr+Clone+PartialEq>{
+pub trait ParserDataAccess<Image, Event: FromStr+Clone+PartialEq+Debug+EventHandler>{
     fn get_bool(&self, name: &str, list: &Option<ListData>) -> Option<bool>{
         None
     }
@@ -296,7 +304,7 @@ pub trait ParserDataAccess<Image, Event: FromStr+Clone+PartialEq>{
     fn get_list_length(&self, name: &str, list: &Option<ListData>) -> Option<i32>{
         None
     }
-    fn get_text<'render_pass, 'application>(&'application self, name: &str, list: &Option<ListData>) -> Option<&'render_pass str> where 'application: 'render_pass{
+    fn get_text<'render_pass, 'application>(&'application self, name: &str, list: &Option<ListData>) -> Option<&'render_pass String> where 'application: 'render_pass{
         None
     }
     fn get_image<'render_pass, 'application>(&'application self, name: &str, list: &Option<ListData> ) -> Option<&'render_pass Image> where 'application: 'render_pass{
@@ -308,7 +316,7 @@ pub trait ParserDataAccess<Image, Event: FromStr+Clone+PartialEq>{
     fn get_event<'render_pass, 'application>(&'application self, name: &str, list: &Option<ListData> ) -> Option<Event> where 'application: 'render_pass{
         None
     }
-    fn get_treeview<'render_pass, 'application>(&'application self, name: &'render_pass str) -> Option<TreeViewItem<'render_pass>> where 'application: 'render_pass {None}
+    fn get_treeview<'render_pass, 'application>(&'application self, name: &'render_pass str) -> Option<TreeViewItem<'render_pass, Event>> where 'application: 'render_pass {None}
 }
 
 enum SsizeType {
@@ -486,6 +494,7 @@ where
                         }
                         b"hovered" =>           parser.flow_control(FlowControlCommand::HoveredOpened),
                         b"clicked" =>           parser.flow_control(FlowControlCommand::ClickedOpened{event: e.cdata("emit")}),
+                        b"right-clicked" =>     parser.flow_control(FlowControlCommand::RightClickOpened { event: e.cdata("emit") }),
                         b"list" => match e.cdata("src") {
                             None => return Err(ParserError::ListWithoutSource),
                             Some(src) => parser.flow_control(FlowControlCommand::ListOpened { src }),
@@ -516,6 +525,7 @@ where
                         b"tk" =>                parser.flow_control(FlowControlCommand::TKClosed),
                         b"hovered" =>           parser.flow_control(FlowControlCommand::HoveredClosed),
                         b"clicked" =>           parser.flow_control(FlowControlCommand::ClickedClosed),
+                        b"right-clicked" =>     parser.flow_control(FlowControlCommand::RightClickClosed),
                         b"list" =>              parser.flow_control(FlowControlCommand::ListClosed),
                         other => return Err(ParserError::UnknownTag(unsafe{String::from_raw_parts(other.to_owned().as_mut_ptr(), other.len(), other.len()*2)}))
                     }
@@ -675,8 +685,13 @@ where
                             SsizeType::None => parser.config_command(ConfigCommand::GrowX),
                             _ => ()
                         }
-                        b"width-fixed" => if let SsizeType::At { at } = set_sizing_attributes(&mut e) {
-                            parser.config_command(ConfigCommand::FixedX(at));
+                        b"width-fixed" => {
+                            if let SsizeType::At { at } = set_sizing_attributes(&mut e) {
+                                parser.config_command(ConfigCommand::FixedX(at));
+                            }
+                            else if let Some(value) = e.cdata("from") {
+                                parser.config_command(ConfigCommand::FixedXFrom(value));
+                            }
                         }
                         b"width-percent" => if let SsizeType::At { at } = set_sizing_attributes(&mut e) {
                             parser.config_command(ConfigCommand::PercentX(at));
@@ -693,8 +708,13 @@ where
                             SsizeType::None => parser.config_command(ConfigCommand::GrowY),
                             _ => ()
                         }
-                        b"height-fixed" => if let SsizeType::At { at } = set_sizing_attributes(&mut e) {
-                            parser.config_command(ConfigCommand::FixedY(at));
+                        b"height-fixed" => {
+                            if let SsizeType::At { at } = set_sizing_attributes(&mut e) {
+                                parser.config_command(ConfigCommand::FixedY(at));
+                            }
+                            else if let Some(value) = e.cdata("from") {
+                                parser.config_command(ConfigCommand::FixedYFrom(value));
+                            }
                         }
                         b"height-percent" => if let SsizeType::At { at } = set_sizing_attributes(&mut e) {
                             parser.config_command(ConfigCommand::PercentY(at));
@@ -859,11 +879,9 @@ where
                             parser.config_command(ConfigCommand::Floating);
                         }
                         b"floating-offset" => {
-                            let (x, x_exists) = parse::<f32>("x", &mut e);
-                            let (y, y_exists) = parse::<f32>("y", &mut e);
-                            if x_exists && y_exists {
-                                parser.config_command(ConfigCommand::FloatingOffset { x, y });
-                            }
+                            let (x, _) = parse::<f32>("x", &mut e);
+                            let (y, _) = parse::<f32>("y", &mut e);
+                            parser.config_command(ConfigCommand::FloatingOffset { x, y, x_from: e.cdata("x-from"), y_from: e.cdata("y-from") });
                         }
                         b"floating-size" => {
                             let (width, width_exists) = parse::<f32>("width", &mut e);
@@ -1149,63 +1167,61 @@ where
         Err(())
     }
 
-    pub fn set_page<'render_pass, Renderer, Image, Custom, CustomLayout, UserApp>(
+    pub fn set_page<'render_pass, Image, UserApp>(
         &mut self,
-        page: &str,
-        clicked: bool,
-        layout_engine: &mut LayoutEngine<Renderer, Image, Custom, CustomLayout>,
-        user_app: &UserApp,
-    ) -> Vec<Event>
+        window_id: winit::window::WindowId,
+        api: &mut API,
+        user_app: &mut UserApp,
+    )
     where 
-        Renderer: MeasureText,
         Image: Clone+Debug+Default+PartialEq, 
-        Event: FromStr+Clone+PartialEq+Debug, 
-        Custom: Debug+Default,
+        Event: FromStr+Clone+PartialEq+Debug+EventHandler<UserApplication = UserApp>, 
         UserApp: ParserDataAccess<Image, Event>,
-
     {
+        let page = api.viewports.get_mut(&window_id).as_mut().unwrap().page.clone();
         let mut events = Vec::<Event>::new();
-        if let Some(page_commands) = self.pages.get(page) {
+
+        if let Some(page_commands) = self.pages.get(&page) {
             let mut command_references = Vec::<&LayoutCommandType<Event>>::new();
             for command in page_commands.iter() {
                 command_references.push(command);
             }
-            set_layout(
-                clicked,
-                &mut events,
+            events = set_layout(
+                api,
                 &command_references,
                 &self.reusable,
                 None,
                 None,
                 &mut None,
                 &mut None,
-                layout_engine, 
                 user_app,
+                events
             );
             #[cfg(feature="parse_logger")]
             println!("Page set");
         }
-        events
+
+        for event in events {
+            event.dispatch(user_app, api);
+        }
     }
 }
 
-fn set_layout<'render_pass, Renderer: MeasureText, Image, Event, Custom, CustomLayout, UserApp>(
-    clicked: bool,
-    events: &mut Vec<Event>,
+fn set_layout<'render_pass, Image, Event, UserApp>(
+    api: &mut API,
     commands: &Vec<&LayoutCommandType<Event>>,
     reusables: &HashMap<String, Vec<LayoutCommandType<Event>>>,
     locals: Option<&HashMap<String, &PageDataCommand<Event>>>,
     list_data: Option<ListData>,
     append_config: &mut Option<ElementConfiguration>,
     append_text_config: &mut Option<TextConfig>,
-    layout_engine: &mut LayoutEngine<Renderer, Image, Custom, CustomLayout>,
     user_app: &UserApp,
-)
+    mut events: Vec::<Event>,
+) -> Vec::<Event>
 where 
     Image: Clone+Debug+Default+PartialEq, 
-    Event: FromStr+Clone+PartialEq+Debug,
+    Event: FromStr+Clone+PartialEq+Debug+EventHandler<UserApplication = UserApp>,
     <Event as FromStr>::Err: Debug,
-    Custom: Debug+Default,
     UserApp: ParserDataAccess<Image, Event>
 {
     #[cfg(feature="parse_logger")]
@@ -1237,7 +1253,7 @@ where
     };
 
     let mut text_content = None::<&String>;
-    let mut dynamic_text_content = None::<&'render_pass str>;
+    let mut dynamic_text_content = None::<&String>;
 
     #[cfg(feature="parse_logger")]
     let mut file = OpenOptions::new()
@@ -1268,91 +1284,29 @@ where
             LayoutCommandType::FlowControl(control_command) => {
                 match control_command {
                     FlowControlCommand::IfOpened { condition } => {
-                        if skip.is_none() {
-                            match locals {
-                                None => if let Some(value) = user_app.get_bool(&condition, &None) {
-                                    if !value {
-                                        skip = Some(nesting_level)
-                                    }
-                                }
-                                Some(locals) =>  match locals.get(condition) {
-                                    None => if let Some(value) = user_app.get_bool(&condition, &None) {
-                                        if !value {
-                                            skip = Some(nesting_level)
-                                        }
-                                    }
-                                    Some(data_command) => {
-                                        match data_command {
-                                            PageDataCommand::GetBool { local:_, from } =>  if let Some(value) = user_app.get_bool (from, &list_data) {
-                                                if !value {
-                                                    skip = Some(nesting_level)
-                                                }
-                                            }
-                                            PageDataCommand::SetBool { local:_, to } => if !to {
-                                                skip = Some(nesting_level)
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
+                        if skip.is_none() &&
+                            !try_get_bool(condition, false, locals, |v,l|user_app.get_bool(v, l), &list_data) {
+                            skip = Some(nesting_level)
                         }
                         nesting_level += 1;
                     }
                     FlowControlCommand::IfNotOpened { condition } => {
-                        if skip.is_none() {
-                            match locals {
-                                None => if let Some(value) = user_app.get_bool(&condition, &None) {
-                                    if value {
-                                        skip = Some(nesting_level)
-                                    }
-                                }
-                                Some(locals) =>  {
-                                    match locals.get(condition) {
-                                        None => if let Some(value) = user_app.get_bool(&condition, &None) {
-                                            if value {
-                                                skip = Some(nesting_level)
-                                            }
-                                        }
-                                        Some(data_command) => {
-                                            match data_command {
-                                                PageDataCommand::GetBool { local:_, from } =>  {
-                                                    if let Some(value) = user_app.get_bool (from, &list_data) {
-                                                        #[cfg(feature="parse_logger")]
-                                                        println!("if not {:?} @index({:?}) = {:?}", from, &list_data.as_ref().unwrap().index, value);
-                                                        if value {
-                                                            skip = Some(nesting_level)
-                                                        }
-                                                    }
-                                                    else {
-                                                        
-                                                    }
-                                                }
-                                                PageDataCommand::SetBool { local:_, to } => if *to {
-                                                    skip = Some(nesting_level)
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        if skip.is_none() &&
+                            try_get_bool(condition, false, locals, |v,l|user_app.get_bool(v, l), &list_data) {
+                            skip = Some(nesting_level)
                         }
                         nesting_level += 1;
                     }
                     FlowControlCommand::IfClosed => {
                         nesting_level -= 1;
-
                         if let Some(skip_level) = skip {
-                            #[cfg(feature="parse_logger")]
-                            let _ = file.write_all(format!(",,,,trying to close skip: {:?}\n",(skip_level <= nesting_level)).as_bytes());
                             if skip_level >= nesting_level{
                                 skip = None;
                             }
                         }
                     }
                     FlowControlCommand::HoveredOpened => {
-                        if skip.is_none() && !layout_engine.hovered() {
+                        if skip.is_none() && !api.ui_layout.hovered() {
                             skip = Some(nesting_level);
                         }
         
@@ -1372,7 +1326,7 @@ where
                         if skip.is_none() {
                             skip = Some(nesting_level);
 
-                            if layout_engine.hovered() && clicked {
+                            if api.ui_layout.hovered() && api.left_mouse_clicked {
                                 skip = None;
 
                                 // is there an emitted event
@@ -1411,6 +1365,49 @@ where
                             }
                         }
                     }
+                    FlowControlCommand::RightClickOpened { event } => {
+                        if skip.is_none() {
+                            skip = Some(nesting_level);
+
+                            if api.ui_layout.hovered() && api.right_mouse_clicked {
+                                skip = None;
+
+                                // is there an emitted event
+                                if let Some(event) = event {
+                                    // is there a local call stack containing the event
+                                    if  let Some(locals) = locals &&
+                                        let Some(event) = locals.get(event)
+                                    {
+                                        if  let PageDataCommand::GetEvent { local, from } = event &&
+                                            let Some(event) = user_app.get_event(&from, &list_data)
+                                        {
+                                            events.push(event);
+                                        }
+                                        else if let PageDataCommand::SetEvent { local, to } = event {
+                                            //println!("{:?}",to);
+                                            events.push(to.clone());
+                                        }
+                                    }
+                                    else {
+                                        // attempt to process it as a global event
+                                        if let Ok(event) = Event::from_str(event) {
+                                            events.push(event);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        nesting_level += 1;
+                    }
+                    FlowControlCommand::RightClickClosed => {
+                        nesting_level -= 1;
+
+                        if let Some(skip_level) = skip {
+                            if skip_level == nesting_level{
+                                skip = None;
+                            }
+                        }
+                    }
                     FlowControlCommand::ListOpened { src } => {
                         nesting_level += 1;
 
@@ -1431,17 +1428,16 @@ where
                             
                             if let Some(source) = list_length {
                                 for i in 0..source {
-                                    set_layout(
-                                        clicked,
-                                        events,
+                                    events = set_layout(
+                                        api,
                                         &recursive_commands, 
                                         reusables,
                                         Some(&recursive_call_stack), 
                                         Some(ListData { src: &recursive_source, index: i }), 
                                         &mut None, 
                                         &mut None, 
-                                        layout_engine, 
                                         user_app,
+                                        events
                                     );
                                 }
                             }
@@ -1451,14 +1447,14 @@ where
                         nesting_level += 1;
 
                         if skip.is_none() {
-                            layout_engine.open_element();
+                            api.ui_layout.open_element();
                         }
                     }
                     FlowControlCommand::ElementClosed => {
                         nesting_level -= 1;
 
                         if skip.is_none() {
-                            layout_engine.close_element();
+                            api.ui_layout.close_element();
                         }
                     }
                     FlowControlCommand::ConfigOpened => {
@@ -1473,7 +1469,7 @@ where
         
                         if skip.is_none() && append_config.is_none(){
                             let final_config = config.take().unwrap();
-                            layout_engine.configure_element(&final_config);
+                            api.ui_layout.configure_element(&final_config);
                         }
                         else {
                             //println!("config actually not closed");
@@ -1500,31 +1496,29 @@ where
                                     recursive_commands.push(command);
                                 }
                                 if recursive_call_stack.len() > 0 {
-                                    set_layout(
-                                        clicked,
-                                        events,
+                                    events = set_layout(
+                                        api,
                                         &recursive_commands,
                                         reusables,
                                         Some(&recursive_call_stack), 
                                         None,
                                         &mut config,
                                         &mut text_config,
-                                        layout_engine,
                                         user_app,
+                                        events
                                     );
                                 }
                                 else {
-                                    set_layout(
-                                        clicked,
-                                        events,
+                                    events = set_layout(
+                                        api,
                                         &recursive_commands,
                                         reusables,
                                         None,
                                         None,
                                         &mut config,
                                         &mut text_config,
-                                        layout_engine, 
                                         user_app,
+                                        events
                                     );
                                 }
                             }
@@ -1550,7 +1544,7 @@ where
                             
                             match recursive_source.as_str() {
                                 "treeview" => {
-                                    toolkit::treeview(clicked, &recursive_source, layout_engine, user_app);
+                                    events = toolkit::treeview("treeview", api, user_app, events);
                                 }
                                 _ => {}
                             }
@@ -1573,19 +1567,18 @@ where
                                         false => {
                                             match dynamic_text_content.is_some() {
                                                 false => {
-                                                    layout_engine.add_text_element("", &final_text_config.end(), false);
+                                                    api.ui_layout.add_text_element("", &final_text_config.end(), false);
                                                 }
                                                 true => {
                                                     let final_dyn_content = dynamic_text_content.take().unwrap();
-                                                    layout_engine.add_text_element(&final_dyn_content, &final_text_config.end(), false);
+                                                    api.ui_layout.add_text_element(&final_dyn_content, &final_text_config.end(), false);
                                                 }
                                             }
                                         }
                                         true => {
-                                            layout_engine.add_text_element(text_content.take().unwrap(), &final_text_config.end(), false);
+                                            api.ui_layout.add_text_element(text_content.take().unwrap(), &final_text_config.end(), false);
                                         }
                                     }
-                                    
                                 },
                             }
                         }
@@ -1624,6 +1617,24 @@ where
                         ConfigCommand::GrowYmin{min} => open_config.y_grow_min(*min).parse(),
                         ConfigCommand::GrowYminmax{min, max}  => open_config.y_grow_min_max(*min, *max).parse(),
                         ConfigCommand::FixedX(x)  => open_config.x_fixed(*x).parse(),
+                        ConfigCommand::FixedXFrom(value) => open_config.x_fixed(
+                                try_get_numeric(
+                                    value, 
+                                    100.0, 
+                                    locals, 
+                                    |v,l | user_app.get_numeric(v,l), 
+                                    &list_data
+                                )
+                            ).parse(),
+                        ConfigCommand::FixedYFrom(value) =>open_config.y_fixed(
+                                try_get_numeric(
+                                    value, 
+                                    100.0, 
+                                    locals, 
+                                    |v,l | user_app.get_numeric(v,l), 
+                                    &list_data
+                                )
+                            ).parse(),
                         ConfigCommand::FixedY(y)  => open_config.y_fixed(*y).parse(),
                         ConfigCommand::PercentX(size)  => open_config.x_percent(*size).parse(),
                         ConfigCommand::PercentY(size)  => open_config.y_percent(*size).parse(),
@@ -1711,7 +1722,7 @@ where
                         ConfigCommand::BorderRight(border)  => open_config.border_right(*border as u16).parse(),
                         ConfigCommand::BorderBetweenChildren(border)  => open_config.border_between_children(*border as u16).parse(),
                         ConfigCommand::Clip { vertical, horizontal } => {
-                            let child_offset = layout_engine.get_scroll_offset();
+                            let child_offset = api.ui_layout.get_scroll_offset();
                             open_config.scroll(*vertical, *horizontal, child_offset).parse()
                         }
                         ConfigCommand::Image { name } => {
@@ -1738,7 +1749,53 @@ where
                             }
                         }
                         ConfigCommand::Floating => open_config.floating().parse(),
-                        ConfigCommand::FloatingOffset { x, y } => open_config.floating_offset(*x, *y).parse(),
+                        ConfigCommand::FloatingOffset { x, y, x_from, y_from } => {
+                            if let Some(x_from) = x_from && let Some(y_from) = y_from {
+                                open_config.floating_offset(
+                                    try_get_numeric(
+                                        x_from,
+                                        *x,
+                                        locals,
+                                        |v,l|user_app.get_numeric(v, l), 
+                                        &list_data
+                                    ),
+                                    try_get_numeric(
+                                        y_from,
+                                        *y,
+                                        locals,
+                                        |v,l|user_app.get_numeric(v, l), 
+                                        &list_data
+                                    )
+                                ).parse()
+                            }
+                            else if let Some(x_from) = x_from {
+                                open_config.floating_offset(
+                                    try_get_numeric(
+                                        x_from,
+                                        *x,
+                                        locals,
+                                        |v,l|user_app.get_numeric(v, l),  
+                                        &list_data
+                                    ),
+                                    *y
+                                ).parse()
+                            }
+                            else if let Some(y_from) = y_from {
+                                open_config.floating_offset(
+                                    *x,
+                                    try_get_numeric(
+                                        y_from,
+                                        *y,
+                                        locals,
+                                        |v,l|user_app.get_numeric(v, l),  
+                                        &list_data
+                                    )
+                                ).parse()
+                            }
+                            else {
+                                open_config.floating_offset(*x, *y).parse()
+                            }
+                        }
                         ConfigCommand::FloatingDimensions { width, height } => open_config.floating_dimensions(*width, *height).parse(),
                         ConfigCommand::FloatingZIndex { z } => open_config.floating_z_index(*z).parse(),
                         ConfigCommand::FloatingAttatchToParentAtTopLeft => open_config.floating_attach_to_parent_at_top_left().parse(),
@@ -1833,6 +1890,64 @@ where
         }
     }
 
+    events
+
     // #[cfg(feature="parse_logger")]
     
+}
+
+fn try_get_numeric<Event, F>(from: &String, defualt: f32, locals: Option<&HashMap<String, &PageDataCommand<Event>>>, ua: F, list_data: &Option<ListData>) -> f32
+where 
+    F: Fn(&str, &Option<ListData>) -> Option<f32>,
+    Event: FromStr+Clone+PartialEq+Debug,
+    <Event as FromStr>::Err: Debug,
+{
+    if let Some(locals) = locals &&
+        let Some(local) = locals.get(from) {
+            
+        if let PageDataCommand::GetNumeric { local:_, from } = local &&
+            let Some(value) = ua(&from, &list_data) {
+            value
+        }
+        else if let PageDataCommand::SetNumeric { local:_, to } = local {
+            *to
+        }
+        else {
+            defualt
+        }
+    }
+    else if let Some(value) = ua(&from, &list_data) {
+        value
+    }
+    else {
+        defualt
+    }
+}
+
+fn try_get_bool<Event, F>(from: &String, defualt: bool, locals: Option<&HashMap<String, &PageDataCommand<Event>>>, ua: F, list_data: &Option<ListData>) -> bool
+where 
+    F: Fn(&str, &Option<ListData>) -> Option<bool>,
+    Event: FromStr+Clone+PartialEq+Debug,
+    <Event as FromStr>::Err: Debug,
+{
+    if let Some(locals) = locals &&
+        let Some(local) = locals.get(from) {
+            
+        if let PageDataCommand::GetBool { local:_, from } = local &&
+            let Some(value) = ua(&from, &list_data) {
+            value
+        }
+        else if let PageDataCommand::SetBool { local:_, to } = local {
+            *to
+        }
+        else {
+            defualt
+        }
+    }
+    else if let Some(value) = ua(&from, &list_data) {
+        value
+    }
+    else {
+        defualt
+    }
 }

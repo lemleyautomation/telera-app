@@ -1,7 +1,7 @@
 <!ELEMENT page (element|grow|reusable)*>
 <!ATTLIST page name CDATA #REQUIRED>
 
-<!ELEMENT element (element-config,(element|text-element|hovered|clicked|grow|use|list|tk)*)>
+<!ELEMENT element (element-config,(element|text-element|hovered|clicked|right-clicked|grow|use|list|tk)*)>
 <!ATTLIST element id CDATA "element">
 <!ATTLIST element if CDATA #IMPLIED>
 <!ATTLIST element if-not CDATA #IMPLIED>
@@ -9,7 +9,7 @@
 <!ELEMENT text-element (text-config,(content|dyn-content))>
 
 <!ELEMENT element-config (
-    use|hovered|clicked|
+    use|hovered|clicked|right-clicked|
     id|
     width-grow|width-fit|width-fixed|width-percent|
     height-grow|height-fit|height-fixed|height-percent|
@@ -32,7 +32,7 @@
 <!ATTLIST element-config use ID #IMPLIED>
 
 <!ELEMENT text-config (
-    use|hovered|clicked|
+    use|hovered|clicked|right-clicked|
     font-id|
     (text-align-left|text-align-right|text-align-center)|
     font-size|
@@ -67,7 +67,7 @@
 
 <!ELEMENT clicked (
     element|element-config|text-element|text-config|
-    use|hovered|clicked|tk|
+    use|hovered|tk|
     id|
     width-grow|width-fit|width-fixed|width-percent|
     height-grow|height-fit|height-fixed|height-percent|
@@ -88,6 +88,30 @@
     image
     )*>
 <!ATTLIST clicked emit CDATA #IMPLIED>
+
+<!ELEMENT right-clicked (
+    element|element-config|text-element|text-config|
+    use|hovered|tk|
+    id|
+    width-grow|width-fit|width-fixed|width-percent|
+    height-grow|height-fit|height-fixed|height-percent|
+    padding-all|padding-left|padding-bottom|padding-right|padding-top|
+    child-gap|
+    direction|
+    align-children-x|align-children-y|
+    (color|dyn-color)|
+    radius-all|radius-top-left|radius-top-right|
+    radius-bottom-left|radius-bottom-right|
+    border-color|border-all|border-top|border-bottom|
+    border-left|border-right|border-between-children|
+    scroll|
+    floating|floating-offset|floating-size|
+    floating-z-index|floating-attach-to-parent|
+    floating-attach-element|floating-capture-pointer|
+    floating-attach-to-element|floating-attach-to-root|
+    image
+    )*>
+<!ATTLIST right-clicked emit CDATA #IMPLIED>
 
 <!ELEMENT reusable (reusable-config?, (element|text-element|element-config|text-config|tk)*)>
 <!ATTLIST reusable name CDATA #REQUIRED>
@@ -187,7 +211,8 @@
 <!ATTLIST width-fit max CDATA #IMPLIED>
 
 <!ELEMENT width-fixed EMPTY>
-<!ATTLIST width-fixed at CDATA #REQUIRED>
+<!ATTLIST width-fixed at CDATA "100">
+<!ATTLIST width-fixed from CDATA #IMPLIED>
 
 <!ELEMENT width-percent EMPTY>
 <!ATTLIST width-percent at CDATA #REQUIRED>
@@ -201,7 +226,8 @@
 <!ATTLIST height-fit max CDATA #IMPLIED>
 
 <!ELEMENT height-fixed EMPTY>
-<!ATTLIST height-fixed at CDATA #REQUIRED>
+<!ATTLIST height-fixed at CDATA "100">
+<!ATTLIST height-fixed from CDATA #IMPLIED>
 
 <!ELEMENT height-percent EMPTY>
 <!ATTLIST height-percent at CDATA #REQUIRED>
@@ -284,8 +310,10 @@
 <!ELEMENT floating EMPTY>
 
 <!ELEMENT floating-offset EMPTY>
-<!ATTLIST floating-offset x CDATA #REQUIRED>
-<!ATTLIST floating-offset y CDATA #REQUIRED>
+<!ATTLIST floating-offset x CDATA "0">
+<!ATTLIST floating-offset x-from CDATA #IMPLIED>
+<!ATTLIST floating-offset y CDATA "0">
+<!ATTLIST floating-offset y-from CDATA #IMPLIED>
 
 <!ELEMENT floating-size EMPTY>
 <!ATTLIST floating-size width CDATA #REQUIRED>

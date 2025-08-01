@@ -1,30 +1,19 @@
-//use crate::UIImageDescriptor;
+use std::str::FromStr;
+use std::fmt::Debug;
 
+use crate::EventHandler;
 
-// #[derive(Default)]
-// pub struct TreeViewIcons {
-//     root_empty: UIImageDescriptor,
-//     root_hidden: UIImageDescriptor,
-//     root_expanded: UIImageDescriptor,
-//     item_hidden_last: UIImageDescriptor,
-//     item_expanded_last: UIImageDescriptor,
-//     item_hidden: UIImageDescriptor,
-//     item_expanded: UIImageDescriptor,
-//     item_empty: UIImageDescriptor,
-//     item_empty_last: UIImageDescriptor,
-//     extension: UIImageDescriptor
-// }
 
 #[derive(Clone)]
-pub enum TreeViewItem<'frame>{
-    EmptyRoot{label: &'frame str},
-    Root{label: &'frame str, items: Vec<TreeViewItem<'frame>>},
+pub enum TreeViewItem<'frame, UserEvent: FromStr+Clone+PartialEq+Debug+EventHandler>{
+    EmptyRoot{label: &'frame str, left_clicked: Option<UserEvent>, right_clicked: Option<UserEvent>},
+    Root{label: &'frame str, items: Vec<TreeViewItem<'frame, UserEvent>>},
 
     EmptyItem{label: &'frame str},
-    CollapsedItem{label: &'frame str, items: Vec<TreeViewItem<'frame>>},
-    ExpandedItem{label: &'frame str, items: Vec<TreeViewItem<'frame>>},
+    CollapsedItem{label: &'frame str, items: Vec<TreeViewItem<'frame, UserEvent>>},
+    ExpandedItem{label: &'frame str, items: Vec<TreeViewItem<'frame, UserEvent>>},
 
     EmptyLastItem{label: &'frame str},
-    CollapsedLastItem{label: &'frame str, items: Vec<TreeViewItem<'frame>>},
-    ExpandedLastItem{label: &'frame str, items: Vec<TreeViewItem<'frame>>},
+    CollapsedLastItem{label: &'frame str, items: Vec<TreeViewItem<'frame, UserEvent>>},
+    ExpandedLastItem{label: &'frame str, items: Vec<TreeViewItem<'frame, UserEvent>>},
 }

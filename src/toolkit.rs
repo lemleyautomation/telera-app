@@ -2,136 +2,128 @@ use std::str::FromStr;
 use std::fmt::Debug;
 
 use telera_layout::{Color, TextConfig};
-use telera_layout::{LayoutEngine, MeasureText, ElementConfiguration};
-use crate::treeview::*;
+use telera_layout::ElementConfiguration;
+use crate::{treeview::*, API, EventHandler};
 
 use crate::ui_shapes::Shapes;
 use crate::ParserDataAccess;
 
-pub fn treeview<Renderer, Image, Custom, CustomLayout, UserApp, Event>(
-    _clicked: bool,
+pub fn treeview<Image, UserApp, Event>(
     name: &str,
-    layout_engine: &mut LayoutEngine<Renderer, Image, Custom, CustomLayout>,
+    api: &mut API,
     user_app: &UserApp,
+    mut events: Vec<Event>
 ) -> Vec<Event>
 where 
-    Renderer: MeasureText,
     Image: Clone+Debug+Default+PartialEq, 
-    Event: FromStr+Clone+PartialEq+Debug, 
-    Custom: Debug+Default,
+    Event: FromStr+Clone+PartialEq+Debug+EventHandler, 
     UserApp: ParserDataAccess<Image, Event>,
-    Event: Clone+Debug+PartialEq+FromStr,
-    <Event as FromStr>::Err: Debug,
-
 {
     if let Some(treeview) = user_app.get_treeview(name) {
-        let mut offset: u16 = 0;
-        recursive_treeview_layout(layout_engine, &treeview, &mut offset);
+        events = recursive_treeview_layout(api, &treeview, events);
     }
 
-    Vec::<Event>::new()
+    events
 }
 
-fn recursive_treeview_layout<Renderer, Image, Custom, CustomLayout>(
-    layout_engine: &mut LayoutEngine<Renderer, Image, Custom, CustomLayout>,
-    treeview: &TreeViewItem,
-    mut offset: &mut u16,
-)
-where 
-    Renderer: MeasureText,
-    Image: Clone+Debug+Default+PartialEq, 
-    Custom: Debug+Default,
+fn recursive_treeview_layout<Event: FromStr+Clone+PartialEq+Debug+EventHandler>(
+    api: &mut API,
+    treeview: &TreeViewItem<Event>,
+    mut events: Vec<Event>
+) -> Vec<Event>
 {
-    layout_engine.open_element();
-    layout_engine.configure_element(&ElementConfiguration::new()
+    api.ui_layout.open_element();
+    api.ui_layout.configure_element(&ElementConfiguration::new()
         .x_grow()
         .direction(true)
     );
     match treeview {
-        TreeViewItem::EmptyRoot{label: _} => {
+        TreeViewItem::EmptyRoot{label: _, left_clicked, right_clicked} => {
+            if api.ui_layout.hovered() && api.left_mouse_clicked
+                && let Some(left_click_event) = left_clicked
+            {
+                events.push(left_click_event.clone());
+            }
+            if api.ui_layout.hovered() && api.right_mouse_clicked
+                && let Some(right_click_event) = right_clicked
+            {
+                events.push(right_click_event.clone());
+            }
             add_treeview_image_to_layout(
-                &mut offset,
                 treeview,
-                layout_engine
+                api
             );
         }
         TreeViewItem::Root{label: _, items} => {
             add_treeview_image_to_layout(
-                &mut offset,
                 treeview,
-                layout_engine
+                api
             );
             for item in items {
-                recursive_treeview_layout(
-                    layout_engine,
+                events = recursive_treeview_layout(
+                    api,
                     item,
-                    offset
+                    events
                 );
             }
         }
         TreeViewItem::EmptyItem{label:_} => {
             add_treeview_image_to_layout(
-                &mut offset,
                 treeview, 
-                layout_engine
+                api
             );
         }
         TreeViewItem::EmptyLastItem{label:_} => {
             add_treeview_image_to_layout(
-                &mut offset,
                 treeview, 
-                layout_engine
+                api
             );
         }
         TreeViewItem::ExpandedItem{label: _, items} => {
             add_treeview_image_to_layout(
-                &mut offset,
                 treeview,
-                layout_engine
+                api
             );
 
-            layout_engine.open_element();
-            layout_engine.configure_element(&ElementConfiguration::new().x_grow());
+            api.ui_layout.open_element();
+            api.ui_layout.configure_element(&ElementConfiguration::new().x_grow());
 
-            layout_engine.open_element();
-            layout_engine.configure_element(&ElementConfiguration::new()
+            api.ui_layout.open_element();
+            api.ui_layout.configure_element(&ElementConfiguration::new()
                 .x_fixed(20.0)
                 .y_grow()
                 .color(Color{r:0.0,g:96.0,b:255.0,a:255.0})
                 .custom_element(&Shapes::Line{width:2.0})
             );
-            layout_engine.close_element();
+            api.ui_layout.close_element();
 
-            layout_engine.open_element();
-            layout_engine.configure_element(&ElementConfiguration::new()
+            api.ui_layout.open_element();
+            api.ui_layout.configure_element(&ElementConfiguration::new()
                 .x_grow()
                 .direction(true)
             );
             
             for item in items {
-                recursive_treeview_layout(
-                    layout_engine,
+                events = recursive_treeview_layout(
+                    api,
                     item,
-                    &mut offset
+                    events
                 );
             }
-            layout_engine.close_element();
-            layout_engine.close_element();
+            api.ui_layout.close_element();
+            api.ui_layout.close_element();
         }
         _ => {}
     }
-    layout_engine.close_element();
+    api.ui_layout.close_element();
+
+    events
 }
 
-fn add_treeview_image_to_layout<Renderer, Image, Custom, CustomLayout>(
-    _offset: &mut u16,
-    treeview_type: &TreeViewItem,
-    layout_engine: &mut LayoutEngine<Renderer, Image, Custom, CustomLayout>
+fn add_treeview_image_to_layout<Event: FromStr+Clone+PartialEq+Debug+EventHandler>(
+    treeview_type: &TreeViewItem<Event>,
+    api: &mut API
 )
-where 
-    Renderer: MeasureText,
-    Image: Clone+Debug+Default+PartialEq, 
-    Custom: Debug+Default,
 {
     let green = Color{r:0.0,g:255.0,b:0.0,a:255.0};
     let blue = Color{r:0.0,g:0.0,b:255.0,a:255.0};
@@ -153,118 +145,118 @@ where
         .font_size(12)
         .end();
 
-    layout_engine.open_element();
+    api.ui_layout.open_element();
     let mut container_config = ElementConfiguration::new()
         .align_children_y_center()
         .child_gap(3)
         .x_grow()
         .end();
-    if layout_engine.hovered() {
+    if api.ui_layout.hovered() {
         container_config = container_config.color(blue).end();
         label_config = label_config.color(white).end();
     }
-    layout_engine.configure_element(&container_config);
+    api.ui_layout.configure_element(&container_config);
     match treeview_type {
-        TreeViewItem::EmptyRoot{label} => {
-            layout_engine.open_element();
-            layout_engine.configure_element(&ElementConfiguration::new()
+        TreeViewItem::EmptyRoot{label, left_clicked: _, right_clicked: _} => {
+            api.ui_layout.open_element();
+            api.ui_layout.configure_element(&ElementConfiguration::new()
                 .x_fixed(20.0)
                 .y_fixed(20.0)
                 .padding_all(5)
             );
-                layout_engine.open_element();
-                layout_engine.configure_element(
+                api.ui_layout.open_element();
+                api.ui_layout.configure_element(
                     &icon_config
                         .color(red)
                         .x_fixed(10.0)
                         .y_fixed(10.0)
                 );
-                layout_engine.close_element();
-            layout_engine.close_element();
+                api.ui_layout.close_element();
+            api.ui_layout.close_element();
 
-            layout_engine.add_text_element(
+            api.ui_layout.add_text_element(
                 label, 
                 &label_config,
                 false,
             );
         }
         TreeViewItem::Root{label, items:_} => {
-            layout_engine.open_element();
-            layout_engine.configure_element(&ElementConfiguration::new()
+            api.ui_layout.open_element();
+            api.ui_layout.configure_element(&ElementConfiguration::new()
                 .x_fixed(20.0)
                 .y_fixed(20.0)
                 .padding_all(5)
             );
-                layout_engine.open_element();
-                layout_engine.configure_element(
+                api.ui_layout.open_element();
+                api.ui_layout.configure_element(
                     &icon_config
                         .color(green)
                         .x_fixed(10.0)
                         .y_fixed(10.0)
                 );
-                layout_engine.close_element();
-            layout_engine.close_element();
+                api.ui_layout.close_element();
+            api.ui_layout.close_element();
 
-            layout_engine.add_text_element(
+            api.ui_layout.add_text_element(
                 label, 
                 &label_config,
                 false,
             );
         }
         TreeViewItem::EmptyItem{label} => {
-            layout_engine.open_element();
-            layout_engine.configure_element(&ElementConfiguration::new()
+            api.ui_layout.open_element();
+            api.ui_layout.configure_element(&ElementConfiguration::new()
                 .x_fixed(20.0)
                 .y_fixed(20.0)
                 .padding_all(5)
             );
-                layout_engine.open_element();
-                layout_engine.configure_element(
+                api.ui_layout.open_element();
+                api.ui_layout.configure_element(
                     &icon_config
                         .color(yellow)
                         .x_fixed(10.0)
                         .y_fixed(10.0)
                 );
-                layout_engine.close_element();
-            layout_engine.close_element();
+                api.ui_layout.close_element();
+            api.ui_layout.close_element();
             
-            layout_engine.add_text_element(
+            api.ui_layout.add_text_element(
                 label, 
                 &label_config,
                 false,
             );
         }
         TreeViewItem::EmptyLastItem{label} => {
-            layout_engine.open_element();
-            layout_engine.configure_element(&ElementConfiguration::new()
+            api.ui_layout.open_element();
+            api.ui_layout.configure_element(&ElementConfiguration::new()
                 .x_fixed(20.0)
                 .y_fixed(20.0)
                 .padding_all(5)
             );
-                layout_engine.open_element();
-                layout_engine.configure_element(
+                api.ui_layout.open_element();
+                api.ui_layout.configure_element(
                     &icon_config
                         .color(orange)
                         .x_fixed(10.0)
                         .y_fixed(10.0)
                 );
-                layout_engine.close_element();
-            layout_engine.close_element();
+                api.ui_layout.close_element();
+            api.ui_layout.close_element();
             
-            layout_engine.add_text_element(
+            api.ui_layout.add_text_element(
                 label, 
                 &label_config,
                 false,
             );
         }
         TreeViewItem::ExpandedItem { label, items: _ } => {
-            layout_engine.open_element();
-            layout_engine.configure_element(
+            api.ui_layout.open_element();
+            api.ui_layout.configure_element(
                 &icon_config.color(red)
             );
-            layout_engine.close_element();
+            api.ui_layout.close_element();
 
-            layout_engine.add_text_element(
+            api.ui_layout.add_text_element(
                 label, 
                 &label_config,
                 false,
@@ -272,5 +264,5 @@ where
         }
         _ => {}
     }
-    layout_engine.close_element();
+    api.ui_layout.close_element();
 }

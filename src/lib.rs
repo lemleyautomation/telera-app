@@ -111,13 +111,25 @@ pub struct API{
     staged_windows: Vec<(String, String, WindowAttributes)>,
 
     ctx: GraphicsContext,
+    pub scene_renderer: SceneRenderer,
     ui_renderer: Option<UIRenderer>,
+    pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, Shapes, ()>,
     model_ids: HashMap<String, usize>,
     models: Vec<Model>,
     
     viewport_lookup: bimap::BiMap<String, WindowId>,
     viewports: HashMap<WindowId, Viewport>,
 
+    left_mouse_button: bool,
+    right_mouse_button: bool,
+    left_mouse_clicked: bool,
+    right_mouse_clicked: bool,
+    pub x_at_click: f32,
+    pub y_at_click: f32,
+
+    pub mouse_poistion: (f32, f32),
+    scroll_delta_time: Instant,
+    scroll_delta_distance: (f32, f32),
 }
 
 impl API{
@@ -198,17 +210,7 @@ where
     <UserEvents as FromStr>::Err: Debug,
     UserApp: App + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
-    pub scene_renderer: SceneRenderer,
-
-    pointer_state: bool,
-    clicked: bool,
-    mouse_poistion: (f32, f32),
-    scroll_delta_time: Instant,
-    scroll_delta_distance: (f32, f32),
-
-    pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, Shapes, ()>,
-    binder: Binder<UserEvents>,
-
+    layout_binder: Binder<UserEvents>,
     core: API,
     user_application: UserApp,
 
@@ -225,18 +227,35 @@ where
     UserApp: App + ParserDataAccess<UIImageDescriptor, UserEvents>,
 {
     pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp, watcher: Option<ReadDirectoryChangesWatcher>) -> Self {
-        let mut core =  API { 
+
+        let ctx = GraphicsContext::new();
+        let scene_renderer = SceneRenderer::new(&ctx.device);
+        let ui_renderer = Some(UIRenderer::new(&ctx.device, &ctx.queue));
+
+        let core =  API { 
             staged_windows: Vec::new(), 
-            ctx: GraphicsContext::new(),
-            ui_renderer: None,
+            ctx,
+            scene_renderer,
+            ui_renderer,
+            ui_layout: LayoutEngine::<UIRenderer, UIImageDescriptor, Shapes, ()>::new((1.0, 1.0)),
             model_ids: HashMap::new(),
             models: Vec::<Model>::new(),
             viewport_lookup: bimap::BiMap::new(),
             viewports: HashMap::new(),
+
+            left_mouse_button: false,
+            right_mouse_button: false,
+            left_mouse_clicked: false,
+            right_mouse_clicked: false,
+            x_at_click: 0.0,
+            y_at_click: 0.0,
+            
+            mouse_poistion: (0.0,0.0),
+            scroll_delta_time: Instant::now(),
+            scroll_delta_distance: (0.0, 0.0),
         };
-        core.ui_renderer = Some(UIRenderer::new(&core.ctx.device, &core.ctx.queue));
         
-        let mut binder = Binder::new();
+        let mut layout_binder = Binder::new();
 
         #[cfg(debug_assertions)]
         {
@@ -248,9 +267,9 @@ where
                         let file = read_to_string(entry).unwrap();
                         let (page_name, page, reusables) = Parser::<UserEvents>::add_page(&file).unwrap();
 
-                        binder.add_page(page_name.as_str(), page);
+                        layout_binder.add_page(page_name.as_str(), page);
                         for (name, reusable) in reusables {
-                            binder.add_reusables(name.as_str(), reusable);
+                            layout_binder.add_reusables(name.as_str(), reusable);
                         }
                     }
                 }
@@ -268,23 +287,16 @@ where
 
                 //println!("page: {:?} = {:?} ", page_name, page);
 
-                binder.add_page(page_name.as_str(), page);
+                layout_binder.add_page(page_name.as_str(), page);
                 for (name, reusable) in reusables {
-                    binder.add_reusables(name.as_str(), reusable);
+                    layout_binder.add_reusables(name.as_str(), reusable);
                 }
             }
         }
         
 
         Application {
-            scene_renderer: SceneRenderer::new(&core.ctx.device),
-            ui_layout: LayoutEngine::<UIRenderer, UIImageDescriptor, Shapes, ()>::new((1.0, 1.0)),
-            binder,
-            pointer_state: false,
-            clicked: false,
-            mouse_poistion: (0.0,0.0),
-            scroll_delta_time: Instant::now(),
-            scroll_delta_distance: (0.0, 0.0),
+            layout_binder,
             core,
             app_events,
             user_application,
@@ -310,9 +322,9 @@ where
                 None => ui_renderer.build_shaders(&self.core.ctx.device, &self.core.ctx.queue, &viewport.config, MULTI_SAMPLE_COUNT)
             }
 
-            match self.scene_renderer.render_pipeline {
+            match self.core.scene_renderer.render_pipeline {
                 Some(_) => {}
-                None => self.scene_renderer.build_shaders(&self.core.ctx.device, &viewport.config, MULTI_SAMPLE_COUNT)
+                None => self.core.scene_renderer.build_shaders(&self.core.ctx.device, &viewport.config, MULTI_SAMPLE_COUNT)
             }
 
             self.core.viewport_lookup.insert(name, window_id);
@@ -344,57 +356,60 @@ where
 
         let num_viewports = self.core.viewports.len();
 
-        let mut events = Vec::<UserEvents>::new();
-
-        let viewport = match self.core.viewports.get_mut(&window_id) {
-            Some(window) => window,
-            None => return
-        };
-
-        self.scene_renderer.camera_controller.process_events(&event);
-        //println!("{:?}", self.scene_renderer.camera_controller.process_events(&event));
+        self.core.scene_renderer.camera_controller.process_events(&event);
 
         match event {
             WindowEvent::CloseRequested => {
                 if num_viewports < 2 {
                     event_loop.exit();
                 }
-                self.core.viewport_lookup.remove_by_left(&viewport.window.title());
+                self.core.viewport_lookup.remove_by_left(&self.core.viewports.get_mut(&window_id).as_mut().unwrap().window.title());
                 self.core.viewports.remove(&window_id);
                 return;
             },
             WindowEvent::Resized(size) => {
-                viewport.resize(&self.core.ctx.device, size, MULTI_SAMPLE_COUNT);
+                self.core.viewports.get_mut(&window_id).as_mut().unwrap().resize(&self.core.ctx.device, size, MULTI_SAMPLE_COUNT);
             }
             WindowEvent::RedrawRequested => {
 
-                let window_size: (f32, f32) = viewport.window.inner_size().into();
-                let dpi_scale  = viewport.window.scale_factor() as f32;
+                let window_size: (f32, f32) = self.core.viewports.get_mut(&window_id).as_mut().unwrap().window.inner_size().into();
+                let dpi_scale  = self.core.viewports.get_mut(&window_id).as_mut().unwrap().window.scale_factor() as f32;
                 
                 let mut ui_renderer = self.core.ui_renderer.take().unwrap();
                 ui_renderer.dpi_scale = dpi_scale;
                 ui_renderer.resize((window_size.0 as i32, window_size.1 as i32), &self.core.ctx.queue);
 
-                self.ui_layout.set_layout_dimensions(window_size.0/dpi_scale, window_size.1/dpi_scale);
-                self.ui_layout.pointer_state(self.mouse_poistion.0/dpi_scale, self.mouse_poistion.1/dpi_scale, self.pointer_state);
-                self.ui_layout.update_scroll_containers(false, self.scroll_delta_distance.0, self.scroll_delta_distance.1, self.scroll_delta_time.elapsed().as_secs_f32());
-                self.scroll_delta_distance = (0.0,0.0);
-                self.scroll_delta_time = Instant::now();
+                self.core.ui_layout.set_layout_dimensions(window_size.0/dpi_scale, window_size.1/dpi_scale);
+                self.core.ui_layout.pointer_state(
+                    self.core.mouse_poistion.0/dpi_scale, 
+                    self.core.mouse_poistion.1/dpi_scale, 
+                    self.core.left_mouse_button
+                );
+                self.core.ui_layout.update_scroll_containers(
+                    false, 
+                    self.core.scroll_delta_distance.0, 
+                    self.core.scroll_delta_distance.1, 
+                    self.core.scroll_delta_time.elapsed().as_secs_f32()
+                );
+                self.core.scroll_delta_distance = (0.0,0.0);
+                self.core.scroll_delta_time = Instant::now();
 
-                self.ui_layout.begin_layout(ui_renderer);
-                events = self.binder.set_page(&viewport.page, self.clicked, &mut self.ui_layout, &self.user_application);
-                if events.len() > 0 {
-                    println!("number of events: {:?}", events.len());
-                }
-                self.clicked = false;
-                let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
+                self.core.ui_layout.begin_layout(ui_renderer);
+                self.layout_binder.set_page(
+                    window_id,
+                    &mut self.core, 
+                    &mut self.user_application
+                );
+                self.core.left_mouse_clicked = false;
+                self.core.right_mouse_clicked = false;
+                let (render_commands, mut ui_renderer) = self.core.ui_layout.end_layout();
 
                 self.core.ctx.render(
-                    viewport,
+                    self.core.viewports.get_mut(&window_id).as_mut().unwrap(),
                     MULTI_SAMPLE_COUNT,
                     |render_pass, device, queue, config| {
                         
-                        self.scene_renderer.render(&mut self.core.models, render_pass, &queue);
+                        self.core.scene_renderer.render(&mut self.core.models, render_pass, &queue);
                         ui_renderer.render_layout(render_commands, render_pass, &device, &queue, &config);
                     }
                 ).unwrap();
@@ -402,14 +417,28 @@ where
                 self.core.ui_renderer = Some(ui_renderer);
             }
             WindowEvent::MouseInput { device_id:_, state, button } => {
+                let dpi = self.core.ui_renderer.as_ref().unwrap().dpi_scale;
                 match button {
                     MouseButton::Left => {
                         match state {
                             ElementState::Pressed => {
-                                self.pointer_state = true;
-                                self.clicked = true;
+                                self.core.left_mouse_button = true;
+                                self.core.left_mouse_clicked = true;
+                                self.core.x_at_click = self.core.mouse_poistion.0/dpi;
+                                self.core.y_at_click = self.core.mouse_poistion.1/dpi;
                             }
-                            ElementState::Released => self.pointer_state = false,
+                            ElementState::Released => self.core.left_mouse_button = false,
+                        }
+                    }
+                    MouseButton::Right => {
+                        match state {
+                            ElementState::Pressed => {
+                                self.core.right_mouse_button = true;
+                                self.core.right_mouse_clicked = true;
+                                self.core.x_at_click = self.core.mouse_poistion.0/dpi;
+                                self.core.y_at_click = self.core.mouse_poistion.1/dpi;
+                            }
+                            ElementState::Released => self.core.right_mouse_button = false,
                         }
                     }
                     _ => {}
@@ -417,24 +446,20 @@ where
                 //viewport.window.request_redraw();
             }
             WindowEvent::MouseWheel { device_id:_, delta, phase:_ } => {
-                self.scroll_delta_distance = match delta {
+                self.core.scroll_delta_distance = match delta {
                     MouseScrollDelta::LineDelta(x,y ) => (x,y),
                     MouseScrollDelta::PixelDelta(position) => position.into()
                 };
                 //viewport.window.request_redraw();
             }
             WindowEvent::CursorMoved { device_id:_, position } => {
-                self.mouse_poistion = position.into();
+                self.core.mouse_poistion = position.into();
                 //viewport.window.request_redraw();
             }
             _ => {}
         }
         
-        viewport.window.request_redraw();
-
-        for event in events.iter() {
-            event.dispatch(&mut self.user_application, &mut self.core);
-        }
+        self.core.viewports.get_mut(&window_id).as_mut().unwrap().window.request_redraw();
         
     }
 
@@ -442,9 +467,9 @@ where
         if let InternalEvents::RebuildLayout(path) = event {
             let xml_string = read_to_string(path).unwrap();
             if let Ok((name, page, reuseables)) = Parser::add_page(&xml_string) {
-                let _ = self.binder.replace_page(name.as_str(), page);
+                let _ = self.layout_binder.replace_page(name.as_str(), page);
                 for (name, reusable) in reuseables {
-                    let _ = self.binder.replace_reusable(name.as_str(), reusable);
+                    let _ = self.layout_binder.replace_reusable(name.as_str(), reusable);
                 }
             }
             for (_window_id,viewport) in self.core.viewports.iter_mut() {
