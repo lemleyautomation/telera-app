@@ -84,6 +84,9 @@ impl SceneRenderer {
         match self.render_pipeline.as_mut() {
             None => return,
             Some(render_pipeline) => {
+
+                //render_pass.set_viewport(``x``, y, w, h, min_depth, max_depth);
+
                 self.camera_controller.update_camera(&mut self.camera);
                 self.camera_uniform.update_view_proj(&self.camera);
                 queue.write_buffer(

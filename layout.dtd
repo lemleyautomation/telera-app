@@ -1,7 +1,7 @@
 <!ELEMENT page (element|grow|reusable)*>
 <!ATTLIST page name CDATA #REQUIRED>
 
-<!ELEMENT element (element-config,(element|text-element|hovered|clicked|right-clicked|grow|use|list|tk)*)>
+<!ELEMENT element (element-config,(element|text-element|hovered|clicked|right-clicked|grow|use|list|treeview|textbox)*)>
 <!ATTLIST element id CDATA "element">
 <!ATTLIST element if CDATA #IMPLIED>
 <!ATTLIST element if-not CDATA #IMPLIED>
@@ -43,7 +43,7 @@
 
 <!ELEMENT hovered (
     element|element-config|text-element|text-config|
-    use|hovered|clicked|tk|
+    use|hovered|clicked|treeview|textbox|
     id|
     width-grow|width-fit|width-fixed|width-percent|
     height-grow|height-fit|height-fixed|height-percent|
@@ -67,7 +67,7 @@
 
 <!ELEMENT clicked (
     element|element-config|text-element|text-config|
-    use|hovered|tk|
+    use|hovered|treeview|textbox|
     id|
     width-grow|width-fit|width-fixed|width-percent|
     height-grow|height-fit|height-fixed|height-percent|
@@ -91,7 +91,7 @@
 
 <!ELEMENT right-clicked (
     element|element-config|text-element|text-config|
-    use|hovered|tk|
+    use|hovered|treeview|textbox|
     id|
     width-grow|width-fit|width-fixed|width-percent|
     height-grow|height-fit|height-fixed|height-percent|
@@ -113,7 +113,7 @@
     )*>
 <!ATTLIST right-clicked emit CDATA #IMPLIED>
 
-<!ELEMENT reusable (reusable-config?, (element|text-element|element-config|text-config|tk)*)>
+<!ELEMENT reusable (reusable-config?, (element|text-element|element-config|text-config|treeview|textbox)*)>
 <!ATTLIST reusable name CDATA #REQUIRED>
 
 <!ELEMENT reusable-config (
@@ -123,15 +123,21 @@
     set-image|set-color|set-event
     )*>
 
-<!ELEMENT tk (
+<!ELEMENT treeview (
     get-bool|get-numeric|get-text|
     get-image|get-color|get-event|
     set-bool|set-numeric|set-text|
     set-image|set-color|set-event
     )*>
-<!ATTLIST tk type CDATA #REQUIRED>
-<!ATTLIST tk if CDATA #IMPLIED>
-<!ATTLIST tk if-not CDATA #IMPLIED>
+<!ATTLIST treeview name CDATA #REQUIRED>
+
+<!ELEMENT textbox (
+    get-bool|get-numeric|get-text|
+    get-image|get-color|get-event|
+    set-bool|set-numeric|set-text|
+    set-image|set-color|set-event
+    )*>
+<!ATTLIST textbox name CDATA #REQUIRED>
 
 <!ELEMENT use (
     get-bool|get-numeric|get-text|

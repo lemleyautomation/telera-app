@@ -12,11 +12,13 @@ use quick_xml::reader::Reader;
 use quick_xml::events::BytesStart;
 use quick_xml::Decoder;
 
+use rkyv::collections::swiss_table::HashMapResolver;
 pub use strum;
 pub use strum_macros::Display;
 pub use strum_macros::EnumString;
 
-use crate::toolkit;
+use crate::ui_toolkit;
+use crate::EventContext;
 use crate::TreeViewItem;
 
 use crate::EventHandler;
@@ -70,8 +72,11 @@ pub enum FlowControlCommand{
     UseOpened{name: String},
     UseClosed,
 
-    TKOpened{name: String, version: u32},
-    TKClosed,
+    TreeViewOpened{name: String},
+    TreeViewClosed,
+
+    TextBoxOpened{name: String},
+    TextBoxClosed,
 
     // if not
     IfOpened{condition: String},
@@ -397,16 +402,14 @@ pub struct Parser<Event>
 where
     Event: Clone+Debug+PartialEq+FromStr,
 {
-    page: HashMap<String, XMLPage<Event>>,
-    reusable: HashMap<String, Vec<LayoutCommandType<Event>>>,
+    page: Vec<LayoutCommandType<Event>>,
+    page_name: String,
+    reusables: HashMap<String, Vec<LayoutCommandType<Event>>>,
 
     mode: ParsingMode,
 
-    current_page: Vec<LayoutCommandType<Event>>,
-    current_page_name: String,
-
     current_reusable: Vec<LayoutCommandType<Event>>,
-    reusable_name: String,
+    current_reusable_name: String,
 
     nesting_level: i32,
     xml_nesting_stack: Vec<i32>,
@@ -421,7 +424,18 @@ where
     <Event as FromStr>::Err: Debug,
 {
     pub fn new() -> Self {
-        Parser { page: HashMap::new(), reusable: HashMap::new(),  mode: ParsingMode::default(), current_page: Vec::new(), current_page_name: String::new(), current_reusable: Vec::new(), reusable_name: String::new(), nesting_level: 0, xml_nesting_stack: Vec::new(), text_opened: false, text_content: None }
+        Parser { 
+            reusables: HashMap::new(),
+            mode: ParsingMode::default(),
+            page: Vec::new(),
+            page_name: String::new(),
+            current_reusable: Vec::new(),
+            current_reusable_name: String::new(),
+            nesting_level: 0, 
+            xml_nesting_stack: Vec::new(), 
+            text_opened: false, 
+            text_content: None 
+        }
     }
 
     pub fn add_page(xml_string: &str) -> Result<(String, Vec<LayoutCommandType<Event>>,HashMap<String, Vec<LayoutCommandType<Event>>>), ParserError>{
@@ -445,7 +459,7 @@ where
                     return Err(ParserError::ReaderError)
                 },
                 Ok(XMLEvent::Eof) => break,
-                Ok(XMLEvent::Start(mut e)) => {
+                Ok(XMLEvent::Start(e)) => {
                     parser.nest();
                     match e.name().as_ref() {
                         b"reusable" => match e.cdata("name") {
@@ -456,7 +470,7 @@ where
                             None => return Err(ParserError::UnNamedPage),
                             Some(name) => {
                                 //println!("page: {:?}", &name);
-                                parser.current_page_name = name;
+                                parser.page_name = name;
                             }
                         }
                         b"element" => {
@@ -483,13 +497,16 @@ where
                             None => return Err(ParserError::UnnamedUseTag),
                             Some(fragment_name) => parser.flow_control(FlowControlCommand::UseOpened{name:fragment_name.clone()}),
                         }
-                        b"tk" => match e.cdata("type") {
+                        b"treeview" => match e.cdata("name") {
                             None => return Err(ParserError::RequiredAttributeValueMissing),
                             Some(name) => {
-                                match try_parse::<u32>("version", &mut e) {
-                                    None => parser.flow_control(FlowControlCommand::TKOpened { name: name, version: 0 }),
-                                    Some(version) => parser.flow_control(FlowControlCommand::TKOpened { name: name, version: version }),
-                                }
+                                parser.flow_control(FlowControlCommand::TreeViewOpened { name })
+                            }
+                        }
+                        b"textbox" => match e.cdata("name") {
+                            None => return Err(ParserError::RequiredAttributeValueMissing),
+                            Some(name) => {
+                                parser.flow_control(FlowControlCommand::TextBoxOpened { name })
                             }
                         }
                         b"hovered" =>           parser.flow_control(FlowControlCommand::HoveredOpened),
@@ -499,7 +516,9 @@ where
                             None => return Err(ParserError::ListWithoutSource),
                             Some(src) => parser.flow_control(FlowControlCommand::ListOpened { src }),
                         }
-                        other => return Err(ParserError::UnknownTag(unsafe{String::from_raw_parts(other.to_owned().as_mut_ptr(), other.len(), other.len()*2)}))
+                        // useful for debugging but will crash the program
+                        // other => return Err(ParserError::UnknownTag(unsafe{String::from_raw_parts(other.to_owned().as_mut_ptr(), other.len(), other.len()*2)}))
+                        _ => return Err(ParserError::ReaderError)
                     }
                 }
                 Ok(XMLEvent::End(e)) => {
@@ -520,14 +539,17 @@ where
                             parser.flow_control(FlowControlCommand::TextElementClosed);
                             text_opened = false;
                         }
-                        b"content" =>           parser.close_text_content(),
+                        b"content" => if let Err(_) = parser.close_text_content() {return Err(ParserError::RequiredAttributeValueMissing);},
                         b"use" =>               parser.flow_control(FlowControlCommand::UseClosed),
-                        b"tk" =>                parser.flow_control(FlowControlCommand::TKClosed),
+                        b"treeview" =>                parser.flow_control(FlowControlCommand::TreeViewClosed),
+                        b"textbox" =>                parser.flow_control(FlowControlCommand::TextBoxClosed),
                         b"hovered" =>           parser.flow_control(FlowControlCommand::HoveredClosed),
                         b"clicked" =>           parser.flow_control(FlowControlCommand::ClickedClosed),
                         b"right-clicked" =>     parser.flow_control(FlowControlCommand::RightClickClosed),
                         b"list" =>              parser.flow_control(FlowControlCommand::ListClosed),
-                        other => return Err(ParserError::UnknownTag(unsafe{String::from_raw_parts(other.to_owned().as_mut_ptr(), other.len(), other.len()*2)}))
+                        // useful for debugging but will crash the program
+                        // other => return Err(ParserError::UnknownTag(unsafe{String::from_raw_parts(other.to_owned().as_mut_ptr(), other.len(), other.len()*2)}))
+                        _ => return Err(ParserError::ReaderError)
                     }
                 }
                 Ok(XMLEvent::Empty(mut e)) => {
@@ -1015,7 +1037,7 @@ where
                 Ok(XMLEvent::Text(e)) => {
                     parser.receive_text_content(e.unescape().unwrap().to_string())
                 },
-                _ => {}
+                Ok(_) => {}
             }
         }
 
@@ -1033,18 +1055,7 @@ where
             return Err(ParserError::ReaderError);
         }
 
-        match parser.page.contains_key(&parser.current_page_name) {
-            true => parser.page.remove(&parser.current_page_name),
-            false => parser.page.insert(parser.current_page_name.clone(),
-            XMLPage {
-                    commands: parser.current_page.clone(),
-                    reusables: parser.reusable.clone(),                     
-                    editable_text: HashMap::new(),
-                }
-            )
-        };
-        
-        Ok((parser.current_page_name, parser.current_page, parser.reusable))
+        Ok((parser.page_name, parser.page, parser.reusables))
     }
 
     fn flow_control(&mut self, command: FlowControlCommand){
@@ -1055,25 +1066,25 @@ where
         }
         match self.mode {
             ParsingMode::Reusable => self.current_reusable.push(LayoutCommandType::FlowControl(command)),
-            ParsingMode::Normal => self.current_page.push(LayoutCommandType::FlowControl(command)),
+            ParsingMode::Normal => self.page.push(LayoutCommandType::FlowControl(command)),
         }
     }
     fn page_data(&mut self, command: PageDataCommand<Event>){
         match self.mode {
             ParsingMode::Reusable => self.current_reusable.push(LayoutCommandType::PageData(command)),
-            ParsingMode::Normal => self.current_page.push(LayoutCommandType::PageData(command)),
+            ParsingMode::Normal => self.page.push(LayoutCommandType::PageData(command)),
         }
     }
     fn config_command(&mut self, command: ConfigCommand){
         match self.mode {
             ParsingMode::Reusable => self.current_reusable.push(LayoutCommandType::ElementConfig(command)),
-            ParsingMode::Normal => self.current_page.push(LayoutCommandType::ElementConfig(command)),
+            ParsingMode::Normal => self.page.push(LayoutCommandType::ElementConfig(command)),
         }
     }
     fn text_config(&mut self, command: TextConfigCommand){
         match self.mode {
             ParsingMode::Reusable => self.current_reusable.push(LayoutCommandType::TextConfig(command)),
-            ParsingMode::Normal => self.current_page.push(LayoutCommandType::TextConfig(command)),
+            ParsingMode::Normal => self.page.push(LayoutCommandType::TextConfig(command)),
         }
     }
     fn push_nest(&mut self, tag: FlowControlCommand){
@@ -1101,18 +1112,22 @@ where
     fn receive_text_content(&mut self, content: String){
         self.text_content = Some(content);
     }
-    fn close_text_content(&mut self){
-        let content = self.text_content.take().unwrap();
-        self.text_config(TextConfigCommand::Content(content));
+    fn close_text_content(&mut self) -> Result<(), ()>{
+
+        if let Some(content) = self.text_content.take() {
+            self.text_config(TextConfigCommand::Content(content));
+            return Ok(())
+        }
+        Err(())
     }
     fn open_reusable(&mut self, name: String){
-        self.reusable_name = name;
+        self.current_reusable_name = name;
         self.current_reusable.clear();
         self.mode = ParsingMode::Reusable;
     }
     fn close_reusable(&mut self){
         let new_fragment = self.current_reusable.clone();
-        self.reusable.insert(self.reusable_name.clone(), new_fragment);
+        self.reusables.insert(self.current_reusable_name.clone(), new_fragment);
         self.mode = ParsingMode::Normal;
     }    
 }
@@ -1179,7 +1194,7 @@ where
         UserApp: ParserDataAccess<Image, Event>,
     {
         let page = api.viewports.get_mut(&window_id).as_mut().unwrap().page.clone();
-        let mut events = Vec::<Event>::new();
+        let mut events = Vec::<(Event, Option<EventContext>)>::new();
 
         if let Some(page_commands) = self.pages.get(&page) {
             let mut command_references = Vec::<&LayoutCommandType<Event>>::new();
@@ -1201,8 +1216,8 @@ where
             println!("Page set");
         }
 
-        for event in events {
-            event.dispatch(user_app, api);
+        for (event, context) in events {
+            event.dispatch(user_app, context, api);
         }
     }
 }
@@ -1216,8 +1231,8 @@ fn set_layout<'render_pass, Image, Event, UserApp>(
     append_config: &mut Option<ElementConfiguration>,
     append_text_config: &mut Option<TextConfig>,
     user_app: &UserApp,
-    mut events: Vec::<Event>,
-) -> Vec::<Event>
+    mut events: Vec::<(Event, Option<EventContext>)>,
+) -> Vec::<(Event, Option<EventContext>)>
 where 
     Image: Clone+Debug+Default+PartialEq, 
     Event: FromStr+Clone+PartialEq+Debug+EventHandler<UserApplication = UserApp>,
@@ -1239,7 +1254,6 @@ where
 
     let mut recursive_commands = Vec::<&LayoutCommandType<Event>>::new();
     let mut recursive_source = String::new();
-    //let mut recursive_version: u32 = 0;
     let mut recursive_call_stack = HashMap::<String, &PageDataCommand<Event>>::new();
     let mut collect_recursive_declarations = false;
 
@@ -1338,17 +1352,17 @@ where
                                         if  let PageDataCommand::GetEvent { local, from } = event &&
                                             let Some(event) = user_app.get_event(&from, &list_data)
                                         {
-                                            events.push(event);
+                                            events.push((event, None));
                                         }
                                         else if let PageDataCommand::SetEvent { local, to } = event {
                                             //println!("{:?}",to);
-                                            events.push(to.clone());
+                                            events.push((to.clone(), None));
                                         }
                                     }
                                     else {
                                         // attempt to process it as a global event
                                         if let Ok(event) = Event::from_str(event) {
-                                            events.push(event);
+                                            events.push((event, None));
                                         }
                                     }
                                 }
@@ -1381,17 +1395,17 @@ where
                                         if  let PageDataCommand::GetEvent { local, from } = event &&
                                             let Some(event) = user_app.get_event(&from, &list_data)
                                         {
-                                            events.push(event);
+                                            events.push((event, None));
                                         }
                                         else if let PageDataCommand::SetEvent { local, to } = event {
                                             //println!("{:?}",to);
-                                            events.push(to.clone());
+                                            events.push((to.clone(), None));
                                         }
                                     }
                                     else {
                                         // attempt to process it as a global event
                                         if let Ok(event) = Event::from_str(event) {
-                                            events.push(event);
+                                            events.push((event, None));
                                         }
                                     }
                                 }
@@ -1448,6 +1462,9 @@ where
 
                         if skip.is_none() {
                             api.ui_layout.open_element();
+                            if api.ui_layout.hovered() {
+                                let x = api.ui_layout.get_element_id("hi");
+                            }
                         }
                     }
                     FlowControlCommand::ElementClosed => {
@@ -1469,7 +1486,11 @@ where
         
                         if skip.is_none() && append_config.is_none(){
                             let final_config = config.take().unwrap();
-                            api.ui_layout.configure_element(&final_config);
+                            let id = api.ui_layout.configure_element(&final_config);
+                            if api.ui_layout.hovered() && api.left_mouse_clicked {
+                                api.focus = id;
+                                println!("focus: {:?}", api.focus);
+                            }
                         }
                         else {
                             //println!("config actually not closed");
@@ -1525,7 +1546,7 @@ where
                             
                         }
                     }
-                    FlowControlCommand::TKOpened { name, version } => {
+                    FlowControlCommand::TreeViewOpened { name } => {
                         nesting_level += 1;
 
                         if skip.is_none() {
@@ -1533,21 +1554,32 @@ where
                             recursive_call_stack.clear();
                             collect_recursive_declarations = true;
                             recursive_source = name.to_string();
-                            //recursive_version = *version;
                         }
                     }
-                    FlowControlCommand::TKClosed => {
+                    FlowControlCommand::TreeViewClosed => {
                         nesting_level -= 1;
 
                         if skip.is_none() {
                             collect_recursive_declarations = false;
-                            
-                            match recursive_source.as_str() {
-                                "treeview" => {
-                                    events = toolkit::treeview("treeview", api, user_app, events);
-                                }
-                                _ => {}
-                            }
+                            events = ui_toolkit::treeview::treeview(&recursive_source, api, user_app, events);
+                        }
+                    }
+                    FlowControlCommand::TextBoxOpened { name } => {
+                        nesting_level += 1;
+
+                        if skip.is_none() {
+                            recursive_commands.clear();
+                            recursive_call_stack.clear();
+                            collect_recursive_declarations = true;
+                            recursive_source = name.to_string();
+                        }
+                    }
+                    FlowControlCommand::TextBoxClosed => {
+                        nesting_level -= 1;
+
+                        if skip.is_none() {
+                            collect_recursive_declarations = false;
+                            events = ui_toolkit::textbox::text_box(&recursive_source, api, user_app, events);
                         }
                     }
                     FlowControlCommand::TextElementOpened => {

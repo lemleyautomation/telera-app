@@ -31,7 +31,7 @@ fn impl_handler_trait(abstract_syntax_tree: syn::DeriveInput) -> proc_macro::Tok
             let handler_function = proc_macro2::Ident::new(&variant_name, enum_span);
 
             quote::quote! {
-                #enum_name::#enum_variant => #handler_function(app,api),
+                #enum_name::#enum_variant => #handler_function(app,context,api),
             }
         }).collect::<Vec<proc_macro2::TokenStream>>()
     } else {
@@ -41,7 +41,7 @@ fn impl_handler_trait(abstract_syntax_tree: syn::DeriveInput) -> proc_macro::Tok
     quote::quote! {
         impl EventHandler for #enum_name {
             type UserApplication = #user_application;
-            fn dispatch(&self, app: &mut Self::UserApplication, api: &mut API) {
+            fn dispatch(&self, app: &mut Self::UserApplication, context: Option<EventContext>, api: &mut API) {
                 match self {
                     #(#variants)*//#enum_name::Yes => yes_handler(app, api),
                     _ => {}

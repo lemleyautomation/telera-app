@@ -10,15 +10,15 @@ enum BasicEvents {
     FileButtonClicked,
 }
 
-fn squirrel_clicked_handler(app: &mut BasicApp, _api: &mut API){
+fn squirrel_clicked_handler(app: &mut BasicApp, _context: Option<EventContext>, _api: &mut API){
     app.selected_document = 0;
 }
 
-fn lorem_clicked_handler(app: &mut BasicApp, _api: &mut API){
+fn lorem_clicked_handler(app: &mut BasicApp, _context: Option<EventContext>, _api: &mut API){
     app.selected_document = 1;
 }
 
-fn file_button_clicked_handler(app: &mut BasicApp, _api: &mut API){
+fn file_button_clicked_handler(app: &mut BasicApp, _context: Option<EventContext>, _api: &mut API){
     app.file_menu_open = !app.file_menu_open;
 }
 

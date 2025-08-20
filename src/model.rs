@@ -169,7 +169,7 @@ impl Transform {
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[rkyv(compare(PartialEq), derive(Debug),)]
 pub struct TransformMatrix {
-    model: [[f32; 4]; 4],
+    pub model: [[f32; 4]; 4],
 }
 
 impl TransformMatrix {
@@ -208,6 +208,10 @@ impl TransformMatrix {
                 },
             ],
         }
+    }
+
+    pub fn empty() -> Self {
+        TransformMatrix { model: [[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],] }
     }
 }
 

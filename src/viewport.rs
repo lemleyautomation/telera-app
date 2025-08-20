@@ -65,10 +65,10 @@ impl BuildViewport for WindowAttributes {
         surface.configure(&ctx.device, &config);
 
         let depth_texture = DepthTexture::new(&ctx.device, &config, multi_sample_count);
-
+        
         let multi_sample_texture =
             MultiSampleTexture::new(&ctx.device, &config, multi_sample_count);
-
+        
         Viewport {
             window,
             page,

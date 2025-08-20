@@ -53,9 +53,9 @@ use telera_layout::LayoutEngine;
 
 mod xml_parse;
 pub use xml_parse::*;
-mod treeview;
-pub use treeview::TreeViewItem;
-mod toolkit;
+mod ui_toolkit;
+pub use ui_toolkit::treeview::TreeViewItem;
+pub use ui_toolkit::treeview::TreeViewEvents;
 
 mod scene_renderer;
 use scene_renderer::SceneRenderer;
@@ -120,12 +120,15 @@ pub struct API{
     viewport_lookup: bimap::BiMap<String, WindowId>,
     viewports: HashMap<WindowId, Viewport>,
 
+    pub event_string: String,
+
     left_mouse_button: bool,
     right_mouse_button: bool,
     left_mouse_clicked: bool,
     right_mouse_clicked: bool,
     pub x_at_click: f32,
     pub y_at_click: f32,
+    pub focus: u32,
 
     pub mouse_poistion: (f32, f32),
     scroll_delta_time: Instant,
@@ -197,11 +200,38 @@ impl API{
     }
 }
 
+#[derive(Clone)]
+pub struct EventContext{
+    pub text: Option<String>,
+    pub code: Option<u32>,
+    pub code2: Option<u32>
+}
+
+impl EventContext {
+    pub fn new() -> Self {
+        EventContext { text: None, code: None, code2: None }
+    }
+    pub fn from_code(code: u32) -> Self {
+        EventContext { text: None, code: Some(code), code2: None }
+    }
+    pub fn from_code2(code2: u32) -> Self {
+        EventContext { text: None, code: None, code2: Some(code2) }
+    }
+    pub fn code(mut self, code: u32) -> Self {
+        self.code = Some(code);
+        self
+    }
+    pub fn code2(mut self, code2: u32) -> Self {
+        self.code2 = Some(code2);
+        self
+    }
+}
+
 pub use event_handler_derive;
 pub trait EventHandler {
     type UserApplication;
     #[allow(unused_variables)]
-    fn dispatch(&self, app: &mut Self::UserApplication, api: &mut API) {}
+    fn dispatch(&self, app: &mut Self::UserApplication, context: Option<EventContext>, api: &mut API) {}
 }
 
 struct Application<UserApp, UserEvents>
@@ -243,12 +273,15 @@ where
             viewport_lookup: bimap::BiMap::new(),
             viewports: HashMap::new(),
 
+            event_string: "".to_string(),
+
             left_mouse_button: false,
             right_mouse_button: false,
             left_mouse_clicked: false,
             right_mouse_clicked: false,
             x_at_click: 0.0,
             y_at_click: 0.0,
+            focus: 0,
             
             mouse_poistion: (0.0,0.0),
             scroll_delta_time: Instant::now(),
@@ -259,21 +292,61 @@ where
 
         #[cfg(debug_assertions)]
         {
-            for dir in std::fs::read_dir("src/layouts").unwrap() {
+            let entries = std::fs::read_dir("src/layouts").unwrap_or_else(|e| {
+                eprintln!("Error reading directory: {}", e);
+                std::process::exit(1);
+            });
+
+            for dir in entries {
                 #[allow(for_loops_over_fallibles)]
                 for dir in dir {
                     let entry = dir.path();
                     if entry.is_file() {
-                        let file = read_to_string(entry).unwrap();
-                        let (page_name, page, reusables) = Parser::<UserEvents>::add_page(&file).unwrap();
-
-                        layout_binder.add_page(page_name.as_str(), page);
-                        for (name, reusable) in reusables {
-                            layout_binder.add_reusables(name.as_str(), reusable);
+                        if let Ok(file) = read_to_string(entry) {
+                            match Parser::<UserEvents>::add_page(&file) {
+                                Ok((page_name, page, reusables)) => {
+                                    layout_binder.add_page(page_name.as_str(), page);
+                            
+                                    for (name, reusable) in reusables {
+                                        layout_binder.add_reusables(name.as_str(), reusable);
+                                                
+                                    }
+                                }
+                                Err(_) => {
+                                }
+                            }
                         }
                     }
                 }
             }
+
+            // let x = match std::fs::read_dir("src/layouts").unwrap() {
+            //     Ok(t) => {3}
+            //     Err(e) => {3}
+                // Ok(dir) => {
+                //     for dir in std::fs::read_dir("src/layouts").unwrap() {
+                //         #[allow(for_loops_over_fallibles)]
+                //         for dir in dir {
+                //             let entry = dir.path();
+                //             if entry.is_file() {
+                //                 if let Ok(file) = read_to_string(entry)
+                //                 && let Ok((page_name, page, reusables)) = Parser::<UserEvents>::add_page(&file){
+                                    
+                //                     layout_binder.add_page(page_name.as_str(), page);
+                                    
+                //                     for (name, reusable) in reusables {
+                //                         layout_binder.add_reusables(name.as_str(), reusable);
+                                                
+                //                     }
+                //                 }
+                                
+                //             }
+                //         }
+                        
+                //     }
+                // }
+                // Err(e) => {}
+            //};
         }
 
         #[cfg(not(debug_assertions))]
@@ -293,48 +366,48 @@ where
                 }
             }
         }
-        
 
         Application {
             layout_binder,
             core,
             app_events,
             user_application,
-            watcher
+            watcher,
         }
     }
 
     fn open_staged_windows(&mut self, event_loop: &winit::event_loop::ActiveEventLoop){
         for _ in 0..self.core.staged_windows.len() {
-
+                    
             let (name, page, attr) = self.core.staged_windows.pop().unwrap();
             
             if self.core.viewport_lookup.get_by_left(&name).is_some() { continue; }
-
+            
             let viewport = attr.build_viewport(event_loop, page, &self.core.ctx, MULTI_SAMPLE_COUNT);
-
+            
             viewport.window.set_title(&name);
             let window_id = viewport.window.id();
-
+            
             let ui_renderer = self.core.ui_renderer.as_mut().unwrap();
             match ui_renderer.render_pipeline {
                 Some(_) => {}
                 None => ui_renderer.build_shaders(&self.core.ctx.device, &self.core.ctx.queue, &viewport.config, MULTI_SAMPLE_COUNT)
             }
-
+            
             match self.core.scene_renderer.render_pipeline {
                 Some(_) => {}
                 None => self.core.scene_renderer.build_shaders(&self.core.ctx.device, &viewport.config, MULTI_SAMPLE_COUNT)
             }
-
-            self.core.viewport_lookup.insert(name, window_id);
+            
+            self.core.viewport_lookup.insert(name.clone(), window_id);
             self.core.viewports.insert(window_id, viewport);
+            
         }
         self.core.staged_windows.clear();
     }
 }
 
-impl<UserEvents, UserApp> ApplicationHandler<InternalEvents> for Application<UserApp,UserEvents>
+impl<UserEvents, UserApp> ApplicationHandler<InternalEvents> for Application<UserApp, UserEvents>
 where 
     UserEvents: FromStr+Clone+PartialEq+Debug+EventHandler,
     UserEvents: EventHandler<UserApplication = UserApp>, 
@@ -343,7 +416,6 @@ where
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.user_application.initialize(&mut self.core);
-        //self.ui_layout.set_debug_mode(true);
         self.open_staged_windows(event_loop);
     }
 
@@ -395,6 +467,7 @@ where
                 self.core.scroll_delta_time = Instant::now();
 
                 self.core.ui_layout.begin_layout(ui_renderer);
+        
                 self.layout_binder.set_page(
                     window_id,
                     &mut self.core, 
@@ -402,6 +475,7 @@ where
                 );
                 self.core.left_mouse_clicked = false;
                 self.core.right_mouse_clicked = false;
+                
                 let (render_commands, mut ui_renderer) = self.core.ui_layout.end_layout();
 
                 self.core.ctx.render(
@@ -465,15 +539,22 @@ where
 
     fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, event: InternalEvents) {
         if let InternalEvents::RebuildLayout(path) = event {
-            let xml_string = read_to_string(path).unwrap();
-            if let Ok((name, page, reuseables)) = Parser::add_page(&xml_string) {
-                let _ = self.layout_binder.replace_page(name.as_str(), page);
-                for (name, reusable) in reuseables {
-                    let _ = self.layout_binder.replace_reusable(name.as_str(), reusable);
+            let file = read_to_string(path).unwrap();
+            match Parser::<UserEvents>::add_page(&file) {
+                Ok((page_name, page, reusables)) => {
+                    let _ = self.layout_binder.replace_page(page_name.as_str(), page);
+            
+                    for (name, reusable) in reusables {
+                        self.layout_binder.add_reusables(name.as_str(), reusable);   
+                    }
+
+                    for (_window_id,viewport) in self.core.viewports.iter_mut() {
+                        viewport.window.request_redraw();
+                    }
                 }
-            }
-            for (_window_id,viewport) in self.core.viewports.iter_mut() {
-                viewport.window.request_redraw();
+                Err(e) => {
+                    println!("can't parse pages: {:?}", e);
+                }
             }
         }
     }
@@ -497,6 +578,7 @@ where
         let file_watcher = event_loop.create_proxy();
         let watcher = watch_file("src/layouts", file_watcher);
         let mut app: Application<UserApp, UserEvents> = Application::new(event_loop.create_proxy(), user_application, Some(watcher));
+        
         event_loop.run_app(&mut app).unwrap();
     }
     

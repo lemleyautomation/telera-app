@@ -203,16 +203,16 @@ pub struct SizeUniform {
     y: f32,
 }
 
-impl SizeUniform {
-    fn new() -> Self {
-        Self { x: 0.0, y: 0.0 }
-    }
+// impl SizeUniform {
+//     fn new() -> Self {
+//         Self { x: 0.0, y: 0.0 }
+//     }
 
-    fn update_size(&mut self, x: f32, y: f32) {
-        self.x = x;
-        self.y = y;
-    }
-}
+//     fn update_size(&mut self, x: f32, y: f32) {
+//         self.x = x;
+//         self.y = y;
+//     }
+// }
 
 pub enum RenderBatch {
     Basic {
@@ -260,9 +260,10 @@ pub struct UIRenderer {
     pub measurement_buffer: glyphon::Buffer,
     pub lines: Vec<TextLine>,
 
-    pub size_uniform: SizeUniform,
+    pub viewport_size: (f32,f32),
     pub size_buffer: wgpu::Buffer,
     pub size_bind_group: wgpu::BindGroup,
+    size_bind_group_layout: wgpu::BindGroupLayout,
 
     pub dpi_scale: f32,
 }
@@ -298,65 +299,56 @@ impl MeasureText for UIRenderer {
             y: self.measurement_buffer.metrics().line_height / self.dpi_scale,
         };
 
-        //Vec2 { x: 20.0, y: 12.0 }
         measurement
     }
 }
 
 impl UIRenderer {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        let mut atlas_map = HashMap::<String, wgpu::BindGroup>::new();
-
-        let default_texture = DynamicImage::ImageRgb8(RgbImage::new(10, 10));
-        let default_texture = wgpu::BindGroup::create_atlas(default_texture, &device, &queue);
-        atlas_map.insert("default_atlas".to_string(), default_texture);
+        let mut atlas_dictionary = HashMap::<String, wgpu::BindGroup>::new();
+        atlas_dictionary.insert(
+            "default_atlas".to_string(), 
+            wgpu::BindGroup::create_atlas(
+                DynamicImage::ImageRgb8(RgbImage::new(10, 10)),
+                &device,
+                &queue
+            )
+        );
         let active_atlas = "defualt_atlas".to_string();
 
-        /* #region Size Uniform Creation */
-        let mut size_uniform = SizeUniform::new();
-        size_uniform.update_size(1.0, 1.0);
-
-        let size_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("size uniform buffer"),
-            contents: bytemuck::cast_slice(&[size_uniform]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        let size_bind_group_layout= device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            label: Some("ui_renderer_size_bind_group_layout"),
         });
 
-        let size_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: Some("size_bind_group_layout"),
-            });
-
+        let size_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ui_renderer_size_buffer"),
+            contents: bytemuck::cast_slice(&[SizeUniform {x: 1.0, y: 1.0}]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let size_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &size_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: size_buffer.as_entire_binding(),
             }],
-            label: Some("camera_bind_group"),
+            label: Some("ui_renderer_size_bind_group"),
         });
-        /* #endregion */
+        let (vertex_buffer, vertexes) = make_ui_buffer(&device, "ui_renderer_vertex_buffer", 80000);
 
-        /* #region Render Pipeline Creation */
-        let (vertex_buffer, vertexes) = make_ui_buffer(&device, "new ui triangles", 80000);
 
-        /* #endregion */
-
-        /* #region Text Renderer Creation */
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let measurement_buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
-        /* #endregion */
 
         Self {
             batches: Vec::<RenderBatch>::new(),
@@ -369,7 +361,7 @@ impl UIRenderer {
             vertices: vertexes,
 
             staged_images: Vec::<(String, DynamicImage)>::new(),
-            atlas_map,
+            atlas_map: atlas_dictionary,
             active_atlas,
             new_atlas_binding_required: false,
 
@@ -383,9 +375,10 @@ impl UIRenderer {
             measurement_buffer,
             lines: Vec::<TextLine>::new(),
             dpi_scale: 1.0,
-            size_uniform,
+            viewport_size: (1.0,1.0),
             size_buffer,
             size_bind_group,
+            size_bind_group_layout
         }
     }
 
@@ -396,37 +389,21 @@ impl UIRenderer {
         config: &wgpu::SurfaceConfiguration,
         multi_sample_count: u32,
     ) {
-        let size_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: Some("size_bind_group_layout"),
-            });
-
         let mut ui_pipeline_builder = UIPipeline::new(config.format);
+
         ui_pipeline_builder.add_buffer_layout(UIVertex::get_layout());
-        let render_pipeline = ui_pipeline_builder.build_pipeline(
+
+        self.render_pipeline = Some(ui_pipeline_builder.build_pipeline(
             &device,
-            &size_bind_group_layout,
+            &self.size_bind_group_layout,
             wgpu::MultisampleState {
                 count: multi_sample_count,
                 mask: 1,
                 alpha_to_coverage_enabled: false,
             },
-        );
-
-        self.render_pipeline = Some(render_pipeline);
+        ));
 
         let cache = Cache::new(&device);
-        let viewport = Viewport::new(&device, &cache);
         let mut atlas = TextAtlas::new(&device, &queue, &cache, config.format);
         let text_renderer = TextRenderer::new(
             &mut atlas,
@@ -445,17 +422,19 @@ impl UIRenderer {
             }),
         );
 
-        self.text_viewport = Some(viewport);
+        self.text_viewport = Some(Viewport::new(&device, &cache));
         self.text_atlas = Some(atlas);
         self.text_renderer = Some(text_renderer);
     }
 
     pub fn resize(&mut self, size: (i32, i32), queue: &wgpu::Queue) {
-        self.size_uniform.update_size(size.0 as f32, size.1 as f32);
+
+        self.viewport_size = (size.0 as f32, size.1 as f32);
+
         queue.write_buffer(
             &self.size_buffer,
             0,
-            bytemuck::cast_slice(&[self.size_uniform]),
+            bytemuck::cast_slice(&[SizeUniform {x: size.0 as f32, y: size.1 as f32}]),
         );
 
         match self.text_viewport.as_mut() {
@@ -527,12 +506,12 @@ impl UIRenderer {
 
         let scissor_space = position + size;
 
-        if scissor_space.x > self.size_uniform.x {
-            size.x += self.size_uniform.x - scissor_space.x;
+        if scissor_space.x > self.viewport_size.0 {
+            size.x += self.viewport_size.0 - scissor_space.x;
         }
 
-        if scissor_space.y > self.size_uniform.y {
-            size.y += self.size_uniform.y - scissor_space.y;
+        if scissor_space.y > self.viewport_size.1 {
+            size.y += self.viewport_size.1 - scissor_space.y;
         }
 
         self.scissor_active = true;
@@ -646,8 +625,8 @@ impl UIRenderer {
                             render_pass.set_scissor_rect(
                                 0,
                                 0,
-                                self.size_uniform.x as u32,
-                                self.size_uniform.y as u32,
+                                self.viewport_size.0 as u32,
+                                self.viewport_size.1 as u32,
                             );
                         }
                         RenderBatch::Atlas { begin, end, atlas } => {

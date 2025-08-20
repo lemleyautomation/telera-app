@@ -1,0 +1,199 @@
+# Main
+
+> ### layout expand
+> - width-grow
+> - height-fit-min: 8
+
+> ### content background color
+> - color: rgb(90,90,90)
+
+#### header button
+- element
+    - config
+        - `paddng-top` 8
+        - `padding-bottom` 8
+        - `padding-left` 16
+        - `padding-right` 16
+        - `color` rgb(140,140,140)
+        - `radius-all` 5
+        - 
+        - hovered:
+            - border-color: black
+            - border-all: 2
+    - children
+        - text-element
+            - config
+                - font-size: 16
+                - line-height: 20
+                - color: white
+            - content-from: label
+
+> ### sidebar button
+> - width-grow
+> - padding-all: 16
+
+> ### drop down menu item
+> - element
+>    - config
+>        - padding-all: 16
+>        - width-grow
+>        - hovered
+>            - color: rgb(120,120,120)
+>    - children
+>        - text
+>            - config
+>                - font-size: 16
+>                - color: white
+>            - content-from: label
+
+> ### list item
+> - element
+>   - if: selected
+>   - config
+>       - use: sidebar button
+>       - color: rgb(120,120,120)
+>       - radius-all: 8
+>       - clicked: Clicked
+>           - border-color: white
+>           - border-all: 2
+>   - children
+>       - text
+>           - config
+>               - font-size: 20
+>               - color: black
+> - element
+>   - if-not: selected
+>   - config
+>       - use: sidebar button
+>       - radius-all: 8
+>       - hovered
+>            - color: rgb(120,120,120)
+>       - clicked: Clicked
+>           - border-color: white
+>           - border-all: 2
+>   - children
+>       - text
+>           - config
+>               - font-size: 20
+>               - color: black
+
+- element: outer container
+    - config
+        - use: layout expand
+        - color: rgb(43,41,51)
+        - direction: ttb
+        - padding-all: 16
+        - child-gap: 16
+    - children
+        - element: header bar
+            - config
+                - use: content background color
+                - radius-all: 8
+                - width-grow
+                - height-fixed: 60
+                - padding-top: 8
+                - padding-bottom: 8
+                - padding-left: 16
+                - padding-right: 16
+                - child-gap: 16
+                - align-children-y: center
+            - children
+                - element: file button
+                    - config
+                        - padding-top: 8
+                        - padding-bottom: 8
+                        - padding-left: 16
+                        - padding-right: 16
+                        - color: rgb(140,140,140)
+                        - radius-all: 5
+                        - hovered
+                            - border-color: black
+                            - border-all: 2
+                        - clicked: FileButtonClicked
+                            - border-color: rgb(43,41,51)
+                            - border-all: 2
+                    - children
+                        - text
+                            - config
+                                - font-size: 16
+                                - line-height: 20
+                                - color: white
+                            - content: File
+                        - element
+                            - if: file-menu-opened
+                            - config
+                                - padding-right:8
+                                - padding-bottom: 8
+                                - floating
+                                    - offset-x: 0
+                                    - offset-y: 35
+                                    - attatch-to-parent: bottom-right
+                            - children
+                                - element
+                                    - config
+                                        - direction: ttb
+                                        - width-fixed: 200
+                                        - color: rgb(40,40,40)
+                                        - radius-all: 8
+                                    - children
+                                        - use: drop down menu item
+                                            - set-text
+                                                - label: New
+                                        - use: drop down menu item
+                                            - set-text
+                                                - label: Open
+                                        - use: drop down menu item
+                                            - set-text
+                                                - label: Close
+                - use: header button
+                    - set-text
+                        - label: Edit
+                - element
+                    - config
+                        - width-grow
+                - use: header button
+                    - set-text
+                        - label: Media
+                - use: header button
+                    - set-text
+                        - label: Support
+        - element: lower content
+            - config
+                - child-gap: 16
+                - use: layout expand
+            - children
+                - element: sidebar
+                    - config
+                        - use: content background color
+                        - direction: ttb
+                        - padding-all: 16
+                        - child-gap: 8
+                        - width-fixed: 250
+                        - height-grow
+                        - radius-all: 8
+                    - children
+                        - list
+                            - source: Documents
+                            - use: list item
+                - element: main content
+                    - config
+                        - use: content background color
+                        - scroll-vertical
+                        - direction: ttb
+                        - child-gap: 16
+                        - padding-all: 16
+                        - use: layout expand
+                        - radius-all: 8
+                    - children
+                        - text
+                            - config
+                                - font-size: 24
+                                - line-height: 28
+                                - color: white
+                            - content-from: title
+                        - text
+                            - config
+                                - font-size: 24
+                                - line-height: 28
+                                - color: white
+                            - content-from: contents
