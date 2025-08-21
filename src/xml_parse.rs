@@ -12,7 +12,6 @@ use quick_xml::reader::Reader;
 use quick_xml::events::BytesStart;
 use quick_xml::Decoder;
 
-use rkyv::collections::swiss_table::HashMapResolver;
 pub use strum;
 pub use strum_macros::Display;
 pub use strum_macros::EnumString;

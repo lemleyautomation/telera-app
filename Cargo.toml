@@ -29,6 +29,7 @@ strum = { version = "0.27.1", features = ["derive"] }
 strum_macros = "0.27"
 quick-xml = "0.37.3"
 csscolorparser = { version = "0.7.0", features = [ "named-colors" ] }
+markdown = "1.0.0"
 
 
 [build-dependencies]
