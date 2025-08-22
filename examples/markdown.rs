@@ -1,7 +1,7 @@
 use std::{collections::HashMap, str::FromStr};
 
 use markdown::mdast::{List, Node};
-use telera_app::{ConfigCommand, LayoutCommandType, FlowControlCommand};
+use telera_app::{ConfigCommand, FlowControlCommand, LayoutCommandType, PageDataCommand};
 use telera_layout::Color;
 use csscolorparser;
 
@@ -9,8 +9,7 @@ fn main(){
     if let Ok(file) = std::fs::read_to_string("src/layouts/main.md")
     && let Ok(m) = markdown::to_mdast(&file, &markdown::ParseOptions::default())
     && let Some(children) = m.children() {
-        println!("{:#?}", children[0]);
-        //let _ = process_layout(children);
+        let _ = process_layout(children);
     }
 }
 
@@ -20,31 +19,37 @@ enum ParsingMode {
     Body,
     ReusableElements,
     ReusableConfig,
+    Variables,
 }
 
 fn process_layout(nodes: &Vec<Node>) -> Result<(), String> {
     let mut parsing_mode = ParsingMode::None;
     //let mut page_name = "".to_string();
+    //let mut recursive_call_stack = HashMap::<String, &PageDataCommand<()>>::new();
     let mut open_reuseable_name = "".to_string();
     let mut reusables = HashMap::<String, Vec<LayoutCommandType<()>>>::new();
     for node in nodes {
+        // println!("{:#?}", node);
+        // break;
         match node {
             Node::Heading(h) => {
                 if let Node::Text(t) = &h.children[0] {
-                    if h.depth == 1 {
-                        parsing_mode = ParsingMode::Body;
-                        //page_name = t.value.clone();
-                    }
-                    else if h.depth == 3 {
-                        parsing_mode = ParsingMode::ReusableElements;
-                        open_reuseable_name = t.value.clone();
-                    }
-                    else if h.depth == 4 {
-                        parsing_mode = ParsingMode::ReusableConfig;
-                        open_reuseable_name = t.value.clone();
-                    }
-                    else {
-                        parsing_mode = ParsingMode::None;
+                    match h.depth {
+                        1 => parsing_mode = ParsingMode::Body,
+                        2 =>  {
+                            parsing_mode = ParsingMode::Variables;
+                            println!("hi");
+                            let _ = process_variable(&h.children);
+                        }
+                        3 => {
+                            parsing_mode = ParsingMode::ReusableElements;
+                            open_reuseable_name = t.value.clone();
+                        }
+                        4 => {
+                            parsing_mode = ParsingMode::ReusableConfig;
+                            open_reuseable_name = t.value.clone();
+                        },
+                        _ => parsing_mode = ParsingMode::None,
                     }
                 }
             }
@@ -52,7 +57,7 @@ fn process_layout(nodes: &Vec<Node>) -> Result<(), String> {
                 match parsing_mode {
                     ParsingMode::ReusableConfig => {
                         let reusable_items = process_element_config(list);
-                        println!("{:#?}", reusable_items);
+                        //println!("{:#?}", reusable_items);
                         reusables.insert(open_reuseable_name.clone(), reusable_items);
                     }
                     ParsingMode::ReusableElements => {
@@ -65,9 +70,16 @@ fn process_layout(nodes: &Vec<Node>) -> Result<(), String> {
             }
             _ => {}
         }
-        println!("mode: {:?}", parsing_mode);
+        //println!("mode: {:?}", parsing_mode);
     }
     Ok(())
+}
+
+fn process_variable(nodes: &Vec<Node>) -> PageDataCommand<()>{
+
+    println!("{:#?}", nodes);
+
+    PageDataCommand::SetBool { local: "".to_string(), to: false }
 }
 
 fn process_element_config(list: &List) -> Vec<LayoutCommandType<()>> {
