@@ -223,8 +223,9 @@ pub enum ConfigCommand{
     FloatingAttachElementToElement{other_element_id:String},
     FloatingAttachElementToRoot,
 
+    Use{name: String},
+
     // todo:
-    // floating elements
     // custom elements
     // custom layouts
 }
@@ -1853,6 +1854,7 @@ where
                             open_config.floating_attach_to_element(0).parse()
                         }
                         ConfigCommand::FloatingAttachElementToRoot => open_config.floating_attach_to_root().parse(),
+                        ConfigCommand::Use { name } => {}
                     }
                 }
             }

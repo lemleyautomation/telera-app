@@ -53,6 +53,8 @@ use telera_layout::LayoutEngine;
 
 mod xml_parse;
 pub use xml_parse::*;
+mod markdown;
+pub use markdown::*;
 mod ui_toolkit;
 pub use ui_toolkit::treeview::TreeViewItem;
 pub use ui_toolkit::treeview::TreeViewEvents;

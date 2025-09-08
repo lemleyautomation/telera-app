@@ -1,11 +1,23 @@
-## `set-color` *label* rgb(0,0,0)
+## koerber-blue
+- `set-color` rgb(0,96,255)
+
+## program name
+- `set-text` Emuflex 3D
+
+## toggle-file-dropdown
+- `set-bool` false
 
 #### layout expand
 - `width-grow`
-- `height-fit-min` 8
+- `height-grow`
+- `image` play
 
 #### content background color
 - `color` rgb(90,90,90)
+
+#### sidebar button
+- `width-grow`
+- `padding-all` 16
 
 ### header button
 - `element`
@@ -19,16 +31,12 @@
         - `hovered`
             - `border-color` black
             - `border-all` 2
-    - `text-element`
+    - `text`
         - `config`
             - `font-size` 16
             - `line-height` 20
             - `color` white
-        - `content` `from` *label*
-
-#### sidebar button
-- `width-grow`
-- `padding-all` 16
+        - *label*
 
 ### drop down menu item
 - `element`
@@ -41,38 +49,7 @@
         - `config`
             - `font-size` 16
             - `color` white
-        - `content` `from` *label*
-
-### list item
-- `if` selected
-    - `element`
-        - `config`
-            - `use` sidebar button
-            - `color` rgb(120,120,120)
-            - `radius-all` 8
-            - `clicked` Clicked
-                - `border-color` white
-                - `border-all` 2
-        - `text`
-            - `config`
-                - `font-size` 20
-                - `color` black
-            - `content` `from` *title*
-- `if-not` selected
-    - `element`
-        - `config`
-            - `use` sidebar button
-            - `radius-all` 8
-            - `hovered`
-                - `color` rgb(120,120,120)
-            - `clicked` Clicked
-                - `border-color` white
-                - `border-all` 2
-        - `text`
-            - `config`
-                - `font-size` 20
-                - `color` black
-            - `content` `from` *title*
+        - *label*
 
 # Viewer3d
 - `element` outer container
@@ -113,7 +90,7 @@
                     - `font-size` 16
                     - `line-height` 20
                     - `color` white
-                - `content` File
+                - File
             - `if` file-menu-opened
                 - `element`
                     - `config`
@@ -157,9 +134,41 @@
                 - `width-fixed` 250
                 - `height-grow`
                 - `radius-all` 8
-            - `list`
-                - `source` Documents
-                - `use` list item
+            - `list` Documents
+                - `if` selected
+                    - `element`
+                        - `config`
+                            - `use` sidebar button
+                            - `color` rgb(120,120,120)
+                            - `radius-all` 8
+                            - `clicked` Clicked
+                                - `border-color` white
+                                - `border-all` 2
+                        - `text`
+                            - `config`
+                                - `font-size` 20
+                                - `color` black
+                            - *title*
+                - `if-not` selected
+                    - `element`
+                        - `config`
+                            - `use` sidebar button
+                            - `radius-all` 8
+                            - `hovered`
+                                - `color` rgb(120,120,120)
+                            - `clicked` Clicked
+                                - `border-color` white
+                                - `border-all` 2
+                        - `text`
+                            - `config`
+                                - `font-size` 20
+                                - `color` black
+                            - *title*
+        - `text`
+            - `config`
+                - `font-size` 20
+                - `color` black
+            - *title*
         - `element` main content
             - `config`
                 - `use` content background color
@@ -174,10 +183,10 @@
                     - `font-size` 24
                     - `line-height` 28
                     - `color` white
-                - `content` `from` *title*
+                - *title*
             - `text`
                 - `config`
                     - `font-size` 24
                     - `line-height` 28
                     - `color` white
-                - `content` `from` *contents*
+                - *contents*
