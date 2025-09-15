@@ -305,50 +305,29 @@ where
                     let entry = dir.path();
                     if entry.is_file() {
                         if let Ok(file) = read_to_string(entry) {
-                            match Parser::<UserEvents>::add_page(&file) {
-                                Ok((page_name, page, reusables)) => {
-                                    layout_binder.add_page(page_name.as_str(), page);
-                            
-                                    for (name, reusable) in reusables {
-                                        layout_binder.add_reusables(name.as_str(), reusable);
-                                                
-                                    }
-                                }
-                                Err(_) => {
+                            if let Ok((page_name, page_layout, reusables)) = process_layout::<UserEvents>(file) {
+                                layout_binder.add_page(&page_name, page_layout);
+                                for (name, reusable) in reusables {
+                                    //println!("{:?}, {:?}", &name, &reusable);
+                                    layout_binder.add_reusable(&name, reusable);
                                 }
                             }
+                            // match Parser::<UserEvents>::add_page(&file) {
+                            //     Ok((page_name, page, reusables)) => {
+                            //         layout_binder.add_page(page_name.as_str(), page);
+                            
+                            //         for (name, reusable) in reusables {
+                            //             layout_binder.add_reusable(name.as_str(), reusable);
+                                                
+                            //         }
+                            //     }
+                            //     Err(_) => {
+                            //     }
+                            // }
                         }
                     }
                 }
             }
-
-            // let x = match std::fs::read_dir("src/layouts").unwrap() {
-            //     Ok(t) => {3}
-            //     Err(e) => {3}
-                // Ok(dir) => {
-                //     for dir in std::fs::read_dir("src/layouts").unwrap() {
-                //         #[allow(for_loops_over_fallibles)]
-                //         for dir in dir {
-                //             let entry = dir.path();
-                //             if entry.is_file() {
-                //                 if let Ok(file) = read_to_string(entry)
-                //                 && let Ok((page_name, page, reusables)) = Parser::<UserEvents>::add_page(&file){
-                                    
-                //                     layout_binder.add_page(page_name.as_str(), page);
-                                    
-                //                     for (name, reusable) in reusables {
-                //                         layout_binder.add_reusables(name.as_str(), reusable);
-                                                
-                //                     }
-                //                 }
-                                
-                //             }
-                //         }
-                        
-                //     }
-                // }
-                // Err(e) => {}
-            //};
         }
 
         #[cfg(not(debug_assertions))]
@@ -542,22 +521,29 @@ where
     fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, event: InternalEvents) {
         if let InternalEvents::RebuildLayout(path) = event {
             let file = read_to_string(path).unwrap();
-            match Parser::<UserEvents>::add_page(&file) {
-                Ok((page_name, page, reusables)) => {
-                    let _ = self.layout_binder.replace_page(page_name.as_str(), page);
-            
-                    for (name, reusable) in reusables {
-                        self.layout_binder.add_reusables(name.as_str(), reusable);   
-                    }
-
-                    for (_window_id,viewport) in self.core.viewports.iter_mut() {
-                        viewport.window.request_redraw();
-                    }
-                }
-                Err(e) => {
-                    println!("can't parse pages: {:?}", e);
+            if let Ok((page_name, page_layout, reusables)) = process_layout::<UserEvents>(file) {
+                let _ = self.layout_binder.replace_page(&page_name, page_layout);
+                self.layout_binder.reusable.clear();
+                for (name, reusable) in reusables {
+                    self.layout_binder.add_reusable(&name, reusable);
                 }
             }
+            // match Parser::<UserEvents>::add_page(&file) {
+            //     Ok((page_name, page, reusables)) => {
+            //         let _ = self.layout_binder.replace_page(page_name.as_str(), page);
+            
+            //         for (name, reusable) in reusables {
+            //             self.layout_binder.add_reusable(name.as_str(), reusable);   
+            //         }
+
+            //         for (_window_id,viewport) in self.core.viewports.iter_mut() {
+            //             viewport.window.request_redraw();
+            //         }
+            //     }
+            //     Err(e) => {
+            //         println!("can't parse pages: {:?}", e);
+            //     }
+            // }
         }
     }
 }
@@ -590,48 +576,3 @@ where
         event_loop.run_app(&mut app).unwrap();
     }
 }
-
-/*
-CLAY({ .id = CLAY_ID("FileMenu"),
-        .floating = {
-            .attachTo = CLAY_ATTACH_TO_PARENT,
-            .attachPoints = {
-                .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM
-            },
-        },
-        .layout = {
-            .padding = {0, 0, 8, 8 }
-        }
-    })) {
-        CLAY({
-            .layout = {
-                .layoutDirection = CLAY_TOP_TO_BOTTOM,
-                .sizing = {
-                        .width = CLAY_SIZING_FIXED(200)
-                },
-            },
-            .backgroundColor = {40, 40, 40, 255 },
-            .cornerRadius = CLAY_CORNER_RADIUS(8)
-        }) {
-            // Render dropdown items here
-            RenderDropdownMenuItem(CLAY_STRING("New"));
-            RenderDropdownMenuItem(CLAY_STRING("Open"));
-            RenderDropdownMenuItem(CLAY_STRING("Close"));
-        }
-    }
-}
-              .sizing = {
-                        .width = CLAY_SIZING_FIXED(200)
-                },
-            },
-            .backgroundColor = {40, 40, 40, 255 },
-            .cornerRadius = CLAY_CORNER_RADIUS(8)
-        }) {
-            // Render dropdown items here
-            RenderDropdownMenuItem(CLAY_STRING("New"));
-            RenderDropdownMenuItem(CLAY_STRING("Open"));
-            RenderDropdownMenuItem(CLAY_STRING("Close"));
-        }
-    }
-}
-*/

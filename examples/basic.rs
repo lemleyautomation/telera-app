@@ -72,6 +72,7 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
     where
         'application: 'render_pass,
     {
+        //println!("{:?}, {:?}", name, list);
         match list {
             None => {
                 if name == "title" {
@@ -110,6 +111,7 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
     where
         'application: 'render_pass,
     {
+        println!("{:?}, {:?}", name, list);
         match list {
             None => return None,
             Some(list) => {

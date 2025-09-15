@@ -1,3 +1,5 @@
+
+use std::process::exit;
 use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
 #[cfg(feature="parse_logger")]
@@ -230,6 +232,7 @@ pub enum ConfigCommand{
     // custom layouts
 }
 
+#[derive(Debug)]
 pub struct ListData<'list_iteration>{
     pub src: &'list_iteration str,
     pub index: i32,
@@ -1137,7 +1140,7 @@ where
     Event: Clone+Debug+PartialEq+FromStr
 {
     pages: HashMap<String, Vec<LayoutCommandType<Event>>>,
-    reusable: HashMap<String, Vec<LayoutCommandType<Event>>>,
+    pub reusable: HashMap<String, Vec<LayoutCommandType<Event>>>,
 }
 
 impl<Event> Binder<Event>
@@ -1158,7 +1161,7 @@ where
         }
     }
 
-    pub fn add_reusables(&mut self, name: &str, page: Vec<LayoutCommandType<Event>>) {
+    pub fn add_reusable(&mut self, name: &str, page: Vec<LayoutCommandType<Event>>) {
         if self.reusable.get(name).is_none() {
             self.reusable.insert(name.to_string(), page);
         }
@@ -1212,8 +1215,6 @@ where
                 user_app,
                 events
             );
-            #[cfg(feature="parse_logger")]
-            println!("Page set");
         }
 
         for (event, context) in events {
@@ -1439,7 +1440,7 @@ where
 
                         if skip.is_none(){
                             let list_length = user_app.get_list_length(&recursive_source, &None);
-                            
+
                             if let Some(source) = list_length {
                                 for i in 0..source {
                                     events = set_layout(
@@ -1512,7 +1513,9 @@ where
 
                         if skip.is_none() {
                             collect_recursive_declarations = false;
+                            //println!("try to use: {:?}", recursive_source);
                             if let Some(reusable) = reusables.get(&recursive_source){
+                                //println!("use: {:?}", recursive_source);
                                 for command in reusable.iter() {
                                     recursive_commands.push(command);
                                 }
@@ -1635,227 +1638,15 @@ where
                         true => append_config.as_mut().unwrap(),
                         false => config.as_mut().unwrap()
                     };
-                    match config_command {
-                        ConfigCommand::FitX  => open_config.x_fit().parse(),
-                        ConfigCommand::FitXmin{min}  => open_config.x_fit_min(*min).parse(),
-                        ConfigCommand::FitXminmax{min, max}  => open_config.x_fit_min_max(*min, *max).parse(),
-                        ConfigCommand::FitY  => open_config.y_fit().parse(),
-                        ConfigCommand::FitYmin{min}  => open_config.y_fit_min(*min).parse(),
-                        ConfigCommand::FitYminmax{min, max}  => open_config.y_fit_min_max(*min, *max).parse(),
-                        ConfigCommand::GrowX  => open_config.x_grow().parse(),
-                        ConfigCommand::GrowXmin{min} => open_config.x_grow_min(*min).parse(),
-                        ConfigCommand::GrowXminmax{min, max}  => open_config.x_grow_min_max(*min, *max).parse(),
-                        ConfigCommand::GrowY  => open_config.y_grow().parse(),
-                        ConfigCommand::GrowYmin{min} => open_config.y_grow_min(*min).parse(),
-                        ConfigCommand::GrowYminmax{min, max}  => open_config.y_grow_min_max(*min, *max).parse(),
-                        ConfigCommand::FixedX(x)  => open_config.x_fixed(*x).parse(),
-                        ConfigCommand::FixedXFrom(value) => open_config.x_fixed(
-                                try_get_numeric(
-                                    value, 
-                                    100.0, 
-                                    locals, 
-                                    |v,l | user_app.get_numeric(v,l), 
-                                    &list_data
-                                )
-                            ).parse(),
-                        ConfigCommand::FixedYFrom(value) =>open_config.y_fixed(
-                                try_get_numeric(
-                                    value, 
-                                    100.0, 
-                                    locals, 
-                                    |v,l | user_app.get_numeric(v,l), 
-                                    &list_data
-                                )
-                            ).parse(),
-                        ConfigCommand::FixedY(y)  => open_config.y_fixed(*y).parse(),
-                        ConfigCommand::PercentX(size)  => open_config.x_percent(*size).parse(),
-                        ConfigCommand::PercentY(size)  => open_config.y_percent(*size).parse(),
-                        ConfigCommand::GrowAll  => open_config.grow_all().parse(),
-                        ConfigCommand::PaddingAll(padding)  => open_config.padding_all(*padding).parse(),
-                        ConfigCommand::PaddingTop(padding)  => open_config.padding_top(*padding).parse(),
-                        ConfigCommand::PaddingBottom(padding)  => open_config.padding_bottom(*padding).parse(),
-                        ConfigCommand::PaddingLeft(padding)  => open_config.padding_left(*padding).parse(),
-                        ConfigCommand::PaddingRight(padding)  => open_config.padding_right(*padding).parse(),
-                        ConfigCommand::DirectionTTB  => open_config.direction(true).parse(),
-                        ConfigCommand::DirectionLTR  => open_config.direction(false).parse(),
-                        ConfigCommand::DynamicId(name) => {
-                            if let Some(locals) = locals {
-                                if let Some(data_command) = locals.get(name) {
-                                    if let PageDataCommand::SetText { local:_, to } = data_command {
-                                        open_config.id(&to);
-                                    }
-                                }
-                            }
-                        }
-                        ConfigCommand::StaticId(label)|
-                        ConfigCommand::Id(label)  => open_config.id(&label).parse(),
-                        ConfigCommand::ChildGap(gap)  => open_config.child_gap(*gap).parse(),
-                        ConfigCommand::ChildAlignmentXLeft  => open_config.align_children_x_left().parse(),
-                        ConfigCommand::ChildAlignmentXRight  => open_config.align_children_x_right().parse(),
-                        ConfigCommand::ChildAlignmentXCenter  => open_config.align_children_x_center().parse(),
-                        ConfigCommand::ChildAlignmentYTop  => open_config.align_children_y_top().parse(),
-                        ConfigCommand::ChildAlignmentYCenter  => open_config.align_children_y_center().parse(),
-                        ConfigCommand::ChildAlignmentYBottom  => open_config.align_children_y_bottom().parse(),
-                        ConfigCommand::Color(color)  => open_config.color(*color).parse(),
-                        ConfigCommand::DynamicColor(color) => match locals {
-                            None => match user_app.get_color(color, &list_data) {
-                                None => open_config.color(Color::default()).parse(),
-                                Some(color) => open_config.color(*color).parse(),
-                            }
-                            Some(locals) =>  match locals.get(color) {
-                                None => match user_app.get_color(color, &list_data) {
-                                    None => open_config.color(Color::default()).parse(),
-                                    Some(color) => open_config.color(*color).parse(),
-                                }
-                                Some(data_command) => {
-                                    match data_command {
-                                        PageDataCommand::GetColor { local:_, from } =>  match user_app.get_color(from, &list_data) {
-                                            None => open_config.color(Color::default()).parse(),
-                                            Some(color) => open_config.color(*color).parse(),
-                                        }
-                                        PageDataCommand::SetColor { local:_, to } => open_config.color(*to).parse(),
-                                        _ => open_config.color(Color::default()).parse(),
-                                    }
-                                }
-                            }
-                        }
-                        ConfigCommand::RadiusAll(radius)  => open_config.radius_all(*radius).parse(),
-                        ConfigCommand::RadiusTopLeft(radius)  => open_config.radius_top_left(*radius).parse(),
-                        ConfigCommand::RadiusTopRight(radius)  => open_config.radius_top_right(*radius).parse(),
-                        ConfigCommand::RadiusBottomRight(radius)  => open_config.radius_bottom_right(*radius).parse(),
-                        ConfigCommand::RadiusBottomLeft(radius)  => open_config.radius_bottom_left(*radius).parse(),
-                        ConfigCommand::BorderColor(color) => open_config.border_color(*color).parse(),
-                        ConfigCommand::BorderDynamicColor(color) => match locals {
-                            None => match user_app.get_color(color, &list_data) {
-                                None => open_config.border_color(Color::default()).parse(),
-                                Some(color) => open_config.border_color(*color).parse(),
-                            }
-                            Some(locals) =>  match locals.get(color) {
-                                None => match user_app.get_color(color, &list_data) {
-                                    None => open_config.border_color(Color::default()).parse(),
-                                    Some(color) => open_config.border_color(*color).parse(),
-                                }
-                                Some(data_command) => {
-                                    match data_command {
-                                        PageDataCommand::GetColor { local:_, from } =>  match user_app.get_color(from, &list_data) {
-                                            None => open_config.border_color(Color::default()).parse(),
-                                            Some(color) => open_config.border_color(*color).parse(),
-                                        }
-                                        PageDataCommand::SetColor { local:_, to } => open_config.border_color(*to).parse(),
-                                        _ => open_config.border_color(Color::default()).parse(),
-                                    }
-                                }
-                            }
-                        }
-                        ConfigCommand::BorderAll(border)  => open_config.border_all(*border as u16).parse(),
-                        ConfigCommand::BorderTop(border)  => open_config.border_top(*border as u16).parse(),
-                        ConfigCommand::BorderBottom(border)  => open_config.border_bottom(*border as u16).parse(),
-                        ConfigCommand::BorderLeft(border)  => open_config.border_left(*border as u16).parse(),
-                        ConfigCommand::BorderRight(border)  => open_config.border_right(*border as u16).parse(),
-                        ConfigCommand::BorderBetweenChildren(border)  => open_config.border_between_children(*border as u16).parse(),
-                        ConfigCommand::Clip { vertical, horizontal } => {
-                            let child_offset = api.ui_layout.get_scroll_offset();
-                            open_config.scroll(*vertical, *horizontal, child_offset).parse()
-                        }
-                        ConfigCommand::Image { name } => {
-                            match locals {
-                                None => match user_app.get_image(name, &list_data) {
-                                    None => {},
-                                    Some(image) => open_config.image(image).parse(),
-                                }
-                                Some(locals) =>  match locals.get(name) {
-                                    None => match user_app.get_image(name, &list_data) {
-                                        None => {},
-                                        Some(image) => open_config.image(image).parse(),
-                                    }
-                                    Some(data_command) => {
-                                        match data_command {
-                                            PageDataCommand::GetImage { local:_, from } =>  match user_app.get_image(from, &list_data) {
-                                                None => {},
-                                                Some(image) => open_config.image(image).parse(),
-                                            }
-                                            _ => {},
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        ConfigCommand::Floating => open_config.floating().parse(),
-                        ConfigCommand::FloatingOffset { x, y, x_from, y_from } => {
-                            if let Some(x_from) = x_from && let Some(y_from) = y_from {
-                                open_config.floating_offset(
-                                    try_get_numeric(
-                                        x_from,
-                                        *x,
-                                        locals,
-                                        |v,l|user_app.get_numeric(v, l), 
-                                        &list_data
-                                    ),
-                                    try_get_numeric(
-                                        y_from,
-                                        *y,
-                                        locals,
-                                        |v,l|user_app.get_numeric(v, l), 
-                                        &list_data
-                                    )
-                                ).parse()
-                            }
-                            else if let Some(x_from) = x_from {
-                                open_config.floating_offset(
-                                    try_get_numeric(
-                                        x_from,
-                                        *x,
-                                        locals,
-                                        |v,l|user_app.get_numeric(v, l),  
-                                        &list_data
-                                    ),
-                                    *y
-                                ).parse()
-                            }
-                            else if let Some(y_from) = y_from {
-                                open_config.floating_offset(
-                                    *x,
-                                    try_get_numeric(
-                                        y_from,
-                                        *y,
-                                        locals,
-                                        |v,l|user_app.get_numeric(v, l),  
-                                        &list_data
-                                    )
-                                ).parse()
-                            }
-                            else {
-                                open_config.floating_offset(*x, *y).parse()
-                            }
-                        }
-                        ConfigCommand::FloatingDimensions { width, height } => open_config.floating_dimensions(*width, *height).parse(),
-                        ConfigCommand::FloatingZIndex { z } => open_config.floating_z_index(*z).parse(),
-                        ConfigCommand::FloatingAttatchToParentAtTopLeft => open_config.floating_attach_to_parent_at_top_left().parse(),
-                        ConfigCommand::FloatingAttatchToParentAtCenterLeft => open_config.floating_attach_to_parent_at_center_left().parse(),
-                        ConfigCommand::FloatingAttatchToParentAtBottomLeft => open_config.floating_attach_to_parent_at_bottom_left().parse(),
-                        ConfigCommand::FloatingAttatchToParentAtTopCenter => open_config.floating_attach_to_parent_at_top_center().parse(),
-                        ConfigCommand::FloatingAttatchToParentAtCenter => open_config.floating_attach_to_parent_at_center().parse(),
-                        ConfigCommand::FloatingAttatchToParentAtBottomCenter => open_config.floating_attach_to_parent_at_bottom_center().parse(),
-                        ConfigCommand::FloatingAttatchToParentAtTopRight => open_config.floating_attach_to_parent_at_top_right().parse(),
-                        ConfigCommand::FloatingAttatchToParentAtCenterRight => open_config.floating_attach_to_parent_at_center_right().parse(),
-                        ConfigCommand::FloatingAttatchToParentAtBottomRight => open_config.floating_attach_to_parent_at_bottom_right().parse(),
-                        ConfigCommand::FloatingAttatchElementAtTopLeft => open_config.floating_attach_element_at_top_left().parse(),
-                        ConfigCommand::FloatingAttatchElementAtCenterLeft => open_config.floating_attach_element_at_center_left().parse(),
-                        ConfigCommand::FloatingAttatchElementAtBottomLeft => open_config.floating_attach_element_at_bottom_left().parse(),
-                        ConfigCommand::FloatingAttatchElementAtTopCenter => open_config.floating_attach_element_at_top_center().parse(),
-                        ConfigCommand::FloatingAttatchElementAtCenter => open_config.floating_attach_element_at_center().parse(),
-                        ConfigCommand::FloatingAttatchElementAtBottomCenter => open_config.floating_attach_element_at_bottom_center().parse(),
-                        ConfigCommand::FloatingAttatchElementAtTopRight => open_config.floating_attach_element_at_top_right().parse(),
-                        ConfigCommand::FloatingAttatchElementAtCenterRight => open_config.floating_attach_element_at_center_right().parse(),
-                        ConfigCommand::FloatingAttatchElementAtBottomRight => open_config.floating_attach_element_at_bottom_right().parse(),
-                        ConfigCommand::FloatingPointerPassThrough => open_config.floating_pointer_pass_through().parse(),
-                        ConfigCommand::FloatingAttachElementToElement { other_element_id:_ } => {
-                            //let id = layout_engine.get_id(other_element_id);
-                            open_config.floating_attach_to_element(0).parse()
-                        }
-                        ConfigCommand::FloatingAttachElementToRoot => open_config.floating_attach_to_root().parse(),
-                        ConfigCommand::Use { name } => {}
-                    }
+                    execute_config(
+                        config_command,
+                        open_config,
+                        reusables,
+                        locals,
+                        &list_data,
+                        api,
+                        user_app
+                    );
                 }
             }
             LayoutCommandType::TextConfig(config_command) => {
@@ -1870,8 +1661,6 @@ where
                         TextConfigCommand::Content(content) => text_content = Some(content),
                         TextConfigCommand::DefaultText(_default) => {}
                         TextConfigCommand::DynamicContent(name) => {
-                            // #[cfg(feature="parse_logger")]
-                            // println!("-------------------Command: Dynamic Text Content. Name: {:?}", name);
                             match locals {
                                 None => match user_app.get_text(name, &list_data) {
                                     None => {
@@ -1925,8 +1714,260 @@ where
 
     events
 
-    // #[cfg(feature="parse_logger")]
-    
+}
+
+fn execute_config<'render_pass, Image, Event, UserApp>(
+    config_command: &ConfigCommand,
+    open_config: &mut ElementConfiguration,
+    reusables: &HashMap<String, Vec<LayoutCommandType<Event>>>,
+    locals: Option<&HashMap<String, &PageDataCommand<Event>>>,
+    list_data: &Option<ListData>,
+    api: &mut API,
+    user_app: &UserApp,
+)
+where 
+    Image: Clone+Debug+Default+PartialEq, 
+    Event: FromStr+Clone+PartialEq+Debug+EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug,
+    UserApp: ParserDataAccess<Image, Event>
+{
+    match config_command {
+        ConfigCommand::FitX  => open_config.x_fit().parse(),
+        ConfigCommand::FitXmin{min}  => open_config.x_fit_min(*min).parse(),
+        ConfigCommand::FitXminmax{min, max}  => open_config.x_fit_min_max(*min, *max).parse(),
+        ConfigCommand::FitY  => open_config.y_fit().parse(),
+        ConfigCommand::FitYmin{min}  => open_config.y_fit_min(*min).parse(),
+        ConfigCommand::FitYminmax{min, max}  => open_config.y_fit_min_max(*min, *max).parse(),
+        ConfigCommand::GrowX  => open_config.x_grow().parse(),
+        ConfigCommand::GrowXmin{min} => open_config.x_grow_min(*min).parse(),
+        ConfigCommand::GrowXminmax{min, max}  => open_config.x_grow_min_max(*min, *max).parse(),
+        ConfigCommand::GrowY  => open_config.y_grow().parse(),
+        ConfigCommand::GrowYmin{min} => open_config.y_grow_min(*min).parse(),
+        ConfigCommand::GrowYminmax{min, max}  => open_config.y_grow_min_max(*min, *max).parse(),
+        ConfigCommand::FixedX(x)  => open_config.x_fixed(*x).parse(),
+        ConfigCommand::FixedXFrom(value) => open_config.x_fixed(
+                try_get_numeric(
+                    value, 
+                    100.0, 
+                    locals, 
+                    |v,l | user_app.get_numeric(v,l), 
+                    &list_data
+                )
+            ).parse(),
+        ConfigCommand::FixedYFrom(value) =>open_config.y_fixed(
+                try_get_numeric(
+                    value, 
+                    100.0, 
+                    locals, 
+                    |v,l | user_app.get_numeric(v,l), 
+                    &list_data
+                )
+            ).parse(),
+        ConfigCommand::FixedY(y)  => open_config.y_fixed(*y).parse(),
+        ConfigCommand::PercentX(size)  => open_config.x_percent(*size).parse(),
+        ConfigCommand::PercentY(size)  => open_config.y_percent(*size).parse(),
+        ConfigCommand::GrowAll  => open_config.grow_all().parse(),
+        ConfigCommand::PaddingAll(padding)  => open_config.padding_all(*padding).parse(),
+        ConfigCommand::PaddingTop(padding)  => open_config.padding_top(*padding).parse(),
+        ConfigCommand::PaddingBottom(padding)  => open_config.padding_bottom(*padding).parse(),
+        ConfigCommand::PaddingLeft(padding)  => open_config.padding_left(*padding).parse(),
+        ConfigCommand::PaddingRight(padding)  => open_config.padding_right(*padding).parse(),
+        ConfigCommand::DirectionTTB  => open_config.direction(true).parse(),
+        ConfigCommand::DirectionLTR  => open_config.direction(false).parse(),
+        ConfigCommand::DynamicId(name) => {
+            if let Some(locals) = locals {
+                if let Some(data_command) = locals.get(name) {
+                    if let PageDataCommand::SetText { local:_, to } = data_command {
+                        open_config.id(&to);
+                    }
+                }
+            }
+        }
+        ConfigCommand::StaticId(label)|
+        ConfigCommand::Id(label)  => open_config.id(&label).parse(),
+        ConfigCommand::ChildGap(gap)  => open_config.child_gap(*gap).parse(),
+        ConfigCommand::ChildAlignmentXLeft  => open_config.align_children_x_left().parse(),
+        ConfigCommand::ChildAlignmentXRight  => open_config.align_children_x_right().parse(),
+        ConfigCommand::ChildAlignmentXCenter  => open_config.align_children_x_center().parse(),
+        ConfigCommand::ChildAlignmentYTop  => open_config.align_children_y_top().parse(),
+        ConfigCommand::ChildAlignmentYCenter  => open_config.align_children_y_center().parse(),
+        ConfigCommand::ChildAlignmentYBottom  => open_config.align_children_y_bottom().parse(),
+        ConfigCommand::Color(color)  => open_config.color(*color).parse(),
+        ConfigCommand::DynamicColor(color) => match locals {
+            None => match user_app.get_color(color, &list_data) {
+                None => open_config.color(Color::default()).parse(),
+                Some(color) => open_config.color(*color).parse(),
+            }
+            Some(locals) =>  match locals.get(color) {
+                None => match user_app.get_color(color, &list_data) {
+                    None => open_config.color(Color::default()).parse(),
+                    Some(color) => open_config.color(*color).parse(),
+                }
+                Some(data_command) => {
+                    match data_command {
+                        PageDataCommand::GetColor { local:_, from } =>  match user_app.get_color(from, &list_data) {
+                            None => open_config.color(Color::default()).parse(),
+                            Some(color) => open_config.color(*color).parse(),
+                        }
+                        PageDataCommand::SetColor { local:_, to } => open_config.color(*to).parse(),
+                        _ => open_config.color(Color::default()).parse(),
+                    }
+                }
+            }
+        }
+        ConfigCommand::RadiusAll(radius)  => open_config.radius_all(*radius).parse(),
+        ConfigCommand::RadiusTopLeft(radius)  => open_config.radius_top_left(*radius).parse(),
+        ConfigCommand::RadiusTopRight(radius)  => open_config.radius_top_right(*radius).parse(),
+        ConfigCommand::RadiusBottomRight(radius)  => open_config.radius_bottom_right(*radius).parse(),
+        ConfigCommand::RadiusBottomLeft(radius)  => open_config.radius_bottom_left(*radius).parse(),
+        ConfigCommand::BorderColor(color) => open_config.border_color(*color).parse(),
+        ConfigCommand::BorderDynamicColor(color) => match locals {
+            None => match user_app.get_color(color, &list_data) {
+                None => open_config.border_color(Color::default()).parse(),
+                Some(color) => open_config.border_color(*color).parse(),
+            }
+            Some(locals) =>  match locals.get(color) {
+                None => match user_app.get_color(color, &list_data) {
+                    None => open_config.border_color(Color::default()).parse(),
+                    Some(color) => open_config.border_color(*color).parse(),
+                }
+                Some(data_command) => {
+                    match data_command {
+                        PageDataCommand::GetColor { local:_, from } =>  match user_app.get_color(from, &list_data) {
+                            None => open_config.border_color(Color::default()).parse(),
+                            Some(color) => open_config.border_color(*color).parse(),
+                        }
+                        PageDataCommand::SetColor { local:_, to } => open_config.border_color(*to).parse(),
+                        _ => open_config.border_color(Color::default()).parse(),
+                    }
+                }
+            }
+        }
+        ConfigCommand::BorderAll(border)  => open_config.border_all(*border as u16).parse(),
+        ConfigCommand::BorderTop(border)  => open_config.border_top(*border as u16).parse(),
+        ConfigCommand::BorderBottom(border)  => open_config.border_bottom(*border as u16).parse(),
+        ConfigCommand::BorderLeft(border)  => open_config.border_left(*border as u16).parse(),
+        ConfigCommand::BorderRight(border)  => open_config.border_right(*border as u16).parse(),
+        ConfigCommand::BorderBetweenChildren(border)  => open_config.border_between_children(*border as u16).parse(),
+        ConfigCommand::Clip { vertical, horizontal } => {
+            let child_offset = api.ui_layout.get_scroll_offset();
+            open_config.scroll(*vertical, *horizontal, child_offset).parse()
+        }
+        ConfigCommand::Image { name } => {
+            match locals {
+                None => match user_app.get_image(name, &list_data) {
+                    None => {},
+                    Some(image) => open_config.image(image).parse(),
+                }
+                Some(locals) =>  match locals.get(name) {
+                    None => match user_app.get_image(name, &list_data) {
+                        None => {},
+                        Some(image) => open_config.image(image).parse(),
+                    }
+                    Some(data_command) => {
+                        match data_command {
+                            PageDataCommand::GetImage { local:_, from } =>  match user_app.get_image(from, &list_data) {
+                                None => {},
+                                Some(image) => open_config.image(image).parse(),
+                            }
+                            _ => {},
+                        }
+                    }
+                }
+            }
+        }
+        ConfigCommand::Floating => open_config.floating().parse(),
+        ConfigCommand::FloatingOffset { x, y, x_from, y_from } => {
+            if let Some(x_from) = x_from && let Some(y_from) = y_from {
+                open_config.floating_offset(
+                    try_get_numeric(
+                        x_from,
+                        *x,
+                        locals,
+                        |v,l|user_app.get_numeric(v, l), 
+                        &list_data
+                    ),
+                    try_get_numeric(
+                        y_from,
+                        *y,
+                        locals,
+                        |v,l|user_app.get_numeric(v, l), 
+                        &list_data
+                    )
+                ).parse()
+            }
+            else if let Some(x_from) = x_from {
+                open_config.floating_offset(
+                    try_get_numeric(
+                        x_from,
+                        *x,
+                        locals,
+                        |v,l|user_app.get_numeric(v, l),  
+                        &list_data
+                    ),
+                    *y
+                ).parse()
+            }
+            else if let Some(y_from) = y_from {
+                open_config.floating_offset(
+                    *x,
+                    try_get_numeric(
+                        y_from,
+                        *y,
+                        locals,
+                        |v,l|user_app.get_numeric(v, l),  
+                        &list_data
+                    )
+                ).parse()
+            }
+            else {
+                open_config.floating_offset(*x, *y).parse()
+            }
+        }
+        ConfigCommand::FloatingDimensions { width, height } => open_config.floating_dimensions(*width, *height).parse(),
+        ConfigCommand::FloatingZIndex { z } => open_config.floating_z_index(*z).parse(),
+        ConfigCommand::FloatingAttatchToParentAtTopLeft => open_config.floating_attach_to_parent_at_top_left().parse(),
+        ConfigCommand::FloatingAttatchToParentAtCenterLeft => open_config.floating_attach_to_parent_at_center_left().parse(),
+        ConfigCommand::FloatingAttatchToParentAtBottomLeft => open_config.floating_attach_to_parent_at_bottom_left().parse(),
+        ConfigCommand::FloatingAttatchToParentAtTopCenter => open_config.floating_attach_to_parent_at_top_center().parse(),
+        ConfigCommand::FloatingAttatchToParentAtCenter => open_config.floating_attach_to_parent_at_center().parse(),
+        ConfigCommand::FloatingAttatchToParentAtBottomCenter => open_config.floating_attach_to_parent_at_bottom_center().parse(),
+        ConfigCommand::FloatingAttatchToParentAtTopRight => open_config.floating_attach_to_parent_at_top_right().parse(),
+        ConfigCommand::FloatingAttatchToParentAtCenterRight => open_config.floating_attach_to_parent_at_center_right().parse(),
+        ConfigCommand::FloatingAttatchToParentAtBottomRight => open_config.floating_attach_to_parent_at_bottom_right().parse(),
+        ConfigCommand::FloatingAttatchElementAtTopLeft => open_config.floating_attach_element_at_top_left().parse(),
+        ConfigCommand::FloatingAttatchElementAtCenterLeft => open_config.floating_attach_element_at_center_left().parse(),
+        ConfigCommand::FloatingAttatchElementAtBottomLeft => open_config.floating_attach_element_at_bottom_left().parse(),
+        ConfigCommand::FloatingAttatchElementAtTopCenter => open_config.floating_attach_element_at_top_center().parse(),
+        ConfigCommand::FloatingAttatchElementAtCenter => open_config.floating_attach_element_at_center().parse(),
+        ConfigCommand::FloatingAttatchElementAtBottomCenter => open_config.floating_attach_element_at_bottom_center().parse(),
+        ConfigCommand::FloatingAttatchElementAtTopRight => open_config.floating_attach_element_at_top_right().parse(),
+        ConfigCommand::FloatingAttatchElementAtCenterRight => open_config.floating_attach_element_at_center_right().parse(),
+        ConfigCommand::FloatingAttatchElementAtBottomRight => open_config.floating_attach_element_at_bottom_right().parse(),
+        ConfigCommand::FloatingPointerPassThrough => open_config.floating_pointer_pass_through().parse(),
+        ConfigCommand::FloatingAttachElementToElement { other_element_id:_ } => {
+            //let id = layout_engine.get_id(other_element_id);
+            open_config.floating_attach_to_element(0).parse()
+        }
+        ConfigCommand::FloatingAttachElementToRoot => open_config.floating_attach_to_root().parse(),
+        ConfigCommand::Use { name } => {
+            if let Some(reusable) = reusables.get(name) {
+                for config in reusable {
+                    if let LayoutCommandType::ElementConfig(config_command) = config {
+                        execute_config(
+                            config_command, 
+                            open_config, 
+                            reusables, 
+                            locals, 
+                            list_data, 
+                            api, 
+                            user_app
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn try_get_numeric<Event, F>(from: &String, defualt: f32, locals: Option<&HashMap<String, &PageDataCommand<Event>>>, ua: F, list_data: &Option<ListData>) -> f32

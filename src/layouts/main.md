@@ -22,7 +22,7 @@
 ### header button
 - `element`
     - `config`
-        - `paddng-top` 8
+        - `padding-top` 8
         - `padding-bottom` 8
         - `padding-left` 16
         - `padding-right` 16
@@ -45,13 +45,14 @@
         - `width-grow`
         - `hovered`
             - `color` rgb(120,120,120)
+        - `clicked` *Clicked*
     - `text`
         - `config`
             - `font-size` 16
             - `color` white
         - *label*
 
-# Viewer3d
+# Main
 - `element` outer container
     - `config`
         - `use` layout expand
@@ -97,9 +98,10 @@
                         - `padding-right`8
                         - `padding-bottom` 8
                         - `floating`
-                            - `offset-x` 0
-                            - `offset-y` 35
-                            - `attatch-to-parent` bottom-right
+                            - `offset` `y` 40
+                            - `attach`
+                                - `element`
+                                - `parent`
                     - `element`
                         - `config`
                             - `direction` ttb
@@ -112,6 +114,7 @@
                             - `set-text` *label* Open
                         - `use` drop down menu item
                             - `set-text` *label* Close
+                            - `set-event` *Clicked* FileButtonClicked
         - `use` header button
             - `set-text` *label* Edit
         - `element`
@@ -135,6 +138,10 @@
                 - `height-grow`
                 - `radius-all` 8
             - `list` Documents
+                - `declarations`
+                    - `get-event` *Clicked* Clicked
+                    - `get-bool` *selected* selected_document
+                    - `get-text` *title* title
                 - `if` selected
                     - `element`
                         - `config`
@@ -164,15 +171,10 @@
                                 - `font-size` 20
                                 - `color` black
                             - *title*
-        - `text`
-            - `config`
-                - `font-size` 20
-                - `color` black
-            - *title*
         - `element` main content
             - `config`
                 - `use` content background color
-                - `scroll-vertical`
+                - `scroll` `y`
                 - `direction` ttb
                 - `child-gap` 16
                 - `padding-all` 16
