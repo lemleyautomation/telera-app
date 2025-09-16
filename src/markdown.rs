@@ -31,23 +31,24 @@ where <Event as FromStr>::Err: Debug
         for node in nodes {
             match node {
                 Node::Heading(h) => {
-                    if let Node::Text(t) = &h.children[0] {
+                    if let Some(declaration) = h.children.get(0)
+                    && let Node::Text(declaration) = declaration {
                         match h.depth {
                             1 => {
                                 parsing_mode = ParsingMode::Body;
-                                page_name = t.value.trim().to_string();
+                                page_name = declaration.value.trim().to_string();
                             }
                             2 => {
                                 parsing_mode = ParsingMode::Variables;
-                                open_variable_name = t.value.trim().to_string();
+                                open_variable_name = declaration.value.trim().to_string();
                             }
                             3 => {
                                 parsing_mode = ParsingMode::ReusableElements;
-                                open_reuseable_name = t.value.trim().to_string();
+                                open_reuseable_name = declaration.value.trim().to_string();
                             }
                             4 => {
                                 parsing_mode = ParsingMode::ReusableConfig;
-                                open_reuseable_name = t.value.trim().to_string();
+                                open_reuseable_name = declaration.value.trim().to_string();
                             },
                             _ => parsing_mode = ParsingMode::None,
                         }
@@ -95,14 +96,16 @@ where <Event as FromStr>::Err: Debug
     }
 }
 
-fn process_element<Event: Clone+Debug+PartialEq+FromStr>(node: &Node) -> Vec<LayoutCommandType<Event>>
+fn process_element<Event: Clone+Debug+PartialEq+FromStr>(element: &Node) -> Vec<LayoutCommandType<Event>>
 where <Event as FromStr>::Err: Debug
 {
     let mut layout_commands: Vec<LayoutCommandType<Event>> = Vec::new();
 
-    if let Node::ListItem(element) = node 
-    && let Node::Paragraph(p) = &element.children[0]
-    && let Node::InlineCode(element_type) = &p.children[0] {
+    if let Node::ListItem(element) = element
+    && let Some(element_declaration) = element.children.get(0)
+    && let Node::Paragraph(element_declaration) = element_declaration
+    && let Some(element_type) = element_declaration.children.get(0)
+    && let Node::InlineCode(element_type) = element_type {
         match element_type.value.as_str() {
             "element" => {
                 layout_commands.push(LayoutCommandType::FlowControl(FlowControlCommand::ElementOpened { id: None }));
@@ -118,8 +121,9 @@ where <Event as FromStr>::Err: Debug
                 }
                 layout_commands.push(LayoutCommandType::FlowControl(FlowControlCommand::ConfigClosed));
 
-                if let Node::List(l) = &element.children[1] {
-                    for child_element in l.children.iter().skip(1) {
+                if let Some(child_elements) = element.children.get(1)
+                && let Node::List(child_elements) = child_elements {
+                    for child_element in child_elements.children.iter().skip(1) {
                         let mut child_element = process_element(child_element);
                         layout_commands.append(&mut child_element);
                     }
@@ -129,25 +133,39 @@ where <Event as FromStr>::Err: Debug
             }
             "text" => {
                 layout_commands.push(LayoutCommandType::FlowControl(FlowControlCommand::TextElementOpened));
+
                 layout_commands.push(LayoutCommandType::FlowControl(FlowControlCommand::TextConfigOpened));
-                if let Node::List(l) = &element.children[1]
-                && let Node::ListItem(text_config_tree) = &l.children[0]
-                && let Node::List(text_config_commands) = &text_config_tree.children[1] {
-                    let mut text_config = process_text_configs(text_config_commands);
-                    layout_commands.append(&mut text_config);
+                if let Some(config) = element.children.get(1)
+                && let Node::List(config) = config
+                && let Some(config) = config.children.get(0)
+                && let Node::ListItem(config) = config
+                && let Some(configs) = config.children.get(1)
+                && let Node::List(configs) = configs {
+                    let mut configs = process_text_configs(configs);
+                    layout_commands.append(&mut configs);
                 }
                 layout_commands.push(LayoutCommandType::FlowControl(FlowControlCommand::TextConfigClosed));
-                if let Node::List(l) = &element.children[1]
-                && let Node::ListItem(text_content_tree) = &l.children[1]
-                && let Node::Paragraph(text_node) = &text_content_tree.children[0] {
-                    match &text_node.children[0] {
-                        Node::Emphasis(e) => {
-                            if let Node::Text(var_name) = &e.children[0] {
-                                layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::DynamicContent(var_name.value.trim().to_string())));
+
+                if let Some(text) = element.children.get(1)
+                && let Node::List(text) = text
+                && let Some(text) = text.children.get(1)
+                && let Node::ListItem(text) = text
+                && let Some(text) = text.children.get(0)
+                && let Node::Paragraph(text) = text
+                && let Some(text) = text.children.get(0) {
+                    match text {
+                        Node::Emphasis(dynamic_text) => {
+                            if let Some(dynamic_text) = dynamic_text.children.get(0)
+                            && let Node::Text(dynamic_text) = dynamic_text {
+                                layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::DynamicContent(
+                                    dynamic_text.value.trim().to_string()
+                                )));
                             }
                         }
-                        Node::Text(content) => {
-                            layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::Content(content.value.trim().to_string())));
+                        Node::Text(static_text) => {
+                            layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::Content(
+                                static_text.value.trim().to_string()
+                            )));
                         }
                         _ => {}
                     }
@@ -156,31 +174,77 @@ where <Event as FromStr>::Err: Debug
             }
             "use" => {
                 //println!("{:#?}", element);
-                if let Node::Text(reusable_name) = &p.children[1] 
+                if let Some(reusable_name) = element_declaration.children.get(1)
+                && let Node::Text(reusable_name) = reusable_name
                 && let Node::List(input_variables) = &element.children[1] {
-                    layout_commands.push(LayoutCommandType::FlowControl(FlowControlCommand::UseOpened { name: reusable_name.value.trim().to_string() }));
+                    layout_commands.push(LayoutCommandType::FlowControl(FlowControlCommand::UseOpened { 
+                        name: reusable_name.value.trim().to_string() 
+                    }));
                     for input_variable in &input_variables.children {
                         if let Node::ListItem(input_variable) = input_variable
-                        && let Node::Paragraph(input_variable) = &input_variable.children[0]
-                        && let Node::InlineCode(variable_type) = &input_variable.children[0]
-                        && let Node::Emphasis(variable_name) = &input_variable.children[2]
-                        && let Node::Text(variable_name) = &variable_name.children[0]
-                        && let Node::Text(variable_value) = &input_variable.children[3] {
+                        && let Some(input_variable) = input_variable.children.get(0)
+                        && let Node::Paragraph(input_variable) = input_variable
+                        && let Some(variable_type) = input_variable.children.get(0)
+                        && let Node::InlineCode(variable_type) = variable_type
+                        && let Some(variable_name) = input_variable.children.get(2)
+                        && let Node::Emphasis(variable_name) = variable_name
+                        && let Some(variable_name) = variable_name.children.get(0)
+                        && let Node::Text(variable_name) = variable_name
+                        && let Some(variable_value) = input_variable.children.get(3)
+                        && let Node::Text(variable_value) = variable_value {
                             match variable_type.value.as_str() {
-                                "get-bool" => {}
-                                "get-numeric" => {}
-                                "get-text" => {}
-                                "get-image" => {}
-                                "get-event" => {}
-                                "set-bool" => {}
-                                "set-numeric" => {}
+                                "get-bool" => {
+                                    layout_commands.push(LayoutCommandType::PageData(PageDataCommand::GetBool { 
+                                        local: variable_name.value.trim().to_string(),
+                                        from: variable_value.value.trim().to_string() 
+                                    }));
+                                }
+                                "get-numeric" => {
+                                    layout_commands.push(LayoutCommandType::PageData(PageDataCommand::GetNumeric { 
+                                        local: variable_name.value.trim().to_string(),
+                                        from: variable_value.value.trim().to_string() 
+                                    }));
+                                }
+                                "get-text" => {
+                                    layout_commands.push(LayoutCommandType::PageData(PageDataCommand::GetText { 
+                                        local: variable_name.value.trim().to_string(),
+                                        from: variable_value.value.trim().to_string() 
+                                    }));
+                                }
+                                "get-image" => {
+                                    layout_commands.push(LayoutCommandType::PageData(PageDataCommand::GetImage { 
+                                        local: variable_name.value.trim().to_string(),
+                                        from: variable_value.value.trim().to_string() 
+                                    }));
+                                }
+                                "get-event" => {
+                                    layout_commands.push(LayoutCommandType::PageData(PageDataCommand::GetEvent { 
+                                        local: variable_name.value.trim().to_string(),
+                                        from: variable_value.value.trim().to_string() 
+                                    }));
+                                }
+                                "set-bool" => {
+                                    if let Ok(variable_value) = bool::from_str(&variable_value.value.trim()) {
+                                        layout_commands.push(LayoutCommandType::PageData(PageDataCommand::SetBool { 
+                                            local: variable_name.value.trim().to_string(), 
+                                            to: variable_value
+                                        }))
+                                    }
+                                }
+                                "set-numeric" => {
+                                    if let Ok(variable_value) = f32::from_str(&variable_value.value.trim()) {
+                                        layout_commands.push(LayoutCommandType::PageData(PageDataCommand::SetNumeric { 
+                                            local: variable_name.value.trim().to_string(), 
+                                            to: variable_value
+                                        }))
+                                    }
+                                }
                                 "set-text" => {
                                     layout_commands.push(LayoutCommandType::PageData(PageDataCommand::SetText { 
                                         local: variable_name.value.trim().to_string(), 
                                         to: variable_value.value.trim().to_string() 
                                     }))
                                 }
-                                "set-image" => {}
                                 "set-event" => {
                                     layout_commands.push(LayoutCommandType::PageData(PageDataCommand::SetEvent { 
                                         local: variable_name.value.trim().to_string(), 
@@ -196,8 +260,10 @@ where <Event as FromStr>::Err: Debug
                 
             }
             "list" => {
-                if let Node::Text(list_src) = &p.children[1] 
-                && let Node::List(list_content) = &element.children[1] {
+                if let Some(list_src) = element_declaration.children.get(1)
+                && let Node::Text(list_src) = list_src
+                && let Some(list_content) = element.children.get(1)
+                && let Node::List(list_content) = list_content {
 
                     let mut formatted_list = Vec::<LayoutCommandType<Event>>::new();
                     formatted_list.push(LayoutCommandType::FlowControl(FlowControlCommand::ListOpened { src: list_src.value.trim().to_string() }));
@@ -225,9 +291,21 @@ where <Event as FromStr>::Err: Debug
                                             from: declaration_value.value.trim().to_string() 
                                         }));
                                     }
+                                    "get-numeric" => {
+                                        layout_commands.push(LayoutCommandType::PageData(PageDataCommand::GetNumeric { 
+                                            local: declaration_name.value.trim().to_string(),
+                                            from: declaration_value.value.trim().to_string() 
+                                        }));
+                                    }
                                     "get-text" => {
-                                        formatted_list.push(LayoutCommandType::PageData(PageDataCommand::GetText { 
-                                            local: declaration_name.value.clone(),
+                                        layout_commands.push(LayoutCommandType::PageData(PageDataCommand::GetText { 
+                                            local: declaration_name.value.trim().to_string(),
+                                            from: declaration_value.value.trim().to_string() 
+                                        }));
+                                    }
+                                    "get-image" => {
+                                        layout_commands.push(LayoutCommandType::PageData(PageDataCommand::GetImage { 
+                                            local: declaration_name.value.trim().to_string(),
                                             from: declaration_value.value.trim().to_string() 
                                         }));
                                     }
@@ -236,6 +314,34 @@ where <Event as FromStr>::Err: Debug
                                             local: declaration_name.value.clone(),
                                             from: declaration_value.value.trim().to_string() 
                                         }));
+                                    }
+                                    "set-bool" => {
+                                        if let Ok(variable_value) = bool::from_str(&declaration_value.value.trim()) {
+                                            layout_commands.push(LayoutCommandType::PageData(PageDataCommand::SetBool { 
+                                                local: declaration_name.value.trim().to_string(), 
+                                                to: variable_value
+                                            }))
+                                        }
+                                    }
+                                    "set-numeric" => {
+                                        if let Ok(variable_value) = f32::from_str(&declaration_value.value.trim()) {
+                                            layout_commands.push(LayoutCommandType::PageData(PageDataCommand::SetNumeric { 
+                                                local: declaration_name.value.trim().to_string(), 
+                                                to: variable_value
+                                            }))
+                                        }
+                                    }
+                                    "set-text" => {
+                                        layout_commands.push(LayoutCommandType::PageData(PageDataCommand::SetText { 
+                                            local: declaration_name.value.trim().to_string(), 
+                                            to: declaration_value.value.trim().to_string() 
+                                        }))
+                                    }
+                                    "set-event" => {
+                                        layout_commands.push(LayoutCommandType::PageData(PageDataCommand::SetEvent { 
+                                            local: declaration_name.value.trim().to_string(), 
+                                            to: Event::from_str(declaration_value.value.trim()).unwrap()
+                                        }))
                                     }
                                     _ => {}
                                 }
@@ -254,11 +360,15 @@ where <Event as FromStr>::Err: Debug
                 }
             }
             "if" => {
-                if let Node::Text(conditional) = &p.children[1] 
-                && let Node::List(conditional_elements) = &element.children[1] {
+                if let Some(conditional) = element_declaration.children.get(1)
+                && let Node::Text(conditional) = conditional
+                && let Some(conditional_elements) = element.children.get(1)
+                && let Node::List(conditional_elements) = conditional_elements {
 
                     let mut formatted_element = Vec::<LayoutCommandType<Event>>::new();
-                    formatted_element.push(LayoutCommandType::FlowControl(FlowControlCommand::IfOpened { condition: conditional.value.trim().to_string() }));
+                    formatted_element.push(LayoutCommandType::FlowControl(FlowControlCommand::IfOpened { 
+                        condition: conditional.value.trim().to_string() 
+                    }));
 
                     for conditional_element in &conditional_elements.children {
                         let mut conditional_element = process_element::<Event>(&conditional_element);
@@ -271,11 +381,15 @@ where <Event as FromStr>::Err: Debug
                 }
             }
             "if-not" => {
-                if let Node::Text(conditional) = &p.children[1] 
-                && let Node::List(conditional_elements) = &element.children[1] {
+                if let Some(conditional) = element_declaration.children.get(1)
+                && let Node::Text(conditional) = conditional
+                && let Some(conditional_elements) = element.children.get(1)
+                && let Node::List(conditional_elements) = conditional_elements {
 
                     let mut formatted_element = Vec::<LayoutCommandType<Event>>::new();
-                    formatted_element.push(LayoutCommandType::FlowControl(FlowControlCommand::IfNotOpened { condition: conditional.value.trim().to_string() }));
+                    formatted_element.push(LayoutCommandType::FlowControl(FlowControlCommand::IfNotOpened { 
+                        condition: conditional.value.trim().to_string() 
+                    }));
 
                     for conditional_element in &conditional_elements.children {
                         let mut conditional_element = process_element::<Event>(&conditional_element);
@@ -295,25 +409,26 @@ where <Event as FromStr>::Err: Debug
 }
 
 fn process_variable<Event: Clone+Debug+PartialEq>(local: String, nodes: &Vec<Node>) -> PageDataCommand<Event>{
-    if nodes.len() as u32 == 1
-    && let Node::ListItem(l) = &nodes[0] 
-    && l.children.len() as u32 == 1
-    && let Node::Paragraph(p) = &l.children[0] 
-    && p.children.len() as u8 == 2
-    && let Node::InlineCode(var_type) = &p.children[0]
-    && let Node::Text(var_value) = &p.children[1] {
-        match var_type.value.as_str() {
+    if let Some(variable_declaration) = nodes.get(0)
+    && let Node::ListItem(variable_declaration) = variable_declaration
+    && let Some(variable_declaration) = variable_declaration.children.get(0)
+    && let Node::Paragraph(variable_declaration) = variable_declaration 
+    && let Some(variable_type) = variable_declaration.children.get(0)
+    && let Node::InlineCode(variable_type) = variable_type
+    && let Some(vaiable_value) = variable_declaration.children.get(1)
+    && let Node::Text(variable_value) = vaiable_value {
+        match variable_type.value.as_str() {
             "set-bool" => return PageDataCommand::<Event>::SetBool { local, 
-                to: match bool::from_str(&var_value.value.trim()) {
+                to: match bool::from_str(&variable_value.value.trim()) {
                     Ok(v) => v,
                     Err(_) => false
                 }
             },
             "set-text" => return PageDataCommand::<Event>::SetText { local, 
-                to: var_value.value.trim().to_string()
+                to: variable_value.value.trim().to_string()
             },
             "set-color" => return PageDataCommand::<Event>::SetColor { local, 
-                to: match csscolorparser::parse(&var_value.value) {
+                to: match csscolorparser::parse(&variable_value.value) {
                     Err(_) => Color::default(),
                     Ok(color) => color.to_rgba8().into(),
                 }
@@ -329,98 +444,121 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
     let mut configs = Vec::new();
 
     for configuration_item in &configuration_set.children {
-        if let Some(node_with_keys) = configuration_item.children()
-        && let Node::Paragraph(keys) = &node_with_keys[0]
-        && let Node::InlineCode(config_type) = &keys.children[0] {
+        if let Some(config_elements) = configuration_item.children()
+        && let Some(config) = config_elements.get(0)
+        && let Node::Paragraph(config) = config
+        && let Some(config_type) = config.children.get(0)
+        && let Node::InlineCode(config_type) = config_type {
             match config_type.value.as_str() {
                 "grow" => configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowAll)),
-                // TODO: optimize both grow cases
                 "width-grow" => {
-                    match &keys.children.len() {
-                        1 => configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowX)),
-                        4 => {
-                            if let Node::InlineCode(i) = &keys.children[2] 
-                            && i.value.as_str() == "min" 
-                            && let Node::Text(min) = &keys.children[3] {
-                                configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowXmin { 
-                                    min: match f32::from_str(&min.value.trim()) {
-                                        Ok(f) => f,
-                                        Err(_) => 0.0
-                                    }
-                                }));
-                            }
+                    if let Some(bound_range_a) = config.children.get(2)
+                    && let Node::InlineCode(bound_range_a) = bound_range_a
+                    && (bound_range_a.value.as_str() == "min" || bound_range_a.value.as_str() == "max")
+                    && let Some(bound_value_a) = config.children.get(3)
+                    && let Node::Text(bound_value_a) = bound_value_a
+                    && let Ok(bound_value_a) = f32::from_str(bound_value_a.value.trim())
+                    && let Some(bound_range_b) = config.children.get(4)
+                    && let Node::InlineCode(bound_range_b) = bound_range_b
+                    && (bound_range_b.value.as_str() == "min" || bound_range_b.value.as_str() == "max")
+                    && let Some(bound_value_b) = config.children.get(5)
+                    && let Node::Text(bound_value_b) = bound_value_b
+                    && let Ok(bound_value_b) = f32::from_str(bound_value_b.value.trim()) {
+                        if bound_range_a.value.as_str() == "min" {
+                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowXminmax {
+                                min: bound_value_a,
+                                max: bound_value_b
+                            }));
                         }
-                        6 => {
-                            if let Node::InlineCode(key) = &keys.children[2] 
-                            && key.value.as_str() == "min" 
-                            && let Node::Text(min) = &keys.children[3]
-                            && let Node::InlineCode(key2) = &keys.children[4]
-                            && key2.value.as_str() == "max"
-                            && let Node::Text(max) = &keys.children[5] {
-                                configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowXminmax {
-                                    min: match f32::from_str(&min.value.trim()) {
-                                        Ok(f) => f,
-                                        Err(_) => 0.0
-                                    },
-                                    max: match f32::from_str(&max.value.trim()) {
-                                        Ok(f) => f,
-                                        Err(_) => 0.0
-                                    }
-                                }));
-                            }
+                        else {
+                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowXminmax {
+                                min: bound_value_b,
+                                max: bound_value_a
+                            }));
                         }
-                        _ => {}
+                    }
+                    else if let Some(bound_range) = config.children.get(2)
+                    && let Node::InlineCode(bound_range) = bound_range
+                    && (bound_range.value.as_str() == "min" || bound_range.value.as_str() == "max")
+                    && let Some(bound_value) = config.children.get(3)
+                    && let Node::Text(bound_value) = bound_value
+                    && let Ok(bound_value) = f32::from_str(bound_value.value.trim()) {
+                        if bound_range.value.as_str() == "min" {
+                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowXmin { 
+                                min: bound_value
+                            }));
+                        }
+                        else {
+                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowXminmax {
+                                min: 0.0,
+                                max: bound_value
+                            }));
+                        }
+                    }
+                    else {
+                        configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowX))
                     }
                 }
                 "height-grow" => {
-                    match &keys.children.len() {
-                        1 => configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowY)),
-                        4 => {
-                            if let Node::InlineCode(i) = &keys.children[2] 
-                            && i.value.as_str() == "min" 
-                            && let Node::Text(min) = &keys.children[3] {
-                                configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowYmin { 
-                                    min: match f32::from_str(&min.value.trim()) {
-                                        Ok(f) => f,
-                                        Err(_) => 0.0
-                                    }
-                                }));
-                            }
+                    if let Some(bound_range_a) = config.children.get(2)
+                    && let Node::InlineCode(bound_range_a) = bound_range_a
+                    && (bound_range_a.value.as_str() == "min" || bound_range_a.value.as_str() == "max")
+                    && let Some(bound_value_a) = config.children.get(3)
+                    && let Node::Text(bound_value_a) = bound_value_a
+                    && let Ok(bound_value_a) = f32::from_str(bound_value_a.value.trim())
+                    && let Some(bound_range_b) = config.children.get(4)
+                    && let Node::InlineCode(bound_range_b) = bound_range_b
+                    && (bound_range_b.value.as_str() == "min" || bound_range_b.value.as_str() == "max")
+                    && let Some(bound_value_b) = config.children.get(5)
+                    && let Node::Text(bound_value_b) = bound_value_b
+                    && let Ok(bound_value_b) = f32::from_str(bound_value_b.value.trim()) {
+                        if bound_range_a.value.as_str() == "min" {
+                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowYminmax {
+                                min: bound_value_a,
+                                max: bound_value_b
+                            }));
                         }
-                        6 => {
-                            if let Node::InlineCode(key) = &keys.children[2] 
-                            && key.value.as_str() == "min" 
-                            && let Node::Text(min) = &keys.children[3]
-                            && let Node::InlineCode(key2) = &keys.children[4]
-                            && key2.value.as_str() == "max"
-                            && let Node::Text(max) = &keys.children[5] {
-                                configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowYminmax {
-                                    min: match f32::from_str(&min.value.trim()) {
-                                        Ok(f) => f,
-                                        Err(_) => 0.0
-                                    },
-                                    max: match f32::from_str(&max.value.trim()) {
-                                        Ok(f) => f,
-                                        Err(_) => 0.0
-                                    }
-                                }));
-                            }
+                        else {
+                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowYminmax {
+                                min: bound_value_b,
+                                max: bound_value_a
+                            }));
                         }
-                        _ => {}
+                    }
+                    else if let Some(bound_range) = config.children.get(2)
+                    && let Node::InlineCode(bound_range) = bound_range
+                    && (bound_range.value.as_str() == "min" || bound_range.value.as_str() == "max")
+                    && let Some(bound_value) = config.children.get(3)
+                    && let Node::Text(bound_value) = bound_value
+                    && let Ok(bound_value) = f32::from_str(bound_value.value.trim()) {
+                        if bound_range.value.as_str() == "min" {
+                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowYmin { 
+                                min: bound_value
+                            }));
+                        }
+                        else {
+                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowYminmax {
+                                min: 0.0,
+                                max: bound_value
+                            }));
+                        }
+                    }
+                    else {
+                        configs.push(LayoutCommandType::ElementConfig(ConfigCommand::GrowY))
                     }
                 }
-                "fit-width" => {
-                    if let Some(fit_a) = keys.children.get(2)
+                "width-fit" => {
+                    if let Some(fit_a) = config.children.get(2)
                     && let Node::InlineCode(fit_a) = fit_a
                     && (fit_a.value.trim() == "min" || fit_a.value.trim() == "max")
-                    && let Some(value_a) = keys.children.get(3)
+                    && let Some(value_a) = config.children.get(3)
                     && let Node::Text(value_a) = value_a
                     && let Ok(value_a) = f32::from_str(value_a.value.trim())
 
-                    && let Some(fit_b) = keys.children.get(4)
+                    && let Some(fit_b) = config.children.get(4)
                     && let Node::InlineCode(fit_b) = fit_b
                     && (fit_b.value.trim() == "min" || fit_b.value.trim() == "max")
-                    && let Some(value_b) = keys.children.get(5)
+                    && let Some(value_b) = config.children.get(5)
                     && let Node::Text(value_b) = value_b
                     && let Ok(value_b) = f32::from_str(value_b.value.trim()) {
                         if fit_a.value.trim() == "min" {
@@ -437,32 +575,40 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                         }
                         
                     }
-                    else if let Some(fit) = keys.children.get(2)
+                    else if let Some(fit) = config.children.get(2)
                     && let Node::InlineCode(fit) = fit
-                    && fit.value.as_str() == "min" 
-                    && let Some(min) = keys.children.get(3)
-                    && let Node::Text(min) = min
-                    && let Ok(min) = f32::from_str(min.value.trim()) {
-                        configs.push(LayoutCommandType::ElementConfig(ConfigCommand::FitXmin { 
-                            min
-                        }));
+                    && (fit.value.as_str() == "min" || fit.value.as_str() == "max")
+                    && let Some(value) = config.children.get(3)
+                    && let Node::Text(value) = value
+                    && let Ok(value) = f32::from_str(value.value.trim()) {
+                        if fit.value.as_str() == "min" {
+                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::FitXmin { 
+                                min: value
+                            }));
+                        }
+                        else {
+                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::FitXminmax {
+                                min: 0.0,
+                                max: value
+                            }));
+                        }
                     }
                     else {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::FitX));
                     }
                 }
-                "fit-height" => {
-                    if let Some(fit_a) = keys.children.get(2)
+                "height-fit" => {
+                    if let Some(fit_a) = config.children.get(2)
                     && let Node::InlineCode(fit_a) = fit_a
                     && (fit_a.value.trim() == "min" || fit_a.value.trim() == "max")
-                    && let Some(value_a) = keys.children.get(3)
+                    && let Some(value_a) = config.children.get(3)
                     && let Node::Text(value_a) = value_a
                     && let Ok(value_a) = f32::from_str(value_a.value.trim())
 
-                    && let Some(fit_b) = keys.children.get(4)
+                    && let Some(fit_b) = config.children.get(4)
                     && let Node::InlineCode(fit_b) = fit_b
                     && (fit_b.value.trim() == "min" || fit_b.value.trim() == "max")
-                    && let Some(value_b) = keys.children.get(5)
+                    && let Some(value_b) = config.children.get(5)
                     && let Node::Text(value_b) = value_b
                     && let Ok(value_b) = f32::from_str(value_b.value.trim()) {
                         if fit_a.value.trim() == "min" {
@@ -479,10 +625,10 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                         }
                         
                     }
-                    else if let Some(fit) = keys.children.get(2)
+                    else if let Some(fit) = config.children.get(2)
                     && let Node::InlineCode(fit) = fit
                     && fit.value.as_str() == "min" 
-                    && let Some(min) = keys.children.get(3)
+                    && let Some(min) = config.children.get(3)
                     && let Node::Text(min) = min
                     && let Ok(min) = f32::from_str(min.value.trim()) {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::FitYmin { 
@@ -494,7 +640,7 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                     }
                 }
                 "width-fixed" => {
-                    if let Some(dynamic_value) = keys.children.get(2)
+                    if let Some(dynamic_value) = config.children.get(2)
                     && let Node::Emphasis(dynamic_value) = dynamic_value
                     && let Some(dynamic_value) = dynamic_value.children.get(0)
                     && let Node::Text(dynamic_value) = dynamic_value {
@@ -502,14 +648,14 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                             dynamic_value.value.trim().to_string()
                         )));
                     }
-                    else if let Some(static_value) = keys.children.get(1)
+                    else if let Some(static_value) = config.children.get(1)
                     && let Node::Text(static_value) = static_value
                     && let Ok(static_value) = f32::from_str(static_value.value.trim()) {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::FixedX(static_value)));
                     }
                 }
                 "height-fixed" => {
-                    if let Some(dynamic_value) = keys.children.get(2)
+                    if let Some(dynamic_value) = config.children.get(2)
                     && let Node::Emphasis(dynamic_value) = dynamic_value
                     && let Some(dynamic_value) = dynamic_value.children.get(0)
                     && let Node::Text(dynamic_value) = dynamic_value {
@@ -517,14 +663,14 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                             dynamic_value.value.trim().to_string()
                         )));
                     }
-                    else if let Some(static_value) = keys.children.get(1)
+                    else if let Some(static_value) = config.children.get(1)
                     && let Node::Text(static_value) = static_value
                     && let Ok(static_value) = f32::from_str(static_value.value.trim()) {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::FixedY(static_value)));
                     }
                 }
                 "width-percent" => {
-                    if let Some(dynamic_percent) = keys.children.get(2)
+                    if let Some(dynamic_percent) = config.children.get(2)
                     && let Node::Emphasis(dynamic_percent) = dynamic_percent
                     && let Some(dynamic_percent) = dynamic_percent.children.get(0)
                     && let Node::Text(_dynamic_percent) = dynamic_percent {
@@ -532,14 +678,14 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                         //     dynamic_percent.value.trim().to_string()
                         // )));
                     }
-                    else if let Some(static_value) = keys.children.get(1)
+                    else if let Some(static_value) = config.children.get(1)
                     && let Node::Text(static_value) = static_value
                     && let Ok(static_value) = f32::from_str(static_value.value.trim()) {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::PercentX(static_value)));
                     }
                 }
                 "height-percent" => {
-                    if let Some(dynamic_percent) = keys.children.get(2)
+                    if let Some(dynamic_percent) = config.children.get(2)
                     && let Node::Emphasis(dynamic_percent) = dynamic_percent
                     && let Some(dynamic_percent) = dynamic_percent.children.get(0)
                     && let Node::Text(_dynamic_percent) = dynamic_percent {
@@ -547,63 +693,63 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                         //     dynamic_percent.value.trim().to_string()
                         // )));
                     }
-                    else if let Some(static_percent) = keys.children.get(1)
+                    else if let Some(static_percent) = config.children.get(1)
                     && let Node::Text(static_percent) = static_percent
                     && let Ok(static_percent) = f32::from_str(static_percent.value.trim()) {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::PercentY(static_percent)));
                     }
                 }
                 "padding-all" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = u16::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::PaddingAll(value)));
                     }
                 }
                 "padding-top" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = u16::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::PaddingTop(value)));
                     }
                 }
                 "padding-right" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = u16::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::PaddingRight(value)));
                     }
                 }
                 "padding-bottom" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = u16::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::PaddingBottom(value)));
                     }
                 }
                 "padding-left" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = u16::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::PaddingLeft(value)));
                     }
                 }
                 "child-gap" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = u16::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::ChildGap(value)));
                     }
                 }
                 "direction" => {
-                    if let Some(direction) = keys.children.get(1)
+                    if let Some(direction) = config.children.get(1)
                     && let Node::Text(direction) = direction
                     && direction.value.trim() == "ttb" {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::DirectionTTB));
                     }
                 }
                 "align-children-x" => {
-                    if let Some(alignment) = keys.children.get(1)
+                    if let Some(alignment) = config.children.get(1)
                     && let Node::Text(alignment) = alignment {
                         match alignment.value.trim() {
                             "left" => configs.push(LayoutCommandType::ElementConfig(ConfigCommand::ChildAlignmentXLeft)),
@@ -614,7 +760,7 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                     }
                 }
                 "align-children-y" => {
-                    if let Some(alignment) = keys.children.get(1)
+                    if let Some(alignment) = config.children.get(1)
                     && let Node::Text(alignment) = alignment {
                         match alignment.value.trim() {
                             "top" => configs.push(LayoutCommandType::ElementConfig(ConfigCommand::ChildAlignmentYTop)),
@@ -625,7 +771,7 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                     }
                 }
                 "color" => {
-                    if let Some(dynamic_color) = keys.children.get(2)
+                    if let Some(dynamic_color) = config.children.get(2)
                     && let Node::Emphasis(dynamic_color) = dynamic_color
                     && let Some(dynamic_color) = dynamic_color.children.get(0)
                     && let Node::Text(dynamic_color) = dynamic_color {
@@ -633,7 +779,7 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                             dynamic_color.value.to_string()
                         )));
                     }
-                    else if let Some(static_color) = keys.children.get(1)
+                    else if let Some(static_color) = config.children.get(1)
                     && let Node::Text(static_color) = static_color 
                     && let Ok(static_color) = csscolorparser::parse(&static_color.value.trim()) {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::Color(
@@ -647,42 +793,42 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                     }
                 }
                 "radius-all" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = f32::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::RadiusAll(value)));
                     }
                 }
                 "radius-top-left" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = f32::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::RadiusTopLeft(value)));
                     }
                 }
                 "radius-top-right" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = f32::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::RadiusTopRight(value)));
                     }
                 }
                 "radius-bottom-left" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = f32::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::RadiusBottomLeft(value)));
                     }
                 }
                 "radius-bottom-right" => {
-                    if let Some(value) = keys.children.get(1)
+                    if let Some(value) = config.children.get(1)
                     && let Node::Text(value) = value
                     && let Ok(value) = f32::from_str(&value.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::RadiusBottomRight(value)));
                     }
                 }
                 "border-color" => {
-                    if let Some(dynamic_color) = keys.children.get(2)
+                    if let Some(dynamic_color) = config.children.get(2)
                     && let Node::Emphasis(dynamic_color) = dynamic_color
                     && let Some(dynamic_color) = dynamic_color.children.get(0)
                     && let Node::Text(dynamic_color) = dynamic_color {
@@ -690,7 +836,7 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                             dynamic_color.value.to_string()
                         )));
                     }
-                    else if let Some(static_color) = keys.children.get(1)
+                    else if let Some(static_color) = config.children.get(1)
                     && let Node::Text(static_color) = static_color 
                     && let Ok(static_color) = csscolorparser::parse(&static_color.value.trim()) {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::BorderColor(
@@ -704,51 +850,51 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                     }
                 }
                 "border-all" => {
-                    if let Some(width) = keys.children.get(1)
+                    if let Some(width) = config.children.get(1)
                     && let Node::Text(width) = width
                     && let Ok(width) = f32::from_str(&width.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::BorderAll(width)));
                     }
                 }
                 "border-top" => {
-                    if let Some(width) = keys.children.get(1)
+                    if let Some(width) = config.children.get(1)
                     && let Node::Text(width) = width
                     && let Ok(width) = f32::from_str(&width.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::BorderTop(width)));
                     }
                 }
                 "border-left" => {
-                    if let Some(width) = keys.children.get(1)
+                    if let Some(width) = config.children.get(1)
                     && let Node::Text(width) = width
                     && let Ok(width) = f32::from_str(&width.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::BorderLeft(width)));
                     }
                 }
                 "border-bottom" => {
-                    if let Some(width) = keys.children.get(1)
+                    if let Some(width) = config.children.get(1)
                     && let Node::Text(width) = width
                     && let Ok(width) = f32::from_str(&width.value.trim()){
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::BorderBottom(width)));
                     }
                 }
                 "border-right" => {
-                    if let Some(width) = keys.children.get(1)
+                    if let Some(width) = config.children.get(1)
                     && let Node::Text(width) = width
                     && let Ok(width) = f32::from_str(&width.value.trim()) {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::BorderRight(width)));
                     }
                 }
                 "border-in-between" => {
-                    if let Some(width) = keys.children.get(1)
+                    if let Some(width) = config.children.get(1)
                     && let Node::Text(width) = width
                     && let Ok(width) = f32::from_str(&width.value.trim()) {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::BorderBetweenChildren(width)));
                     }
                 }
                 "scroll" => {
-                    match &keys.children.len() {
+                    match &config.children.len() {
                         3 => {
-                            if let Some(scroll_direction) = keys.children.get(2)
+                            if let Some(scroll_direction) = config.children.get(2)
                             && let Node::InlineCode(scroll_direction) = scroll_direction {
                                 if scroll_direction.value.as_str() == "x" {
                                     configs.push(LayoutCommandType::ElementConfig(ConfigCommand::Clip { vertical: false, horizontal: true }));
@@ -759,8 +905,8 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                             }
                         }
                         5 => {
-                            if let Some(scroll_direction_a) = keys.children.get(2)
-                            && let Some(scroll_direction_b) = keys.children.get(4)
+                            if let Some(scroll_direction_a) = config.children.get(2)
+                            && let Some(scroll_direction_b) = config.children.get(4)
                             && let Node::InlineCode(scroll_direction_a) = scroll_direction_a
                             && let Node::InlineCode(scroll_direction_b) = scroll_direction_b
                             && (
@@ -773,42 +919,28 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                         _ => {}
                     }
                 }
-                // TODO: optimize
                 "image" => {
-                    let emphasees = keys.children.iter().filter(|node|{
-                        if let Node::Emphasis(_)= node{
-                            return true
-                        } return false
-                    }).collect::<Vec<&Node>>();
-
-                    if emphasees.len() > 0 {
-                        if let Node::Emphasis(e) = &keys.children[2] 
-                        && let Node::Text(t) = &e.children[0] {
-                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::Image { name: t.value.trim().to_string() }));
-                        }
-                    }
-                    else {
-                        if let Node::Text(t) = &keys.children[1] {
-                            configs.push(LayoutCommandType::ElementConfig(ConfigCommand::Image { name: t.value.trim().to_string() }));
-                        }
+                    if let Some(src) = config.children.get(1)
+                    && let Node::Text(src) = src {
+                        configs.push(LayoutCommandType::ElementConfig(ConfigCommand::Image { name: src.value.trim().to_string() }));
                     }
                 }
                 "floating" => {
                     configs.push(LayoutCommandType::ElementConfig(ConfigCommand::Floating));
-                    if let Some(floating_commands) = node_with_keys.get(1)
+                    if let Some(floating_commands) = config_elements.get(1)
                     && let Node::List(floating_commands) = floating_commands {
                         let mut floating = process_floating::<Event>(floating_commands);
                         configs.append(&mut floating);
                     }
                 }
                 "use" => {
-                    if let Some(reusable_name) = keys.children.get(1)
+                    if let Some(reusable_name) = config.children.get(1)
                     && let Node::Text(reusable_name) = reusable_name {
                         configs.push(LayoutCommandType::ElementConfig(ConfigCommand::Use { name: reusable_name.value.trim().to_string() }));
                     }
                 }
                 "clicked" => {
-                    if let Some(dynamic_event) = keys.children.get(2)
+                    if let Some(dynamic_event) = config.children.get(2)
                     && let Node::Emphasis(dynamic_event) = dynamic_event
                     && let Some(dynamic_event) = dynamic_event.children.get(0)
                     && let Node::Text(dynamic_event) = dynamic_event {
@@ -816,7 +948,7 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                             event: Some(dynamic_event.value.trim().to_string()) 
                         }));
                     }
-                    else if let Some(static_event) = keys.children.get(1)
+                    else if let Some(static_event) = config.children.get(1)
                     && let Node::Text(static_event) = static_event {
                         configs.push(LayoutCommandType::FlowControl(FlowControlCommand::ClickedOpened { 
                             event: Some(static_event.value.trim().to_string()) 
@@ -827,15 +959,41 @@ fn process_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Ve
                             event: None
                         }));
                     }
-                    if let Some(config_on_click) = node_with_keys.get(1)
+                    if let Some(config_on_click) = config_elements.get(1)
                     && let Node::List(config_on_click) = config_on_click {
                         configs.append(&mut process_configs(config_on_click));
                     }
                     configs.push(LayoutCommandType::FlowControl(FlowControlCommand::ClickedClosed));
                 }
+                "right-clicked" => {
+                    if let Some(dynamic_event) = config.children.get(2)
+                    && let Node::Emphasis(dynamic_event) = dynamic_event
+                    && let Some(dynamic_event) = dynamic_event.children.get(0)
+                    && let Node::Text(dynamic_event) = dynamic_event {
+                        configs.push(LayoutCommandType::FlowControl(FlowControlCommand::RightClickOpened { 
+                            event: Some(dynamic_event.value.trim().to_string()) 
+                        }));
+                    }
+                    else if let Some(static_event) = config.children.get(1)
+                    && let Node::Text(static_event) = static_event {
+                        configs.push(LayoutCommandType::FlowControl(FlowControlCommand::RightClickOpened { 
+                            event: Some(static_event.value.trim().to_string()) 
+                        }));
+                    }
+                    else {
+                        configs.push(LayoutCommandType::FlowControl(FlowControlCommand::RightClickOpened { 
+                            event: None
+                        }));
+                    }
+                    if let Some(config_on_click) = config_elements.get(1)
+                    && let Node::List(config_on_click) = config_on_click {
+                        configs.append(&mut process_configs(config_on_click));
+                    }
+                    configs.push(LayoutCommandType::FlowControl(FlowControlCommand::RightClickClosed));
+                }
                 "hovered" => {
                     configs.push(LayoutCommandType::FlowControl(FlowControlCommand::HoveredOpened));
-                    if let Some(config_on_hover) = node_with_keys.get(1)
+                    if let Some(config_on_hover) = config_elements.get(1)
                     && let Node::List(config_on_hover) = config_on_hover {
                         configs.append(&mut process_configs(config_on_hover));
                     }
@@ -1027,39 +1185,57 @@ fn process_floating<Event: Clone+Debug+PartialEq>(floating_config: &List) -> Vec
 fn process_text_configs<Event: Clone+Debug+PartialEq>(configuration_set: &List) -> Vec<LayoutCommandType<Event>> {
     let mut layout_commands = Vec::new();
 
-    for config_item in &configuration_set.children {
-        if let Node::ListItem(l) = &config_item
-        && let Node::Paragraph(keys) = &l.children[0]
-        && let Node::InlineCode(config_type) = &keys.children[0] {
+    for config in &configuration_set.children {
+        if let Node::ListItem(config) = &config
+        && let Some(config) = config.children.get(0)
+        && let Node::Paragraph(config) = config
+        && let Some(config_type) = config.children.get(0)
+        && let Node::InlineCode(config_type) = config_type {
             match config_type.value.as_str() {
                 "font-id" => {
-                    if let Node::Text(value) = &keys.children[1] 
+                    if let Some(value) = config.children.get(1)
+                    && let Node::Text(value) = value 
                     && let Ok(value) = u16::from_str(&value.value.trim()) {
                         layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::FontId(value)));
                     }
                 }
                 "font-size" => {
-                    if let Node::Text(value) = &keys.children[1] 
+                    if let Some(value) = config.children.get(1)
+                    && let Node::Text(value) = value 
                     && let Ok(value) = u16::from_str(&value.value.trim()) {
                         layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::FontSize(value)));
                     }
                 }
+                "align" => {
+                    if let Some(alignment) = config.children.get(1)
+                    && let Node::Text(alignment) = alignment {
+                        match alignment.value.trim() {
+                            "left" => layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::AlignLeft)),
+                            "center" => layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::AlignCenter)),
+                            "right" => layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::AlignRight)),
+                            _ => {}
+                        }
+                    }
+                }
                 "line-height" => {
-                    if let Node::Text(value) = &keys.children[1]
+                    if let Some(value) = config.children.get(1)
+                    && let Node::Text(value) = value 
                     && let Ok(value) = u16::from_str(&value.value.trim()) {
                         layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::LineHeight(value)));
                     }
                 }
                 "letter-spacing" => {
-                    if let Node::Text(value) = &keys.children[1]
+                    if let Some(value) = config.children.get(1)
+                    && let Node::Text(value) = value 
                     && let Ok(_value) = u16::from_str(&value.value.trim()) {
                         //layout_commands.push(LayoutCommandType::TextConfig(telera_app::TextConfigCommand::LetterSpacing(value)));
                     }
                 }
                 "color" => {
-                    if let Node::Text(t) = &keys.children[1] {
+                    if let Some(color) = config.children.get(1)
+                    && let Node::Text(color) = color {
                         layout_commands.push(LayoutCommandType::TextConfig(TextConfigCommand::Color(
-                            match csscolorparser::parse(&t.value) {
+                            match csscolorparser::parse(&color.value) {
                                 Err(_) => Color::default(),
                                 Ok(color) => color.to_rgba8().into(),
                             }

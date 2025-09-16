@@ -308,22 +308,9 @@ where
                             if let Ok((page_name, page_layout, reusables)) = process_layout::<UserEvents>(file) {
                                 layout_binder.add_page(&page_name, page_layout);
                                 for (name, reusable) in reusables {
-                                    //println!("{:?}, {:?}", &name, &reusable);
                                     layout_binder.add_reusable(&name, reusable);
                                 }
                             }
-                            // match Parser::<UserEvents>::add_page(&file) {
-                            //     Ok((page_name, page, reusables)) => {
-                            //         layout_binder.add_page(page_name.as_str(), page);
-                            
-                            //         for (name, reusable) in reusables {
-                            //             layout_binder.add_reusable(name.as_str(), reusable);
-                                                
-                            //         }
-                            //     }
-                            //     Err(_) => {
-                            //     }
-                            // }
                         }
                     }
                 }
@@ -528,22 +515,6 @@ where
                     self.layout_binder.add_reusable(&name, reusable);
                 }
             }
-            // match Parser::<UserEvents>::add_page(&file) {
-            //     Ok((page_name, page, reusables)) => {
-            //         let _ = self.layout_binder.replace_page(page_name.as_str(), page);
-            
-            //         for (name, reusable) in reusables {
-            //             self.layout_binder.add_reusable(name.as_str(), reusable);   
-            //         }
-
-            //         for (_window_id,viewport) in self.core.viewports.iter_mut() {
-            //             viewport.window.request_redraw();
-            //         }
-            //     }
-            //     Err(e) => {
-            //         println!("can't parse pages: {:?}", e);
-            //     }
-            // }
         }
     }
 }
