@@ -1,13 +1,26 @@
-use telera_app::{*, event_handler_derive::EventHandler};
+use telera_app::*;
 use strum::EnumString;
 
-#[derive(EnumString, Debug, Clone, PartialEq, EventHandler)]
-#[handler_for(BasicApp)]
+#[derive(EnumString, Debug, Default, Clone, PartialEq)]
 #[strum(crate = "self::strum")] 
 enum BasicEvents {
+    #[default]
+    None,
     SquirrelClicked,
     LoremClicked,
     FileButtonClicked,
+}
+
+impl EventHandler for BasicEvents{
+    type UserApplication = BasicApp;
+    fn dispatch(&self, app: &mut Self::UserApplication, context: Option<EventContext>, api: &mut API) {
+        match self {
+            BasicEvents::FileButtonClicked => file_button_clicked_handler(app, context, api),
+            BasicEvents::LoremClicked => lorem_clicked_handler(app, context, api),
+            BasicEvents::SquirrelClicked => squirrel_clicked_handler(app, context, api),
+            BasicEvents::None => {}
+        }
+    }
 }
 
 fn squirrel_clicked_handler(app: &mut BasicApp, _context: Option<EventContext>, _api: &mut API){
@@ -41,7 +54,7 @@ impl App for BasicApp {
     }
 }
 
-impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
+impl ParserDataAccess<BasicEvents> for BasicApp {
     fn get_bool(&self, name: &str, list: &Option<ListData>) -> Option<bool> {
         match list {
             None => {
@@ -52,7 +65,7 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
             }
             Some(list) => {
                 if list.src == "Documents" {
-                    if name == "selected_document" {
+                    if name == "selected" {
                         if self.selected_document == list.index as usize {
                             return Some(true);
                         } else {
@@ -111,7 +124,6 @@ impl ParserDataAccess<UIImageDescriptor, BasicEvents> for BasicApp {
     where
         'application: 'render_pass,
     {
-        println!("{:?}, {:?}", name, list);
         match list {
             None => return None,
             Some(list) => {
@@ -143,7 +155,7 @@ fn main() {
 
     let app = BasicApp {
         documents,
-        selected_document: 0,
+        selected_document: 1,
         file_menu_open: false,
     };
 

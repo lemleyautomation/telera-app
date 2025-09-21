@@ -1,21 +1,10 @@
-## koerber-blue
-- `set-color` rgb(0,96,255)
 
-## program name
-- `set-text` Emuflex 3D
-
-## toggle-file-dropdown
-- `set-bool` false
-
-#### layout expand
+## layout expand
 - `width-grow`
 - `height-grow`
 - `image` play
 
-#### content background color
-- `color` rgb(90,90,90)
-
-#### sidebar button
+## sidebar button
 - `width-grow`
 - `padding-all` 16
 
@@ -53,16 +42,18 @@
         - *label*
 
 # Main
+- `declarations`
+    - `set-color` *content background color* rgb(90,90,90)
 - `element` outer container
     - `config`
         - `use` layout expand
         - `color` rgb(43,41,51)
-        - `direction` ttb
+        - `vertical`
         - `padding-all` 16
         - `child-gap` 16
     - `element` header bar
         - `config`
-            - `use` content background color
+            - `color` *content background color*
             - `radius-all` 8
             - `width-grow`
             - `height-fixed` 60
@@ -104,7 +95,7 @@
                                 - `parent`
                     - `element`
                         - `config`
-                            - `direction` ttb
+                            - `vertical`
                             - `width-fixed` 200
                             - `color` rgb(40,40,40)
                             - `radius-all` 8
@@ -130,8 +121,8 @@
             - `use` layout expand
         - `element` sidebar
             - `config`
-                - `use` content background color
-                - `direction` ttb
+                - `color` *content background color*
+                - `vertical`
                 - `padding-all` 16
                 - `child-gap` 8
                 - `width-fixed` 250
@@ -148,7 +139,7 @@
                             - `use` sidebar button
                             - `color` rgb(120,120,120)
                             - `radius-all` 8
-                            - `clicked` Clicked
+                            - `clicked` *Clicked*
                                 - `border-color` white
                                 - `border-all` 2
                         - `text`
@@ -163,7 +154,7 @@
                             - `radius-all` 8
                             - `hovered`
                                 - `color` rgb(120,120,120)
-                            - `clicked` Clicked
+                            - `clicked` *Clicked*
                                 - `border-color` white
                                 - `border-all` 2
                         - `text`
@@ -173,9 +164,9 @@
                             - *title*
         - `element` main content
             - `config`
-                - `use` content background color
+                - `color` *content background color*
                 - `scroll` `y`
-                - `direction` ttb
+                - `vertical`
                 - `child-gap` 16
                 - `padding-all` 16
                 - `use` layout expand

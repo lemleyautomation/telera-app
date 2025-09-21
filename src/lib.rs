@@ -21,7 +21,7 @@ use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop, EventLoopProxy},
-    window::WindowAttributes
+    window::{WindowAttributes}
 };
 pub use winit::{
     window::{
@@ -51,8 +51,11 @@ use ui_shapes::Shapes;
 
 use telera_layout::LayoutEngine;
 
-mod xml_parse;
-pub use xml_parse::*;
+pub use strum;
+mod layout_types;
+pub use layout_types::*;
+mod page_set;
+pub use page_set::*;
 mod markdown;
 pub use markdown::*;
 mod ui_toolkit;
@@ -132,7 +135,9 @@ pub struct API{
     pub y_at_click: f32,
     pub focus: u32,
 
+    pub dpi_scale: f32,
     pub mouse_poistion: (f32, f32),
+    pub mouse_delta: (f32,f32),
     scroll_delta_time: Instant,
     scroll_delta_distance: (f32, f32),
 }
@@ -238,11 +243,11 @@ pub trait EventHandler {
 
 struct Application<UserApp, UserEvents>
 where 
-    UserEvents: FromStr+Clone+PartialEq+Debug+EventHandler,
+    UserEvents: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
     <UserEvents as FromStr>::Err: Debug,
-    UserApp: App + ParserDataAccess<UIImageDescriptor, UserEvents>,
+    UserApp: App + ParserDataAccess<UserEvents>,
 {
-    layout_binder: Binder<UserEvents>,
+    layout_binder: Binder<UserEvents,UserApp>,
     core: API,
     user_application: UserApp,
 
@@ -254,9 +259,9 @@ where
 
 impl<UserEvents, UserApp> Application<UserApp, UserEvents>
 where 
-    UserEvents: FromStr+Clone+PartialEq+Debug+EventHandler,
+    UserEvents: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>,
     <UserEvents as FromStr>::Err: Debug,
-    UserApp: App + ParserDataAccess<UIImageDescriptor, UserEvents>,
+    UserApp: App + ParserDataAccess<UserEvents>,
 {
     pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp, watcher: Option<ReadDirectoryChangesWatcher>) -> Self {
 
@@ -285,7 +290,9 @@ where
             y_at_click: 0.0,
             focus: 0,
             
+            dpi_scale: 0.0,
             mouse_poistion: (0.0,0.0),
+            mouse_delta: (0.0,0.0),
             scroll_delta_time: Instant::now(),
             scroll_delta_distance: (0.0, 0.0),
         };
@@ -377,10 +384,10 @@ where
 
 impl<UserEvents, UserApp> ApplicationHandler<InternalEvents> for Application<UserApp, UserEvents>
 where 
-    UserEvents: FromStr+Clone+PartialEq+Debug+EventHandler,
+    UserEvents: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>,
     UserEvents: EventHandler<UserApplication = UserApp>, 
     <UserEvents as FromStr>::Err: Debug,
-    UserApp: App + ParserDataAccess<UIImageDescriptor, UserEvents>,
+    UserApp: App + ParserDataAccess<UserEvents>,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.user_application.initialize(&mut self.core);
@@ -414,6 +421,8 @@ where
 
                 let window_size: (f32, f32) = self.core.viewports.get_mut(&window_id).as_mut().unwrap().window.inner_size().into();
                 let dpi_scale  = self.core.viewports.get_mut(&window_id).as_mut().unwrap().window.scale_factor() as f32;
+
+                self.core.dpi_scale = dpi_scale;
                 
                 let mut ui_renderer = self.core.ui_renderer.take().unwrap();
                 ui_renderer.dpi_scale = dpi_scale;
@@ -445,6 +454,8 @@ where
                 self.core.right_mouse_clicked = false;
                 
                 let (render_commands, mut ui_renderer) = self.core.ui_layout.end_layout();
+
+                //println!("{:#?}", &render_commands);
 
                 self.core.ctx.render(
                     self.core.viewports.get_mut(&window_id).as_mut().unwrap(),
@@ -495,6 +506,8 @@ where
                 //viewport.window.request_redraw();
             }
             WindowEvent::CursorMoved { device_id:_, position } => {
+                self.core.mouse_delta.0 = position.x as f32 - self.core.mouse_poistion.0;
+                self.core.mouse_delta.1 = position.y as f32 - self.core.mouse_poistion.1;
                 self.core.mouse_poistion = position.into();
                 //viewport.window.request_redraw();
             }
@@ -521,10 +534,9 @@ where
 
 pub fn run<UserEvents, UserApp>(user_application: UserApp)
 where 
-    UserEvents: FromStr+Clone+PartialEq+Debug+EventHandler,
-    UserEvents: EventHandler<UserApplication = UserApp>, 
+    UserEvents: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
     <UserEvents as FromStr>::Err: Debug,
-    UserApp: App + ParserDataAccess<UIImageDescriptor, UserEvents>,
+    UserApp: App + ParserDataAccess<UserEvents>,
 {
     let event_loop = match EventLoop::<InternalEvents>::with_user_event().build() {
         Ok(event_loop) => event_loop,
@@ -532,18 +544,9 @@ where
     };
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    #[cfg(debug_assertions)]
-    {
-        let file_watcher = event_loop.create_proxy();
-        let watcher = watch_file("src/layouts", file_watcher);
-        let mut app: Application<UserApp, UserEvents> = Application::new(event_loop.create_proxy(), user_application, Some(watcher));
-        
-        event_loop.run_app(&mut app).unwrap();
-    }
+    let file_watcher = event_loop.create_proxy();
+    let watcher = watch_file("src/layouts", file_watcher);
+    let mut app: Application<UserApp, UserEvents> = Application::new(event_loop.create_proxy(), user_application, Some(watcher));
     
-    #[cfg(not(debug_assertions))]
-    {
-        let mut app: Application<UserApp, UserEvents> = Application::new(event_loop.create_proxy(), user_application, None);
-        event_loop.run_app(&mut app).unwrap();
-    }
+    event_loop.run_app(&mut app).unwrap();
 }

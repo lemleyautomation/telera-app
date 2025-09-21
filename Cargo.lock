@@ -3569,6 +3569,7 @@ version = "0.9.0"
 dependencies = [
  "bindgen",
  "cc",
+ "csscolorparser",
 ]
 
 [[package]]

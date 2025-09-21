@@ -64,16 +64,15 @@ pub enum TreeViewItem<'frame, UserEvent: FromStr+Clone+PartialEq+Debug+EventHand
     ExpandedItem{label: &'frame str, event_definitions: Option<TreeViewEvents<UserEvent>>, items: Vec<TreeViewItem<'frame, UserEvent>>},
 }
 
-pub fn treeview<Image, UserApp, Event>(
+pub fn treeview<UserApp, Event>(
     name: &str,
     api: &mut API,
     user_app: &UserApp,
     mut events: Vec::<(Event, Option<EventContext>)>
 ) -> Vec::<(Event, Option<EventContext>)>
-where 
-    Image: Clone+Debug+Default+PartialEq, 
-    Event: FromStr+Clone+PartialEq+Debug+EventHandler, 
-    UserApp: ParserDataAccess<Image, Event>,
+where
+    Event: FromStr+Clone+PartialEq+Debug+EventHandler<UserApplication = UserApp>, 
+    UserApp: ParserDataAccess<Event>,
 {
     if let Some(treeview) = user_app.get_treeview(name) {
         events = recursive_treeview_layout(api, &treeview, events);

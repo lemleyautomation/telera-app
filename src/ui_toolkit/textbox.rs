@@ -11,16 +11,15 @@ use crate::ParserDataAccess;
 
 const DEFAULT_TEXT: &str = "";
 
-pub fn text_box<Image, UserApp, Event>(
+pub fn text_box<UserApp, Event>(
     content: &str,
     api: &mut API,
     user_app: &UserApp,
     events: Vec::<(Event, Option<EventContext>)>
 ) -> Vec::<(Event, Option<EventContext>)>
 where 
-    Image: Clone+Debug+Default+PartialEq, 
-    Event: FromStr+Clone+PartialEq+Debug+EventHandler, 
-    UserApp: ParserDataAccess<Image, Event>,
+    Event: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>, 
+    UserApp: ParserDataAccess<Event>,
 {
     
     let clay = &mut api.ui_layout;
