@@ -197,14 +197,21 @@ where
                             }
                         }
                     }
-                    Element::HoveredOpened => {
-                        if skip.is_none() && !api.ui_layout.hovered() {
+                    Element::HoverOpened { event } => {
+                        if skip.is_none() {
                             skip = Some(nesting_level);
+
+                            if api.ui_layout.hovered() {
+                                skip = None;
+
+                                if let Some(event) = event {
+                                    events.push((Event::resolve_src(event, locals, user_app, &list_data),None));
+                                }
+                            }
                         }
-        
                         nesting_level += 1;
                     }
-                    Element::HoveredClosed => {
+                    Element::HoverClosed => {
                         nesting_level -= 1;
 
                         if let Some(skip_level) = skip {
@@ -213,7 +220,7 @@ where
                             }
                         }
                     }
-                    Element::ClickedOpened { event } => {
+                    Element::LeftClickedOpened { event } => {
                         //println!("event at click opened: {:?}", event);
                         if skip.is_none() {
                             skip = Some(nesting_level);
@@ -228,7 +235,7 @@ where
                         }
                         nesting_level += 1;
                     }
-                    Element::ClickedClosed => {
+                    Element::LeftClickedClosed => {
                         nesting_level -= 1;
 
                         if let Some(skip_level) = skip {
@@ -237,7 +244,7 @@ where
                             }
                         }
                     }
-                    Element::RightClickOpened { event } => {
+                    Element::RightClickedOpened { event } => {
                         if skip.is_none() {
                             skip = Some(nesting_level);
 
@@ -251,21 +258,13 @@ where
                         }
                         nesting_level += 1;
                     }
-                    Element::RightClickClosed => {
+                    Element::RightClickedClosed => {
                         nesting_level -= 1;
 
                         if let Some(skip_level) = skip {
                             if skip_level == nesting_level{
                                 skip = None;
                             }
-                        }
-                    }
-                    Element::MouseDown { event } => {
-                        if api.ui_layout.hovered()
-                        && api.left_mouse_button 
-                        && skip.is_none()
-                        && let Some(event) = event {
-                            events.push((Event::resolve_src(event, locals, user_app, &list_data),None));
                         }
                     }
                     Element::Pointer(new_pointer) => {
@@ -454,6 +453,7 @@ where
                             events = ui_toolkit::textbox::text_box(&recursive_source, api, user_app, events);
                         }
                     }
+                    _ => {todo!("")}
                 }
             }
             Layout::Declaration { name, value } => {

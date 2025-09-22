@@ -127,10 +127,20 @@ pub struct API{
 
     pub event_string: String,
 
-    left_mouse_button: bool,
-    right_mouse_button: bool,
+    left_mouse_pressed: bool,
+    left_mouse_down: bool,
+    left_mouse_released: bool,
     left_mouse_clicked: bool,
+    left_mouse_double_clicked: bool,
+    left_mouse_clicked_timer: Option<Instant>,
+    left_mouse_dbl_clicked_timer: Option<Instant>,
+
+    right_mouse_pressed: bool,
+    right_mouse_down: bool,
+    right_mouse_released: bool,
     right_mouse_clicked: bool,
+    right_mouse_clicked_timer: Option<Instant>,
+
     pub x_at_click: f32,
     pub y_at_click: f32,
     pub focus: u32,
@@ -282,10 +292,20 @@ where
 
             event_string: "".to_string(),
 
-            left_mouse_button: false,
-            right_mouse_button: false,
+            left_mouse_pressed: false,
+            left_mouse_down: false,
+            left_mouse_released: false,
             left_mouse_clicked: false,
+            left_mouse_double_clicked: false,
+            left_mouse_clicked_timer: None,
+            left_mouse_dbl_clicked_timer: None,
+
+            right_mouse_pressed: false,
+            right_mouse_down: false,
+            right_mouse_released: false,
             right_mouse_clicked: false,
+            right_mouse_clicked_timer: None,
+
             x_at_click: 0.0,
             y_at_click: 0.0,
             focus: 0,
@@ -299,45 +319,24 @@ where
         
         let mut layout_binder = Binder::new();
 
-        #[cfg(debug_assertions)]
-        {
-            let entries = std::fs::read_dir("src/layouts").unwrap_or_else(|e| {
-                eprintln!("Error reading directory: {}", e);
-                std::process::exit(1);
-            });
+        let entries = std::fs::read_dir("src/layouts").unwrap_or_else(|e| {
+            eprintln!("Error reading directory: {}", e);
+            std::process::exit(1);
+        });
 
-            for dir in entries {
-                #[allow(for_loops_over_fallibles)]
-                for dir in dir {
-                    let entry = dir.path();
-                    if entry.is_file() {
-                        if let Ok(file) = read_to_string(entry) {
-                            if let Ok((page_name, page_layout, reusables)) = process_layout::<UserEvents>(file) {
-                                layout_binder.add_page(&page_name, page_layout);
-                                for (name, reusable) in reusables {
-                                    layout_binder.add_reusable(&name, reusable);
-                                }
+        for dir in entries {
+            #[allow(for_loops_over_fallibles)]
+            for dir in dir {
+                let entry = dir.path();
+                if entry.is_file() {
+                    if let Ok(file) = read_to_string(entry) {
+                        if let Ok((page_name, page_layout, reusables)) = process_layout::<UserEvents>(file) {
+                            layout_binder.add_page(&page_name, page_layout);
+                            for (name, reusable) in reusables {
+                                layout_binder.add_reusable(&name, reusable);
                             }
                         }
                     }
-                }
-            }
-        }
-
-        #[cfg(not(debug_assertions))]
-        {
-            use include_dir::{include_dir, Dir};
-            const LAYOUTS: Dir = include_dir!("src/layouts");
-            for layout in LAYOUTS.files(){
-                let file = layout.contents_utf8().unwrap();
-
-                let (page_name, page, reusables) = Parser::<UserEvents>::add_page(&file).unwrap();
-
-                //println!("page: {:?} = {:?} ", page_name, page);
-
-                layout_binder.add_page(page_name.as_str(), page);
-                for (name, reusable) in reusables {
-                    layout_binder.add_reusables(name.as_str(), reusable);
                 }
             }
         }
@@ -395,6 +394,7 @@ where
     }
 
     fn window_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, window_id: WindowId, event: winit::event::WindowEvent) {
+        
         if self.core.staged_windows.len() > 0 {
             self.open_staged_windows(event_loop);
         }
@@ -419,6 +419,7 @@ where
             }
             WindowEvent::RedrawRequested => {
 
+
                 let window_size: (f32, f32) = self.core.viewports.get_mut(&window_id).as_mut().unwrap().window.inner_size().into();
                 let dpi_scale  = self.core.viewports.get_mut(&window_id).as_mut().unwrap().window.scale_factor() as f32;
 
@@ -432,7 +433,7 @@ where
                 self.core.ui_layout.pointer_state(
                     self.core.mouse_poistion.0/dpi_scale, 
                     self.core.mouse_poistion.1/dpi_scale, 
-                    self.core.left_mouse_button
+                    self.core.left_mouse_down
                 );
                 self.core.ui_layout.update_scroll_containers(
                     false, 
@@ -450,12 +451,8 @@ where
                     &mut self.core, 
                     &mut self.user_application
                 );
-                self.core.left_mouse_clicked = false;
-                self.core.right_mouse_clicked = false;
                 
                 let (render_commands, mut ui_renderer) = self.core.ui_layout.end_layout();
-
-                //println!("{:#?}", &render_commands);
 
                 self.core.ctx.render(
                     self.core.viewports.get_mut(&window_id).as_mut().unwrap(),
@@ -463,11 +460,35 @@ where
                     |render_pass, device, queue, config| {
                         
                         self.core.scene_renderer.render(&mut self.core.models, render_pass, &queue);
+                        
                         ui_renderer.render_layout(render_commands, render_pass, &device, &queue, &config);
+                      
                     }
                 ).unwrap();
 
+
                 self.core.ui_renderer = Some(ui_renderer);
+
+                
+                self.core.left_mouse_pressed = false;
+                self.core.left_mouse_released = false;
+                self.core.left_mouse_clicked = false;
+                self.core.left_mouse_double_clicked = false;
+                if let Some(timer) = self.core.left_mouse_clicked_timer
+                && timer.elapsed().as_millis() > 400 {
+                    self.core.left_mouse_clicked_timer = None;
+                }
+                // if let Some(timer) = self.core.left_mouse_dbl_clicked_timer
+                // && timer.elapsed().as_millis() > 300 {
+                //     self.core.left_mouse_dbl_clicked_timer = None;
+                // }
+                self.core.right_mouse_pressed = false;
+                self.core.right_mouse_released = false;
+                self.core.right_mouse_clicked = false;
+                if let Some(timer) = self.core.right_mouse_clicked_timer
+                && timer.elapsed().as_millis() > 300 {
+                    self.core.right_mouse_clicked_timer = None;
+                }
             }
             WindowEvent::MouseInput { device_id:_, state, button } => {
                 let dpi = self.core.ui_renderer.as_ref().unwrap().dpi_scale;
@@ -475,28 +496,59 @@ where
                     MouseButton::Left => {
                         match state {
                             ElementState::Pressed => {
-                                self.core.left_mouse_button = true;
-                                self.core.left_mouse_clicked = true;
+                                self.core.left_mouse_pressed = true;
+                                self.core.left_mouse_down = true;
+                                if self.core.left_mouse_clicked_timer.is_none() {
+                                    self.core.left_mouse_clicked_timer = Some(Instant::now());
+                                }
+                                // else {
+                                //     self.core.left_mouse_clicked_timer = None;
+                                //     self.core.left_mouse_dbl_clicked_timer = Some(Instant::now());
+                                // }
                                 self.core.x_at_click = self.core.mouse_poistion.0/dpi;
                                 self.core.y_at_click = self.core.mouse_poistion.1/dpi;
                             }
-                            ElementState::Released => self.core.left_mouse_button = false,
+                            ElementState::Released => {
+                                if let Some(timer) = self.core.left_mouse_clicked_timer
+                                && timer.elapsed().as_millis() < 400 {
+                                    self.core.left_mouse_clicked = true;
+                                    self.core.left_mouse_clicked_timer = None;
+                                }
+                                // if let Some(timer) = self.core.left_mouse_dbl_clicked_timer
+                                // && timer.elapsed().as_millis() < 300 {
+                                //     self.core.left_mouse_double_clicked = true;
+                                //     self.core.left_mouse_dbl_clicked_timer = None;
+                                // }
+                                self.core.left_mouse_down = false;
+                                self.core.left_mouse_released = true;
+                            }
                         }
                     }
                     MouseButton::Right => {
                         match state {
                             ElementState::Pressed => {
-                                self.core.right_mouse_button = true;
-                                self.core.right_mouse_clicked = true;
+                                self.core.right_mouse_pressed = true;
+                                self.core.right_mouse_down = true;
+                                if self.core.right_mouse_clicked_timer.is_none() {
+                                    self.core.right_mouse_clicked_timer = Some(Instant::now());
+                                }
                                 self.core.x_at_click = self.core.mouse_poistion.0/dpi;
                                 self.core.y_at_click = self.core.mouse_poistion.1/dpi;
                             }
-                            ElementState::Released => self.core.right_mouse_button = false,
+                            ElementState::Released => {
+                                if let Some(timer) = self.core.right_mouse_clicked_timer
+                                && timer.elapsed().as_millis() < 300 {
+                                    self.core.right_mouse_clicked = true;
+                                    self.core.right_mouse_clicked_timer = None;
+                                }
+                                self.core.right_mouse_down = false;
+                                self.core.right_mouse_released = true;
+                            }
                         }
                     }
+                    
                     _ => {}
                 }
-                //viewport.window.request_redraw();
             }
             WindowEvent::MouseWheel { device_id:_, delta, phase:_ } => {
                 self.core.scroll_delta_distance = match delta {
@@ -509,7 +561,6 @@ where
                 self.core.mouse_delta.0 = position.x as f32 - self.core.mouse_poistion.0;
                 self.core.mouse_delta.1 = position.y as f32 - self.core.mouse_poistion.1;
                 self.core.mouse_poistion = position.into();
-                //viewport.window.request_redraw();
             }
             _ => {}
         }
@@ -542,7 +593,7 @@ where
         Ok(event_loop) => event_loop,
         Err(_) => return
     };
-    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.set_control_flow(ControlFlow::Wait);
 
     let file_watcher = event_loop.create_proxy();
     let watcher = watch_file("src/layouts", file_watcher);

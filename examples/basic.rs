@@ -1,3 +1,5 @@
+//#![windows_subsystem = "windows"]
+
 use telera_app::*;
 use strum::EnumString;
 

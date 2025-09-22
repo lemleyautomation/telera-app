@@ -866,15 +866,187 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                         configs.push(Layout::Config(Config::Use { name: reusable_name.value.trim().to_string() }));
                     }
                 }
-                "clicked" => {
+                
+                "hovered" => {
                     match parameter_check::<Event>(config, "", "") {
-                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::ClickedOpened { 
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::HoveredOpened { 
                             event: Some(DataSrc::Dynamic(a)) 
                         })),
-                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::ClickedOpened { 
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::HoveredOpened { 
                             event: Some(DataSrc::Static(a)) 
                         })),
-                        AvailableParameters::None => configs.push(Layout::Element(Element::ClickedOpened { 
+                        AvailableParameters::None => configs.push(Layout::Element(Element::HoveredOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(onconfig_on) = config_elements.get(1)
+                    && let Node::List(onconfig_on) = onconfig_on {
+                        configs.append(&mut process_configs(onconfig_on));
+                    }
+                    configs.push(Layout::Element(Element::HoveredClosed));
+                }
+                "unhovered" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::UnHoveredOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::UnHoveredOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::UnHoveredOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(onconfig_on) = config_elements.get(1)
+                    && let Node::List(onconfig_on) = onconfig_on {
+                        configs.append(&mut process_configs(onconfig_on));
+                    }
+                    configs.push(Layout::Element(Element::UnHoveredClosed));
+                }
+                "hover" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::HoverOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::HoverOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::HoverOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(onconfig_on) = config_elements.get(1)
+                    && let Node::List(onconfig_on) = onconfig_on {
+                        configs.append(&mut process_configs(onconfig_on));
+                    }
+                    configs.push(Layout::Element(Element::HoverClosed));
+                }
+                "focused" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::FocusedOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::FocusedOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::FocusedOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(onconfig_on) = config_elements.get(1)
+                    && let Node::List(onconfig_on) = onconfig_on {
+                        configs.append(&mut process_configs(onconfig_on));
+                    }
+                    configs.push(Layout::Element(Element::FocusedClosed));
+                }
+                "unfocused" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::UnFocusedOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::UnFocusedOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::UnFocusedOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(onconfig_on) = config_elements.get(1)
+                    && let Node::List(onconfig_on) = onconfig_on {
+                        configs.append(&mut process_configs(onconfig_on));
+                    }
+                    configs.push(Layout::Element(Element::UnFocusedClosed));
+                }
+                "focus" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::FocusOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::FocusOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::FocusOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(onconfig_on) = config_elements.get(1)
+                    && let Node::List(onconfig_on) = onconfig_on {
+                        configs.append(&mut process_configs(onconfig_on));
+                    }
+                    configs.push(Layout::Element(Element::FocusClosed));
+                }
+                "left-pressed" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::LeftPressedOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::LeftPressedOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::LeftPressedOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(onconfig_on) = config_elements.get(1)
+                    && let Node::List(onconfig_on) = onconfig_on {
+                        configs.append(&mut process_configs(onconfig_on));
+                    }
+                    configs.push(Layout::Element(Element::LeftPressedClosed));
+                }
+                "left-down" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::LeftDownOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::LeftDownOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::LeftDownOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(onconfig_on) = config_elements.get(1)
+                    && let Node::List(onconfig_on) = onconfig_on {
+                        configs.append(&mut process_configs(onconfig_on));
+                    }
+                    configs.push(Layout::Element(Element::LeftDownClosed));
+                }
+                "left-released" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::LeftReleasedOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::LeftReleasedOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::LeftReleasedOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(onconfig_on) = config_elements.get(1)
+                    && let Node::List(onconfig_on) = onconfig_on {
+                        configs.append(&mut process_configs(onconfig_on));
+                    }
+                    configs.push(Layout::Element(Element::LeftReleasedClosed));
+                }
+                "left-clicked" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::LeftClickedOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::LeftClickedOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::LeftClickedOpened { 
                             event: None 
                         })),
                         _ => {}
@@ -883,17 +1055,112 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     && let Node::List(config_on_click) = config_on_click {
                         configs.append(&mut process_configs(config_on_click));
                     }
-                    configs.push(Layout::Element(Element::ClickedClosed));
+                    configs.push(Layout::Element(Element::LeftClickedClosed));
+                }
+                "left-dbl-clicked" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::LeftDoubleClickedOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::LeftDoubleClickedOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::LeftDoubleClickedOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(config_on_click) = config_elements.get(1)
+                    && let Node::List(config_on_click) = config_on_click {
+                        configs.append(&mut process_configs(config_on_click));
+                    }
+                    configs.push(Layout::Element(Element::LeftDoubleClickedClosed));
+                }
+                "left-tpl-clicked" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::LeftTripleClickedOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::LeftTripleClickedOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::LeftTripleClickedOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(config_on_click) = config_elements.get(1)
+                    && let Node::List(config_on_click) = config_on_click {
+                        configs.append(&mut process_configs(config_on_click));
+                    }
+                    configs.push(Layout::Element(Element::LeftTripleClickedClosed));
+                }
+                "right-pressed" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::RightPressedOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::RightPressedOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::RightPressedOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(config_on_click) = config_elements.get(1)
+                    && let Node::List(config_on_click) = config_on_click {
+                        configs.append(&mut process_configs(config_on_click));
+                    }
+                    configs.push(Layout::Element(Element::RightPressedClosed));
+                }
+                "right-down" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::RightDownOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::RightDownOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::RightDownOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(config_on_click) = config_elements.get(1)
+                    && let Node::List(config_on_click) = config_on_click {
+                        configs.append(&mut process_configs(config_on_click));
+                    }
+                    configs.push(Layout::Element(Element::RightDownClosed));
+                }
+                "right-released" => {
+                    match parameter_check::<Event>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::RightReleasedOpened { 
+                            event: Some(DataSrc::Dynamic(a)) 
+                        })),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::RightReleasedOpened { 
+                            event: Some(DataSrc::Static(a)) 
+                        })),
+                        AvailableParameters::None => configs.push(Layout::Element(Element::RightReleasedOpened { 
+                            event: None 
+                        })),
+                        _ => {}
+                    }
+                    if let Some(config_on_click) = config_elements.get(1)
+                    && let Node::List(config_on_click) = config_on_click {
+                        configs.append(&mut process_configs(config_on_click));
+                    }
+                    configs.push(Layout::Element(Element::RightReleasedClosed));
                 }
                 "right-clicked" => {
                     match parameter_check::<Event>(config, "", "") {
-                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::RightClickOpened { 
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::RightClickedOpened { 
                             event: Some(DataSrc::Dynamic(a)) 
                         })),
-                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::RightClickOpened { 
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::RightClickedOpened { 
                             event: Some(DataSrc::Static(a)) 
                         })),
-                        AvailableParameters::None => configs.push(Layout::Element(Element::RightClickOpened { 
+                        AvailableParameters::None => configs.push(Layout::Element(Element::RightClickedOpened { 
                             event: None 
                         })),
                         _ => {}
@@ -902,15 +1169,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     && let Node::List(config_on_click) = config_on_click {
                         configs.append(&mut process_configs(config_on_click));
                     }
-                    configs.push(Layout::Element(Element::RightClickClosed));
-                }
-                "hovered" => {
-                    configs.push(Layout::Element(Element::HoveredOpened));
-                    if let Some(config_on_hover) = config_elements.get(1)
-                    && let Node::List(config_on_hover) = config_on_hover {
-                        configs.append(&mut process_configs(config_on_hover));
-                    }
-                    configs.push(Layout::Element(Element::HoveredClosed));
+                    configs.push(Layout::Element(Element::RightClickedClosed));
                 }
                 "pointer" => {
                     if let Some(pointer) = config.children.get(1)
@@ -922,20 +1181,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                         }
                     }
                 }
-                "mouse-down" => {
-                    match parameter_check::<Event>(config, "", "") {
-                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Element(Element::MouseDown { 
-                            event: Some(DataSrc::Dynamic(a)) 
-                        })),
-                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Element(Element::MouseDown { 
-                            event: Some(DataSrc::Static(a)) 
-                        })),
-                        AvailableParameters::None => configs.push(Layout::Element(Element::MouseDown { 
-                            event: None 
-                        })),
-                        _ => {}
-                    }
-                }
+                
                 "font-id" => {
                     match parameter_check::<u16>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => configs.push(Layout::Config(Config::FontId(

@@ -17,7 +17,7 @@
         - `padding-right` 16
         - `color` rgb(140,140,140)
         - `radius-all` 5
-        - `hovered`
+        - `hover`
             - `border-color` black
             - `border-all` 2
     - `text`
@@ -32,9 +32,9 @@
     - `config`
         - `padding-all` 16
         - `width-grow`
-        - `hovered`
+        - `hover`
             - `color` rgb(120,120,120)
-        - `clicked` *Clicked*
+        - `left-clicked` *Clicked*
     - `text`
         - `config`
             - `font-size` 16
@@ -71,10 +71,10 @@
                 - `padding-right` 16
                 - `color` rgb(140,140,140)
                 - `radius-all` 5
-                - `hovered`
+                - `hover`
                     - `border-color` black
                     - `border-all` 2
-                - `clicked` FileButtonClicked
+                - `left-clicked` FileButtonClicked
                     - `border-color` rgb(43,41,51)
                     - `border-all` 2
             - `text`
@@ -139,7 +139,7 @@
                             - `use` sidebar button
                             - `color` rgb(120,120,120)
                             - `radius-all` 8
-                            - `clicked` *Clicked*
+                            - `left-clicked` *Clicked*
                                 - `border-color` white
                                 - `border-all` 2
                         - `text`
@@ -152,9 +152,9 @@
                         - `config`
                             - `use` sidebar button
                             - `radius-all` 8
-                            - `hovered`
+                            - `hover`
                                 - `color` rgb(120,120,120)
-                            - `clicked` *Clicked*
+                            - `left-clicked` *Clicked*
                                 - `border-color` white
                                 - `border-all` 2
                         - `text`

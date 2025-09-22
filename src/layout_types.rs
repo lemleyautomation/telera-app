@@ -48,19 +48,55 @@ where
     IfNotOpened{condition: String},
     IfClosed,
 
-    HoveredOpened,
+    Pointer(winit::window::CursorIcon),
+
+    HoverOpened{event: Option<DataSrc<Event>>},
+    HoverClosed,
+
+    HoveredOpened{event: Option<DataSrc<Event>>},
     HoveredClosed,
 
-    // use clay_onhover and retreive the pointerdata from it
-    ClickedOpened{event: Option<DataSrc<Event>>},
-    ClickedClosed,
+    UnHoveredOpened{event: Option<DataSrc<Event>>},
+    UnHoveredClosed,
 
-    RightClickOpened{event: Option<DataSrc<Event>>},
-    RightClickClosed,
+    FocusOpened{event: Option<DataSrc<Event>>},
+    FocusClosed,
 
-    MouseDown{event: Option<DataSrc<Event>>},
+    FocusedOpened{event: Option<DataSrc<Event>>},
+    FocusedClosed,
 
-    Pointer(winit::window::CursorIcon)
+    UnFocusedOpened{event: Option<DataSrc<Event>>},
+    UnFocusedClosed,
+
+    LeftPressedOpened{event: Option<DataSrc<Event>>},
+    LeftPressedClosed,
+
+    LeftDownOpened{event: Option<DataSrc<Event>>},
+    LeftDownClosed,
+
+    LeftReleasedOpened{event: Option<DataSrc<Event>>},
+    LeftReleasedClosed,
+
+    LeftClickedOpened{event: Option<DataSrc<Event>>},
+    LeftClickedClosed,
+
+    LeftDoubleClickedOpened{event: Option<DataSrc<Event>>},
+    LeftDoubleClickedClosed,
+
+    LeftTripleClickedOpened{event: Option<DataSrc<Event>>},
+    LeftTripleClickedClosed,
+
+    RightPressedOpened{event: Option<DataSrc<Event>>},
+    RightPressedClosed,
+
+    RightDownOpened{event: Option<DataSrc<Event>>},
+    RightDownClosed,
+
+    RightReleasedOpened{event: Option<DataSrc<Event>>},
+    RightReleasedClosed,
+
+    RightClickedOpened{event: Option<DataSrc<Event>>},
+    RightClickedClosed,
 }
 
 #[derive(Clone, Debug, Display, PartialEq)]
