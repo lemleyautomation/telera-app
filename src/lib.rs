@@ -31,6 +31,13 @@ pub use winit::{
     dpi::LogicalSize
 };
 
+pub use symbol_table;
+
+pub use telera_macros;
+pub use telera_macros::EventHandler;
+pub use telera_macros::ParserDataAccess;
+pub use telera_macros::App;
+
 mod graphics_context;
 use graphics_context::GraphicsContext;
 
@@ -52,6 +59,7 @@ use ui_shapes::Shapes;
 use telera_layout::LayoutEngine;
 
 pub use strum;
+pub use strum::EnumString;
 mod layout_types;
 pub use layout_types::*;
 mod page_set;
@@ -105,7 +113,7 @@ enum InternalEvents{
 #[allow(unused_variables)]
 pub trait App{
     /// called once before start
-    fn initialize(&mut self, api: &mut API);
+    fn initialize(&mut self, api: &mut API){api.create_default_viewport();}
     /// All application update logic
     /// 
     /// This will be called at the beginning of each render loop
@@ -133,7 +141,7 @@ pub struct API{
     left_mouse_clicked: bool,
     left_mouse_double_clicked: bool,
     left_mouse_clicked_timer: Option<Instant>,
-    left_mouse_dbl_clicked_timer: Option<Instant>,
+    _left_mouse_dbl_clicked_timer: Option<Instant>,
 
     right_mouse_pressed: bool,
     right_mouse_down: bool,
@@ -155,6 +163,10 @@ pub struct API{
 impl API{
     pub fn create_viewport(&mut self, name: &str, page: &str, attributes: WindowAttributes){
         self.staged_windows.push((name.to_string(), page.to_string(), attributes));
+    }
+    pub fn create_default_viewport(&mut self){
+        let new_window = Window::default_attributes().with_inner_size(LogicalSize::new(800, 600));
+        self.staged_windows.push(("Main".to_string(), "Main".to_string(), new_window));
     }
     pub fn add_image(&mut self, name: &str, image: DynamicImage) {
         if let Some(ui_renderer) = &mut self.ui_renderer {
@@ -244,7 +256,6 @@ impl EventContext {
     }
 }
 
-pub use event_handler_derive;
 pub trait EventHandler {
     type UserApplication;
     #[allow(unused_variables)]
@@ -298,7 +309,7 @@ where
             left_mouse_clicked: false,
             left_mouse_double_clicked: false,
             left_mouse_clicked_timer: None,
-            left_mouse_dbl_clicked_timer: None,
+            _left_mouse_dbl_clicked_timer: None,
 
             right_mouse_pressed: false,
             right_mouse_down: false,

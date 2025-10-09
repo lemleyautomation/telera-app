@@ -108,6 +108,7 @@
                             - `set-event` *Clicked* FileButtonClicked
         - `use` header button
             - `set-text` *label* Edit
+        - `textbox` search_bar
         - `element`
             - `config`
                 - `width-grow`

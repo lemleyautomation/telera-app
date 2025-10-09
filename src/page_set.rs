@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
+use symbol_table::GlobalSymbol;
 use winit::window::Cursor;
 
 use crate::{ui_toolkit, UIImageDescriptor};
@@ -22,7 +23,7 @@ where
     UserApp: ParserDataAccess<Event>,
 {
     pages: HashMap<String, Vec<Layout<Event>>>,
-    pub reusable: HashMap<String, Vec<Layout<Event>>>,
+    pub reusable: HashMap<GlobalSymbol, Vec<Layout<Event>>>,
     _x: PhantomData<UserApp>,
 }
 
@@ -47,8 +48,9 @@ where
     }
 
     pub fn add_reusable(&mut self, name: &str, page: Vec<Layout<Event>>) {
-        if self.reusable.get(name).is_none() {
-            self.reusable.insert(name.to_string(), page);
+        let name = GlobalSymbol::new(name);
+        if self.reusable.get(&name).is_none() {
+            self.reusable.insert(name, page);
         }
     }
 
@@ -62,9 +64,10 @@ where
     }
 
     pub fn replace_reusable(&mut self, name: &str, reusable: Vec<Layout<Event>>) -> Result<(), ()> {
-        if self.reusable.get(name).is_some() {
-            self.reusable.remove(name);
-            self.reusable.insert(name.to_string(), reusable);
+        let name = GlobalSymbol::new(name);
+        if self.reusable.get(&name).is_some() {
+            self.reusable.remove(&name);
+            self.reusable.insert(name, reusable);
         }
 
         Err(())
@@ -86,10 +89,10 @@ where
                 command_references.push(command);
             }
 
-            let mut page_call_stack = HashMap::<String, &DataSrc<Declaration<Event>>>::new();
+            let mut page_call_stack = HashMap::<GlobalSymbol, &DataSrc<Declaration<Event>>>::new();
             for command in &command_references {
                 if let Layout::Declaration { name, value } = command {
-                    page_call_stack.insert(name.clone(), value);
+                    page_call_stack.insert(*name, value);
                 }
                 else if let Layout::Element(e) = command
                 && let Element::Pointer(_) = e {}
@@ -122,9 +125,9 @@ where
 fn set_layout<'render_pass, Event, UserApp>(
     api: &mut API,
     commands: &Vec<&Layout<Event>>,
-    reusables: &HashMap<String, Vec<Layout<Event>>>,
-    locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>,
-    list_data: Option<ListData>,
+    reusables: &HashMap<GlobalSymbol, Vec<Layout<Event>>>,
+    locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+    list_data: Option<(GlobalSymbol, usize)>,
     config: Option<&mut ElementConfiguration>,
     text_config: Option<&mut TextConfig>,
     user_app: &UserApp,
@@ -140,8 +143,7 @@ where
     let mut skip: Option<u32> = None;
 
     let mut recursive_commands = Vec::<&Layout<Event>>::new();
-    let mut recursive_source = String::new();
-    let mut recursive_call_stack = HashMap::<String, &DataSrc<Declaration<Event>>>::new();
+    let mut recursive_call_stack = HashMap::<GlobalSymbol, &DataSrc<Declaration<Event>>>::new();
     let mut collect_declarations = false;
 
     let mut collect_list_commands = false;
@@ -162,7 +164,11 @@ where
     for (index, command) in commands.iter().enumerate() {
         if collect_list_commands {
             match command {
-                Layout::Element(flow_command) if *flow_command == Element::ListClosed => collect_list_commands = false,
+                Layout::Element(flow_command) => {
+                    if let Element::ListClosed(_) = flow_command {
+                        collect_list_commands = false;
+                    }
+                }
                 Layout::Declaration{name:_,value:_} => {}
                 other => {
                     collect_declarations = false;
@@ -272,11 +278,10 @@ where
                             pointer = new_pointer.clone();
                         }
                     }
-                    Element::ListOpened { src } => {
+                    Element::ListOpened => {
                         nesting_level += 1;
 
                         if skip.is_none() {
-                            recursive_source = src.to_string();
                             recursive_commands.clear();
                             recursive_call_stack.clear();
                             collect_list_commands = true;
@@ -284,20 +289,19 @@ where
                         }
                         
                     }
-                    Element::ListClosed => {
+                    Element::ListClosed(src) => {
                         nesting_level -= 1;
 
                         if skip.is_none(){
-                            let list_length = user_app.get_list_length(&recursive_source, &None);
 
-                            if let Some(source) = list_length {
-                                for i in 0..source {
+                            if let Some(length) = user_app.get_list_length(src, &None) {
+                                for index in 0..length {
                                     (events, pointer) = set_layout(
                                         api,
                                         &recursive_commands, 
                                         reusables,
                                         Some(&recursive_call_stack), 
-                                        Some(ListData { src: &recursive_source, index: i }), 
+                                        Some((*src, index)), 
                                         None, 
                                         None, 
                                         user_app,
@@ -363,24 +367,23 @@ where
                     Element::TextConfigClosed => {
                         nesting_level -= 1;
                     },
-                    Element::UseOpened { name } => {
+                    Element::UseOpened => {
                         nesting_level += 1;
 
                         if skip.is_none() {
                             recursive_commands.clear();
                             recursive_call_stack.clear();
                             collect_declarations = true;
-                            recursive_source = name.to_string();
                         }
                         
                     }
-                    Element::UseClosed => {
+                    Element::UseClosed(src) => {
                         nesting_level -= 1;
 
                         if skip.is_none() {
                             collect_declarations = false;
                             //println!("try to use: {:?}", recursive_source);
-                            if let Some(reusable) = reusables.get(&recursive_source){
+                            if let Some(reusable) = reusables.get(src){
                                 //println!("use: {:?}", recursive_source);
                                 for command in reusable.iter() {
                                     recursive_commands.push(command);
@@ -417,40 +420,50 @@ where
                             
                         }
                     }
-                    Element::TreeViewOpened { name } => {
+                    Element::TreeViewOpened => {
                         nesting_level += 1;
 
                         if skip.is_none() {
                             recursive_commands.clear();
                             recursive_call_stack.clear();
                             collect_declarations = true;
-                            recursive_source = name.to_string();
                         }
                     }
-                    Element::TreeViewClosed => {
+                    Element::TreeViewClosed(src) => {
                         nesting_level -= 1;
 
                         if skip.is_none() {
                             collect_declarations = false;
-                            events = ui_toolkit::treeview::treeview(&recursive_source, api, user_app, events);
+                            events = ui_toolkit::treeview::treeview(src, &list_data, api, user_app, events);
                         }
                     }
-                    Element::TextBoxOpened { name } => {
+                    Element::TextBoxOpened => {
                         nesting_level += 1;
 
                         if skip.is_none() {
                             recursive_commands.clear();
                             recursive_call_stack.clear();
                             collect_declarations = true;
-                            recursive_source = name.to_string();
+                            // text_box_source = String::resolve_src(name, locals, user_app, &list_data);
+                            // api.ui_layout.open_element();
+                            if api.ui_layout.hovered() {
+                                pointer = winit::window::CursorIcon::Text;
+                            }
+                            api.ui_layout.configure_element(&ElementConfiguration::default());
                         }
                     }
-                    Element::TextBoxClosed => {
+                    Element::TextBoxClosed(_src) => {
                         nesting_level -= 1;
 
                         if skip.is_none() {
                             collect_declarations = false;
-                            events = ui_toolkit::textbox::text_box(&recursive_source, api, user_app, events);
+                            // events = ui_toolkit::textbox::text_box(
+                            //     text_box_source, 
+                            //     &list_data,
+                            //     api, 
+                            //     user_app, 
+                            //     events);
+                            api.ui_layout.close_element();
                         }
                     }
                     _ => {todo!("")}
@@ -458,7 +471,7 @@ where
             }
             Layout::Declaration { name, value } => {
                 if collect_declarations {
-                    recursive_call_stack.insert(name.to_string(), value);
+                    recursive_call_stack.insert(*name, value);
                 }
             }
             Layout::Config(config_command) => {
@@ -486,9 +499,9 @@ fn execute_config<'render_pass, Event, UserApp>(
     config_command: &Config,
     config: Option<&mut ElementConfiguration>,
     text_config: Option<&mut TextConfig>,
-    reusables: &HashMap<String, Vec<Layout<Event>>>,
-    locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>,
-    list_data: &Option<ListData>,
+    reusables: &HashMap<GlobalSymbol, Vec<Layout<Event>>>,
+    locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+    list_data: &Option<(GlobalSymbol, usize)>,
     api: &mut API,
     user_app: &UserApp,
 )
@@ -660,15 +673,15 @@ where
     type ReturnType;
     fn resolve_src (
         var: &'frame DataSrc<Self::DeclarationType>,
-        locals: Option<&HashMap<String, &'frame DataSrc<Declaration<Event>>>>, 
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
         user_app: &'application UserApp, 
-        list_data: &Option<ListData>
+        list_data: &Option<(GlobalSymbol, usize)>
     ) -> Self::ReturnType;
     fn resolve_name (
-        var: &String,
-        locals: Option<&HashMap<String, &'frame DataSrc<Declaration<Event>>>>, 
+        var: &GlobalSymbol,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
         user_app: &'application UserApp, 
-        list_data: &Option<ListData>
+        list_data: &Option<(GlobalSymbol, usize)>
     ) -> Self::ReturnType;
 }
 
@@ -682,18 +695,18 @@ where
     type DeclarationType = Option<&'frame UIImageDescriptor>;
     type ReturnType = Option<&'frame UIImageDescriptor>;
     fn resolve_name (
-            name: &String,
-            locals: Option<&HashMap<String, &'frame DataSrc<Declaration<Event>>>>, 
+            name: &GlobalSymbol,
+            locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
             user_app: &'application UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         if let Some(locals) = locals
         && let Some(local) = locals.get(name)
         && let DataSrc::Dynamic(local) = local
-        && let Some(value) = user_app.get_image(&local, &list_data) {
+        && let Some(value) = user_app.get_image(local, &list_data) {
             Some(value)
         }
-        else if let Some(value) = user_app.get_image(&name, &list_data) {
+        else if let Some(value) = user_app.get_image(name, &list_data) {
             Some(value)
         }
         else {
@@ -702,9 +715,9 @@ where
     }
     fn resolve_src (
             _var: &'frame DataSrc<Self::DeclarationType>,
-            _locals: Option<&HashMap<String, &'frame DataSrc<Declaration<Event>>>>, 
+            _locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
             _user_app: &'application UserApp, 
-            _list_data: &Option<ListData>
+            _list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         None
     }
@@ -720,10 +733,10 @@ where
     type DeclarationType = Color;
     type ReturnType = Color;
     fn resolve_name (
-            name: &String,
-            locals: Option<&HashMap<String, &'frame DataSrc<Declaration<Event>>>>, 
+            name: &GlobalSymbol,
+            locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
             user_app: &'application UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         if let Some(locals) = locals
         && let Some(local) = locals.get(name)
@@ -746,9 +759,9 @@ where
     }
     fn resolve_src (
             var: &'frame DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<String, &'frame DataSrc<Declaration<Event>>>>, 
+            locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
             user_app: &'application UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
@@ -788,10 +801,10 @@ where
     type DeclarationType = String;
     type ReturnType = &'frame str;
     fn resolve_name (
-            name: &String,
-            locals: Option<&HashMap<String, &'frame DataSrc<Declaration<Event>>>>, 
+            name: &GlobalSymbol,
+            locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
             user_app: &'application UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         if let Some(locals) = locals
         && let Some(local) = locals.get(name)
@@ -814,9 +827,9 @@ where
     }
     fn resolve_src (
             var: &'frame DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<String, &'frame DataSrc<Declaration<Event>>>>, 
+            locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
             user_app: &'application UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
@@ -857,9 +870,9 @@ where
     type ReturnType = f32;
     fn resolve_src (
             var: &DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>, 
+            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
             user_app: &UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
@@ -888,10 +901,10 @@ where
         }
     }
     fn resolve_name (
-            name: &String,
-            locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>, 
+            name: &GlobalSymbol,
+            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
             user_app: &UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         if let Some(locals) = locals
         && let Some(local) = locals.get(name)
@@ -925,9 +938,9 @@ where
     type ReturnType = u16;
     fn resolve_src (
             var: &DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>, 
+            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
             user_app: &UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
@@ -956,10 +969,10 @@ where
         }
     }
     fn resolve_name (
-            name: &String,
-            locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>, 
+            name: &GlobalSymbol,
+            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
             user_app: &UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         if let Some(locals) = locals
         && let Some(local) = locals.get(name)
@@ -993,9 +1006,9 @@ where
     type ReturnType = i16;
     fn resolve_src (
             var: &DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>, 
+            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
             user_app: &UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
@@ -1024,10 +1037,10 @@ where
         }
     }
     fn resolve_name (
-            name: &String,
-            locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>, 
+            name: &GlobalSymbol,
+            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
             user_app: &UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         if let Some(locals) = locals
         && let Some(local) = locals.get(name)
@@ -1061,9 +1074,9 @@ where
     type ReturnType = bool;
     fn resolve_src (
             var: &DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>, 
+            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
             user_app: &UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
@@ -1092,10 +1105,10 @@ where
         }
     }
     fn resolve_name (
-            name: &String,
-            locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>, 
+            name: &GlobalSymbol,
+            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
             user_app: &UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         if let Some(locals) = locals
         && let Some(local) = locals.get(name)
@@ -1129,9 +1142,9 @@ where
     type ReturnType = Event;
     fn resolve_src (
             var: &DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>, 
+            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
             user_app: &UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
@@ -1160,10 +1173,10 @@ where
         }
     }
     fn resolve_name (
-            name: &String,
-            locals: Option<&HashMap<String, &DataSrc<Declaration<Event>>>>, 
+            name: &GlobalSymbol,
+            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
             user_app: &UserApp, 
-            list_data: &Option<ListData>
+            list_data: &Option<(GlobalSymbol, usize)>
         ) -> Self::ReturnType {
         if let Some(locals) = locals
         && let Some(local) = locals.get(name)

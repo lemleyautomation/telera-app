@@ -1,5 +1,6 @@
 use std::{fmt::Debug, str::FromStr};
 use strum_macros::Display;
+use symbol_table::GlobalSymbol;
 use telera_layout::Color;
 
 use crate::{EventHandler, TreeViewItem, UIImageDescriptor};
@@ -10,7 +11,7 @@ where
     Event: Clone+Debug+PartialEq
 {
     Element(Element<Event>),
-    Declaration{name:String, value:DataSrc<Declaration<Event>>},
+    Declaration{name:GlobalSymbol, value:DataSrc<Declaration<Event>>},
     Config(Config),
 }
 
@@ -31,21 +32,21 @@ where
     TextConfigOpened,
     TextConfigClosed,
     
-    ListOpened{src: String},
-    ListClosed,
+    ListOpened,
+    ListClosed(GlobalSymbol),
 
-    UseOpened{name: String},
-    UseClosed,
+    UseOpened,
+    UseClosed(GlobalSymbol),
 
-    TreeViewOpened{name: String},
-    TreeViewClosed,
+    TreeViewOpened,
+    TreeViewClosed(GlobalSymbol),
 
-    TextBoxOpened{name: String},
-    TextBoxClosed,
+    TextBoxOpened,
+    TextBoxClosed(DataSrc<String>),
 
     // if not
-    IfOpened{condition: String},
-    IfNotOpened{condition: String},
+    IfOpened{condition: GlobalSymbol},
+    IfNotOpened{condition: GlobalSymbol},
     IfClosed,
 
     Pointer(winit::window::CursorIcon),
@@ -160,7 +161,7 @@ pub enum Config{
 
     Clip{vertical: DataSrc<bool>, horizontal: DataSrc<bool>},
 
-    Image{name: String},
+    Image{name: GlobalSymbol},
 
     Floating,
     FloatingOffset{x:DataSrc<f32>,y:DataSrc<f32>},
@@ -188,7 +189,7 @@ pub enum Config{
     FloatingAttachElementToElement{other_element_id:String},
     FloatingAttachElementToRoot,
 
-    Use{name: String},
+    Use{name: GlobalSymbol},
 
     FontId(DataSrc<u16>),
     AlignRight,
@@ -198,12 +199,6 @@ pub enum Config{
     FontSize(DataSrc<u16>),
     FontColor(DataSrc<Color>),
     Editable(bool),
-}
-
-#[derive(Debug)]
-pub struct ListData<'list_iteration>{
-    pub src: &'list_iteration str,
-    pub index: i32,
 }
 
 #[derive(Clone, Debug, Display, PartialEq)]
@@ -216,37 +211,37 @@ where
     Text(String),
     Color(Color),
     Event(Event),
-    Image(String)
+    Image(GlobalSymbol)
 }
 
 #[derive(Clone, Debug, Display, PartialEq)]
 pub enum DataSrc<T> {
     Static(T),
-    Dynamic(String)
+    Dynamic(GlobalSymbol)
 }
 
 #[allow(unused_variables)]
 pub trait ParserDataAccess<Event: FromStr+Clone+PartialEq+Debug+EventHandler>{
-    fn get_bool(&self, name: &str, list: &Option<ListData>) -> Option<bool>{
+    fn get_list_length(&self, name: &GlobalSymbol, list_data: &Option<(GlobalSymbol, usize)>) -> Option<usize> {
         None
     }
-    fn get_numeric(&self, name: &str, list: &Option<ListData>) -> Option<f32>{
+    fn get_bool(&self, name: &GlobalSymbol, list_data: &Option<(GlobalSymbol, usize)>) -> Option<bool>{
         None
     }
-    fn get_list_length(&self, name: &str, list: &Option<ListData>) -> Option<i32>{
+    fn get_numeric(&self, name: &GlobalSymbol, list_data: &Option<(GlobalSymbol, usize)>) -> Option<f32>{
         None
     }
-    fn get_text<'render_pass, 'application>(&'application self, name: &str, list: &Option<ListData>) -> Option<&'render_pass String> where 'application: 'render_pass{
+    fn get_text<'render_pass, 'application>(&'application self, name: &GlobalSymbol, list_data: &Option<(GlobalSymbol, usize)>) -> Option<&'render_pass String> where 'application: 'render_pass{
         None
     }
-    fn get_image<'render_pass, 'application>(&'application self, name: &str, list: &Option<ListData> ) -> Option<&'render_pass UIImageDescriptor> where 'application: 'render_pass{
+    fn get_image<'render_pass, 'application>(&'application self, name: &GlobalSymbol, list_data: &Option<(GlobalSymbol, usize)>) -> Option<&'render_pass UIImageDescriptor> where 'application: 'render_pass{
         None
     }
-    fn get_color<'render_pass, 'application>(&'application self, name: &str, list: &Option<ListData> ) -> Option<&'render_pass Color> where 'application: 'render_pass{
+    fn get_color<'render_pass, 'application>(&'application self, name: &GlobalSymbol, list_data: &Option<(GlobalSymbol, usize)>) -> Option<&'render_pass Color> where 'application: 'render_pass{
         None
     }
-    fn get_event<'render_pass, 'application>(&'application self, name: &str, list: &Option<ListData> ) -> Option<Event> where 'application: 'render_pass{
+    fn get_event<'render_pass, 'application>(&'application self, name: &GlobalSymbol, list_data: &Option<(GlobalSymbol, usize)>) -> Option<Event> where 'application: 'render_pass{
         None
     }
-    fn get_treeview<'render_pass, 'application>(&'application self, name: &'render_pass str) -> Option<TreeViewItem<'render_pass, Event>> where 'application: 'render_pass {None}
+    fn get_treeview<'render_pass, 'application>(&'application self, name: &GlobalSymbol, list_data: &Option<(GlobalSymbol, usize)>) -> Option<TreeViewItem<'render_pass, Event>> where 'application: 'render_pass {None}
 }

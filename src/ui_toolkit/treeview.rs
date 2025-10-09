@@ -3,6 +3,7 @@ use std::fmt::Debug;
 
 use crate::{EventContext, EventHandler};
 
+use symbol_table::GlobalSymbol;
 use telera_layout::{Color, TextConfig};
 use telera_layout::ElementConfiguration;
 use crate::API;
@@ -65,7 +66,8 @@ pub enum TreeViewItem<'frame, UserEvent: FromStr+Clone+PartialEq+Debug+EventHand
 }
 
 pub fn treeview<UserApp, Event>(
-    name: &str,
+    name: &GlobalSymbol,
+    list_data: &Option<(GlobalSymbol, usize)>,
     api: &mut API,
     user_app: &UserApp,
     mut events: Vec::<(Event, Option<EventContext>)>
@@ -74,7 +76,7 @@ where
     Event: FromStr+Clone+PartialEq+Debug+EventHandler<UserApplication = UserApp>, 
     UserApp: ParserDataAccess<Event>,
 {
-    if let Some(treeview) = user_app.get_treeview(name) {
+    if let Some(treeview) = user_app.get_treeview(name, list_data) {
         events = recursive_treeview_layout(api, &treeview, events);
     }
 

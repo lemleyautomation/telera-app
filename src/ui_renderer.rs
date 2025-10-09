@@ -1,8 +1,7 @@
 use core::f32;
 use glyphon::cosmic_text::Align;
 use glyphon::{
-    cosmic_text, Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping,
-    SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
+    cosmic_text, Attrs, Buffer, Cache, Color, Edit, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport
 };
 use image::{DynamicImage, RgbImage};
 use std::collections::HashMap;
@@ -301,6 +300,23 @@ impl MeasureText for UIRenderer {
 
         measurement
     }
+}
+
+#[allow(dead_code)]
+pub fn get_buffer(text: &str){
+    let mut font_system = FontSystem::new();
+    let mut buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
+    buffer.set_text(
+        &mut font_system,
+        text,
+        Attrs::new().family(Family::Serif),
+        Shaping::Advanced,
+    );
+    buffer.shape_until_scroll(&mut font_system, false);
+
+    let mut edtior = glyphon::cosmic_text::Editor::new(buffer);
+
+    edtior.action(&mut font_system, glyphon::Action::Backspace);
 }
 
 impl UIRenderer {

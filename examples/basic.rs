@@ -46,6 +46,7 @@ struct BasicApp {
     documents: Vec<Document>,
     selected_document: usize,
     file_menu_open: bool,
+    search_bar: String,
 }
 
 impl App for BasicApp {
@@ -93,8 +94,11 @@ impl ParserDataAccess<BasicEvents> for BasicApp {
                 if name == "title" {
                     return Some(&self.documents.get(self.selected_document).unwrap().title);
                 }
-                if name == "contents" {
+                else if name == "contents" {
                     return Some(&self.documents.get(self.selected_document).unwrap().contents);
+                }
+                else if name == "search_bar" {
+                    return Some(&self.search_bar)
                 }
                 None
             }
@@ -159,6 +163,7 @@ fn main() {
         documents,
         selected_document: 1,
         file_menu_open: false,
+        search_bar: "hello".to_string()
     };
 
     run::<BasicEvents, BasicApp>(app);

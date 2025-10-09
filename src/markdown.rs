@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
 use markdown::mdast::{List, Node, Paragraph};
+use symbol_table::GlobalSymbol;
 use crate::{Config, DataSrc, Declaration, Element, Layout};
 use telera_layout::Color;
 
@@ -98,6 +99,7 @@ where <Event as FromStr>::Err: Debug
                 && let Node::List(declarations) = declarations {
                     for declaration in declarations.children.iter() {
                         if let Some((name, value)) = process_variable::<Event>(&declaration) {
+                            let name = GlobalSymbol::new(name);
                             layout_commands.push(Layout::Declaration { name, value });
                         }
                     }
@@ -160,8 +162,9 @@ where <Event as FromStr>::Err: Debug
                         Node::Emphasis(dynamic_text) => {
                             if let Some(dynamic_text) = dynamic_text.children.get(0)
                             && let Node::Text(dynamic_text) = dynamic_text {
+                                let src = GlobalSymbol::new(dynamic_text.value.trim().to_string());
                                 layout_commands.push(Layout::Element(Element::TextElementClosed(
-                                    DataSrc::Dynamic(dynamic_text.value.trim().to_string())
+                                    DataSrc::Dynamic(src)
                                 )));
                             }
                         }
@@ -180,15 +183,15 @@ where <Event as FromStr>::Err: Debug
                 && let Node::Text(reusable_name) = reusable_name
                 && let Some(input_variables) = element.children.get(1)
                 && let Node::List(input_variables) = input_variables {
-                    layout_commands.push(Layout::Element(Element::UseOpened { 
-                        name: reusable_name.value.trim().to_string()
-                    }));
+                    let src = GlobalSymbol::new(reusable_name.value.trim().to_string());
+                    layout_commands.push(Layout::Element(Element::UseOpened));
                     for input_variable in &input_variables.children {
                         if let Some((name, declaration)) = process_variable(input_variable) {
+                            let name = GlobalSymbol::new(name);
                             layout_commands.push(Layout::Declaration { name, value: declaration });
                         }
                     }
-                    layout_commands.push(Layout::Element(Element::UseClosed));
+                    layout_commands.push(Layout::Element(Element::UseClosed(src)));
                 }
                 
             }
@@ -199,7 +202,7 @@ where <Event as FromStr>::Err: Debug
                 && let Node::List(list_content) = list_content {
 
                     let mut formatted_list = Vec::<Layout<Event>>::new();
-                    formatted_list.push(Layout::Element(Element::ListOpened { src: list_src.value.trim().to_string() }));
+                    formatted_list.push(Layout::Element(Element::ListOpened));
 
                     if let Some(declarations) = list_content.children.get(0)
                     && let Node::ListItem(declarations) = declarations
@@ -207,8 +210,9 @@ where <Event as FromStr>::Err: Debug
                     && let Node::List(declarations) = declarations {
                         for declaration in &declarations.children {
                             if let Some((name, declaration)) = process_variable(declaration) {
-                            layout_commands.push(Layout::Declaration { name, value: declaration });
-                        }
+                                let src = GlobalSymbol::new(name);
+                                layout_commands.push(Layout::Declaration { name: src, value: declaration });
+                            }
                         }
                     }
 
@@ -217,7 +221,8 @@ where <Event as FromStr>::Err: Debug
                         formatted_list.append(&mut list_item);
                     }
 
-                    formatted_list.push(Layout::Element(Element::ListClosed));
+                    let src = GlobalSymbol::new(list_src.value.trim().to_string());
+                    formatted_list.push(Layout::Element(Element::ListClosed(src)));
 
                     layout_commands.append(&mut formatted_list);
                 }
@@ -229,8 +234,9 @@ where <Event as FromStr>::Err: Debug
                 && let Node::List(conditional_elements) = conditional_elements {
 
                     let mut formatted_element = Vec::<Layout<Event>>::new();
+                    let src = GlobalSymbol::new(conditional.value.trim().to_string());
                     formatted_element.push(Layout::Element(Element::IfOpened { 
-                        condition: conditional.value.trim().to_string() 
+                        condition: src
                     }));
 
                     for conditional_element in &conditional_elements.children {
@@ -250,8 +256,9 @@ where <Event as FromStr>::Err: Debug
                 && let Node::List(conditional_elements) = conditional_elements {
 
                     let mut formatted_element = Vec::<Layout<Event>>::new();
+                    let src = GlobalSymbol::new(conditional.value.trim().to_string());
                     formatted_element.push(Layout::Element(Element::IfNotOpened { 
-                        condition: conditional.value.trim().to_string() 
+                        condition: src
                     }));
 
                     for conditional_element in &conditional_elements.children {
@@ -267,10 +274,23 @@ where <Event as FromStr>::Err: Debug
             "treeview" => {
                 if let Some(reusable_name) = element_declaration.children.get(1)
                 && let Node::Text(reusable_name) = reusable_name {
-                    layout_commands.push(Layout::Element(Element::TreeViewOpened { 
-                        name: reusable_name.value.trim().to_string() 
-                    }));
-                    layout_commands.push(Layout::Element(Element::TreeViewClosed));
+                    layout_commands.push(Layout::Element(Element::TreeViewOpened));
+                    let src = GlobalSymbol::new(reusable_name.value.trim().to_string());
+                    layout_commands.push(Layout::Element(Element::TreeViewClosed(src)));
+                }
+            }
+            "textbox" => {
+                match parameter_check::<String>(element_declaration, "", "") {
+                    AvailableParameters::SingleDynamic(a) => {
+                        layout_commands.push(Layout::Element(Element::TextBoxOpened));
+                        layout_commands.push(Layout::Element(Element::TextBoxClosed(DataSrc::Dynamic(a))))
+
+                    }
+                    AvailableParameters::SingleStatic(a) => {
+                        layout_commands.push(Layout::Element(Element::TextBoxOpened));
+                        layout_commands.push(Layout::Element(Element::TextBoxClosed(DataSrc::Static(a))))
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -283,15 +303,15 @@ where <Event as FromStr>::Err: Debug
 enum AvailableParameters<T>{
     None,
     AStatic(T),
-    ADynamic(String),
+    ADynamic(GlobalSymbol),
     BStatic(T),
-    BDynamic(String),
+    BDynamic(GlobalSymbol),
     TwoStatic(T,T),
-    TwoDynamic(String,String),
-    AStaticBDynamic(T,String),
-    ADynamicBStatic(String,T),
+    TwoDynamic(GlobalSymbol,GlobalSymbol),
+    AStaticBDynamic(T,GlobalSymbol),
+    ADynamicBStatic(GlobalSymbol,T),
     SingleStatic(T),
-    SingleDynamic(String),
+    SingleDynamic(GlobalSymbol),
 }
 
 fn parameter_check<T: FromStr>(parameters: &Paragraph, bound_a: &str, bound_b: &str) -> AvailableParameters<T> {
@@ -342,11 +362,13 @@ fn parameter_check<T: FromStr>(parameters: &Paragraph, bound_a: &str, bound_b: &
     && let Some(bound_value_b) = bound_value_b.children.get(0)
     && let Node::Text(bound_value_b) = bound_value_b
     {
+        let bound_value_a = GlobalSymbol::new(bound_value_a.value.trim().to_string());
+        let bound_value_b = GlobalSymbol::new(bound_value_b.value.trim().to_string());
         if bound_range_a.value.as_str() == bound_a {
-            AvailableParameters::TwoDynamic(bound_value_a.value.trim().to_string(), bound_value_b.value.trim().to_string())
+            AvailableParameters::TwoDynamic(bound_value_a, bound_value_b)
         }
         else {
-            AvailableParameters::TwoDynamic(bound_value_b.value.trim().to_string(), bound_value_a.value.trim().to_string())
+            AvailableParameters::TwoDynamic(bound_value_b, bound_value_a)
         }
     }
     //  CASE: parameter A dynamic, b static
@@ -367,11 +389,12 @@ fn parameter_check<T: FromStr>(parameters: &Paragraph, bound_a: &str, bound_b: &
     && let Some(bound_value_b) = parameters.children.get(7)
     && let Node::Text(bound_value_b) = bound_value_b
     && let Ok(bound_value_b) = T::from_str(bound_value_b.value.trim()) {
+        let bound_value_a = GlobalSymbol::new(bound_value_a.value.trim().to_string());
         if bound_range_a.value.as_str() == bound_a {
-            AvailableParameters::ADynamicBStatic(bound_value_a.value.trim().to_string(), bound_value_b)
+            AvailableParameters::ADynamicBStatic(bound_value_a, bound_value_b)
         }
         else {
-            AvailableParameters::AStaticBDynamic(bound_value_b, bound_value_a.value.trim().to_string())
+            AvailableParameters::AStaticBDynamic(bound_value_b, bound_value_a)
         }
     }
     //  CASE: parameter A static, b dynamic
@@ -392,11 +415,12 @@ fn parameter_check<T: FromStr>(parameters: &Paragraph, bound_a: &str, bound_b: &
     && let Node::Emphasis(bound_value_b) = bound_value_b
     && let Some(bound_value_b) = bound_value_b.children.get(0)
     && let Node::Text(bound_value_b) = bound_value_b {
+        let bound_value_b = GlobalSymbol::new(bound_value_b.value.trim().to_string());
         if bound_range_a.value.as_str() == bound_a {
-            AvailableParameters::ADynamicBStatic(bound_value_b.value.trim().to_string(), bound_value_a)
+            AvailableParameters::ADynamicBStatic(bound_value_b, bound_value_a)
         }
         else {
-            AvailableParameters::AStaticBDynamic(bound_value_a, bound_value_b.value.trim().to_string())
+            AvailableParameters::AStaticBDynamic(bound_value_a, bound_value_b)
         }
     }
     //  CASE: 1 static parameter
@@ -425,11 +449,12 @@ fn parameter_check<T: FromStr>(parameters: &Paragraph, bound_a: &str, bound_b: &
     && let Node::Emphasis(bound_value_a) = bound_value_a
     && let Some(bound_value_a) = bound_value_a.children.get(0)
     && let Node::Text(bound_value_a) = bound_value_a {
+        let bound_value_a = GlobalSymbol::new(bound_value_a.value.trim().to_string());
         if bound_range_a.value.as_str() == bound_a {
-            AvailableParameters::ADynamic(bound_value_a.value.trim().to_string())
+            AvailableParameters::ADynamic(bound_value_a)
         }
         else {
-            AvailableParameters::BDynamic(bound_value_a.value.trim().to_string())
+            AvailableParameters::BDynamic(bound_value_a)
         }
     }
     else
@@ -437,7 +462,8 @@ fn parameter_check<T: FromStr>(parameters: &Paragraph, bound_a: &str, bound_b: &
     && let Node::Emphasis(parameter) = parameter
     && let Some(parameter) = parameter.children.get(0)
     && let Node::Text(parameter) = parameter {
-        AvailableParameters::SingleDynamic(parameter.value.trim().to_string())
+        let parameter = GlobalSymbol::new(parameter.value.trim().to_string());
+        AvailableParameters::SingleDynamic(parameter)
     }
     else
     if let Some(parameter) = parameters.children.get(1)
@@ -470,9 +496,10 @@ fn process_variable<Event: Clone+Debug+PartialEq+FromStr>(declaration: &Node) ->
             "get-event" |
             "get-image" |
             "get-color" => {
+                let value = GlobalSymbol::new(variable_value.value.trim().to_string());
                 Some((
                     variable_name.value.trim().to_string(),
-                    DataSrc::<Declaration<Event>>::Dynamic(variable_value.value.trim().to_string())
+                    DataSrc::<Declaration<Event>>::Dynamic(value)
                 ))
             }
             "set-bool" => {
@@ -849,7 +876,8 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                 "image" => {
                     if let Some(src) = config.children.get(1)
                     && let Node::Text(src) = src {
-                        configs.push(Layout::Config(Config::Image { name: src.value.trim().to_string() }));
+                        let src = GlobalSymbol::new(src.value.trim().to_string());
+                        configs.push(Layout::Config(Config::Image { name: src }));
                     }
                 }
                 "floating" => {
@@ -863,7 +891,8 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                 "use" => {
                     if let Some(reusable_name) = config.children.get(1)
                     && let Node::Text(reusable_name) = reusable_name {
-                        configs.push(Layout::Config(Config::Use { name: reusable_name.value.trim().to_string() }));
+                        let reusable_name = GlobalSymbol::new(reusable_name.value.trim().to_string());
+                        configs.push(Layout::Config(Config::Use { name: reusable_name }));
                     }
                 }
                 

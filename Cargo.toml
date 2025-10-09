@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-event-handler-derive = { path = "event-handler-derive" }
+telera_macros = { path = "telera_macros" }
 telera-layout = { path = "../telera-layout"}
 winit = "0.30.9"
 rfd = "0.15.3"
@@ -15,6 +15,7 @@ pollster = "0.2"
 image = "0.25.5"
 bytemuck = { version = "1.16", features = [ "derive" ] }
 glyphon = "0.8.0"
+lyon = "1.0.16"
 cgmath = "0.18.0"
 tobj = { version = "3.2", default-features = false, features = ["async"]}
 anyhow = "1.0"
@@ -30,7 +31,7 @@ strum_macros = "0.27"
 quick-xml = "0.37.3"
 csscolorparser = { version = "0.7.0", features = [ "named-colors" ] }
 markdown = "1.0.0"
-
+symbol_table = { version = "0.4.0", features = [ "global" ] }
 
 [build-dependencies]
 winresource = "0.1.19"
