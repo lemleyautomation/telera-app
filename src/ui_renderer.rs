@@ -3,9 +3,17 @@ use glyphon::cosmic_text::Align;
 use glyphon::{
     cosmic_text, Attrs, Buffer, Cache, Color, Edit, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport
 };
+
+use lyon::geom::euclid::{Point2D, Size2D, UnknownUnit};
+use lyon::geom::Box2D;
+//use lyon::math::point;
+use lyon::path::builder::BorderRadii;
+use lyon::path::Path;
+use lyon::tessellation::*;
+
 use image::{DynamicImage, RgbImage};
 use std::collections::HashMap;
-use std::ops::{Add, Div, Mul, Sub};
+use std::ops::{Add, Div, Mul, Range, Sub};
 use wgpu::util::DeviceExt;
 
 use telera_layout::{MeasureText, RenderCommand, Vec2};
@@ -49,6 +57,13 @@ pub struct UIPosition {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+}
+
+impl Into<UIPosition> for Point2D<f32,UnknownUnit> {
+    fn into(self) -> UIPosition {
+        let p = self.to_tuple();
+        UIPosition { x: p.0, y: p.1, z: 0.0 }
+    }
 }
 
 impl UIPosition {
@@ -234,7 +249,9 @@ pub enum RenderBatch {
 #[repr(C)]
 pub struct UIRenderer {
     pub vertices: Vec<UIVertex>,
+    pub indices: Vec<u32>,
     pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
 
     pub batches: Vec<RenderBatch>,
     pub batch_index_begin: u32,
@@ -359,8 +376,11 @@ impl UIRenderer {
             }],
             label: Some("ui_renderer_size_bind_group"),
         });
-        let (vertex_buffer, vertexes) = make_ui_buffer(&device, "ui_renderer_vertex_buffer", 80000);
 
+        let vertices = [UIVertex::new(); 3].to_vec();
+        let indices = [u32::MIN; 3].to_vec();
+        let vertex_buffer = create_or_extend_vertex_buffer(&device, "ui_vertices", &vertices);
+        let index_buffer = create_or_extend_index_buffer(&device, "ui_indices", &indices);
 
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
@@ -373,8 +393,11 @@ impl UIRenderer {
             scissor_active: false,
             scissor_position: UIPosition::new(),
             scissor_size: UIPosition::new(),
+            
             vertex_buffer,
-            vertices: vertexes,
+            vertices,
+            indices,
+            index_buffer,
 
             staged_images: Vec::<(String, DynamicImage)>::new(),
             atlas_map: atlas_dictionary,
@@ -475,6 +498,8 @@ impl UIRenderer {
     ) {
         self.add_atlas(&device, &queue);
         self.vertices.clear();
+        self.indices.clear();
+
         self.batches.clear();
         self.batch_index_begin = 0;
         self.batch_index_end = 0;
@@ -603,6 +628,7 @@ impl UIRenderer {
         queue: &wgpu::Queue,
         surface_config: &wgpu::SurfaceConfiguration,
     ) {
+
         match self.scissor_active {
             false => self.batch(),
             true => self.end_scissor(),
@@ -611,7 +637,25 @@ impl UIRenderer {
         match self.vertices.get(..) {
             None => {}
             Some(vertexes) => {
-                queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertexes));
+                let slice = bytemuck::cast_slice(vertexes);
+                if slice.len() > self.vertex_buffer.size() as usize {
+                    self.vertex_buffer = create_or_extend_vertex_buffer(&device, "ui_vertices", &self.vertices);
+                }
+                else {
+                    queue.write_buffer(&self.vertex_buffer, 0, slice);
+                }
+            }
+        }
+        match self.indices.get(..) {
+            None => {}
+            Some(indices) => {
+                let slice = bytemuck::cast_slice(indices);
+                if slice.len() > self.index_buffer.size() as usize {
+                    self.index_buffer = create_or_extend_index_buffer(&device, "ui_indices", &self.indices);
+                }
+                else {
+                    queue.write_buffer(&self.vertex_buffer, 0, slice);
+                }
             }
         }
 
@@ -619,11 +663,13 @@ impl UIRenderer {
             None => return,
             Some(_) => {
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
                 for render_batch in self.batches.iter() {
                     match render_batch {
                         RenderBatch::Basic { begin, end } => {
-                            render_pass.draw(*begin..*end, 0..1);
+                            //render_pass.draw(*begin..*end, 0..1);
+                            render_pass.draw_indexed(*begin..*end, 0, 0..1);
                         }
                         RenderBatch::Scissor {
                             begin,
@@ -637,7 +683,8 @@ impl UIRenderer {
                                 size.x as u32,
                                 size.y as u32,
                             );
-                            render_pass.draw(*begin..*end, 0..1);
+                            //render_pass.draw(*begin..*end, 0..1);
+                            render_pass.draw_indexed(*begin..*end, 0, 0..1);
                             render_pass.set_scissor_rect(
                                 0,
                                 0,
@@ -650,7 +697,8 @@ impl UIRenderer {
                                 None => continue,
                                 Some(atlas) => {
                                     render_pass.set_bind_group(0, atlas, &[]);
-                                    render_pass.draw(*begin..*end, 0..1);
+                                    //render_pass.draw(*begin..*end, 0..1);
+                                    render_pass.draw_indexed(*begin..*end, 0, 0..1);
                                 }
                             }
                         }
@@ -683,8 +731,7 @@ impl UIRenderer {
         for command in render_commands {
             match command {
                 RenderCommand::Rectangle(r) => {
-                    //println!("{:?}", r.bounding_box);
-                    self.draw_filled_rectangle(
+                    self.render_rectangle(
                         UIPosition {
                             x: r.bounding_box.x * self.dpi_scale,
                             y: r.bounding_box.y * self.dpi_scale,
@@ -707,36 +754,62 @@ impl UIRenderer {
                             bottom_right: r.corner_radii.bottom_right * self.dpi_scale,
                         },
                     );
+                    //println!("{:?}", r.bounding_box);
+                    // self.draw_filled_rectangle(
+                    //     UIPosition {
+                    //         x: r.bounding_box.x * self.dpi_scale,
+                    //         y: r.bounding_box.y * self.dpi_scale,
+                    //         z: depth,
+                    //     },
+                    //     UIPosition {
+                    //         x: r.bounding_box.width * self.dpi_scale,
+                    //         y: r.bounding_box.height * self.dpi_scale,
+                    //         z: depth,
+                    //     },
+                    //     UIColor {
+                    //         r: r.color.r / 255.0,
+                    //         g: r.color.g / 255.0,
+                    //         b: r.color.b / 255.0,
+                    //     },
+                    //     UICornerRadii {
+                    //         top_left: r.corner_radii.top_left * self.dpi_scale,
+                    //         top_right: r.corner_radii.top_right * self.dpi_scale,
+                    //         bottom_left: r.corner_radii.bottom_left * self.dpi_scale,
+                    //         bottom_right: r.corner_radii.bottom_right * self.dpi_scale,
+                    //     },
+                    // );
                 }
-                RenderCommand::Border(b) => self.draw_rectangle(
-                    UIPosition {
-                        x: b.bounding_box.x * self.dpi_scale,
-                        y: b.bounding_box.y * self.dpi_scale,
-                        z: depth,
-                    },
-                    UIPosition {
-                        x: b.bounding_box.width * self.dpi_scale,
-                        y: b.bounding_box.height * self.dpi_scale,
-                        z: depth,
-                    },
-                    UIBorderThickness {
-                        top: b.width.top as f32 * self.dpi_scale,
-                        left: b.width.left as f32 * self.dpi_scale,
-                        bottom: b.width.bottom as f32 * self.dpi_scale,
-                        right: b.width.right as f32 * self.dpi_scale,
-                    },
-                    UIColor {
-                        r: b.color.r / 255.0,
-                        g: b.color.g / 255.0,
-                        b: b.color.b / 255.0,
-                    },
-                    UICornerRadii {
-                        top_left: b.corner_radii.top_left * self.dpi_scale,
-                        top_right: b.corner_radii.top_right * self.dpi_scale,
-                        bottom_left: b.corner_radii.bottom_left * self.dpi_scale,
-                        bottom_right: b.corner_radii.bottom_right * self.dpi_scale,
-                    },
-                ),
+                RenderCommand::Border(b) => {
+                    self.draw_rectangle(
+                        UIPosition {
+                            x: b.bounding_box.x * self.dpi_scale,
+                            y: b.bounding_box.y * self.dpi_scale,
+                            z: depth,
+                        },
+                        UIPosition {
+                            x: b.bounding_box.width * self.dpi_scale,
+                            y: b.bounding_box.height * self.dpi_scale,
+                            z: depth,
+                        },
+                        UIBorderThickness {
+                            top: b.width.top as f32 * self.dpi_scale,
+                            left: b.width.left as f32 * self.dpi_scale,
+                            bottom: b.width.bottom as f32 * self.dpi_scale,
+                            right: b.width.right as f32 * self.dpi_scale,
+                        },
+                        UIColor {
+                            r: b.color.r / 255.0,
+                            g: b.color.g / 255.0,
+                            b: b.color.b / 255.0,
+                        },
+                        UICornerRadii {
+                            top_left: b.corner_radii.top_left * self.dpi_scale,
+                            top_right: b.corner_radii.top_right * self.dpi_scale,
+                            bottom_left: b.corner_radii.bottom_left * self.dpi_scale,
+                            bottom_right: b.corner_radii.bottom_right * self.dpi_scale,
+                        },
+                    );
+                }
                 RenderCommand::Text(t) => self.draw_text(
                     t.text,
                     (t.font_size as f32) * self.dpi_scale,
@@ -762,73 +835,73 @@ impl UIRenderer {
                 ),
                 RenderCommand::ScissorEnd => self.end_scissor(),
                 RenderCommand::Image(image) => {
-                    self.draw_image(
-                        image.data,
-                        UIPosition {
-                            x: image.bounding_box.x * self.dpi_scale,
-                            y: image.bounding_box.y * self.dpi_scale,
-                            z: depth as f32,
-                        },
-                        UIPosition {
-                            x: image.bounding_box.width * self.dpi_scale,
-                            y: image.bounding_box.height * self.dpi_scale,
-                            z: depth as f32,
-                        },
-                    );
+                    // self.draw_image(
+                    //     image.data,
+                    //     UIPosition {
+                    //         x: image.bounding_box.x * self.dpi_scale,
+                    //         y: image.bounding_box.y * self.dpi_scale,
+                    //         z: depth as f32,
+                    //     },
+                    //     UIPosition {
+                    //         x: image.bounding_box.width * self.dpi_scale,
+                    //         y: image.bounding_box.height * self.dpi_scale,
+                    //         z: depth as f32,
+                    //     },
+                    // );
                 }
                 RenderCommand::Custom(shape) => {
-                    match shape.data {
-                        Shapes::Circle => {
-                            self.draw_filled_rectangle(
-                                UIPosition {
-                                    x: shape.bounding_box.x * self.dpi_scale,
-                                    y: shape.bounding_box.y * self.dpi_scale,
-                                    z: depth,
-                                },
-                                UIPosition {
-                                    x: shape.bounding_box.width * self.dpi_scale,
-                                    y: shape.bounding_box.height * self.dpi_scale,
-                                    z: depth,
-                                },
-                                UIColor {
-                                    r: shape.background_color.r / 255.0,
-                                    g: shape.background_color.g / 255.0,
-                                    b: shape.background_color.b / 255.0,
-                                },
-                                UICornerRadii {
-                                    top_left: (shape.bounding_box.width/2.0) * self.dpi_scale,
-                                    top_right: (shape.bounding_box.width/2.0) * self.dpi_scale,
-                                    bottom_left: (shape.bounding_box.width/2.0) * self.dpi_scale,
-                                    bottom_right: (shape.bounding_box.width/2.0) * self.dpi_scale,
-                                },
-                            );
-                        }
-                        Shapes::Line{width} => {
-                            self.draw_filled_rectangle(
-                                UIPosition {
-                                    x: (shape.bounding_box.x+(shape.bounding_box.width/2.0)-(*width/2.0)) * self.dpi_scale,
-                                    y: shape.bounding_box.y * self.dpi_scale,
-                                    z: depth,
-                                },
-                                UIPosition {
-                                    x: (*width) * self.dpi_scale,
-                                    y: shape.bounding_box.height * self.dpi_scale,
-                                    z: depth,
-                                },
-                                UIColor {
-                                    r: shape.background_color.r / 255.0,
-                                    g: shape.background_color.g / 255.0,
-                                    b: shape.background_color.b / 255.0,
-                                },
-                                UICornerRadii {
-                                    top_left: 0.0,
-                                    top_right: 0.0,
-                                    bottom_left: 0.0,
-                                    bottom_right: 0.0,
-                                },
-                            );
-                        }
-                    }
+                    // match shape.data {
+                    //     Shapes::Circle => {
+                    //         self.draw_filled_rectangle(
+                    //             UIPosition {
+                    //                 x: shape.bounding_box.x * self.dpi_scale,
+                    //                 y: shape.bounding_box.y * self.dpi_scale,
+                    //                 z: depth,
+                    //             },
+                    //             UIPosition {
+                    //                 x: shape.bounding_box.width * self.dpi_scale,
+                    //                 y: shape.bounding_box.height * self.dpi_scale,
+                    //                 z: depth,
+                    //             },
+                    //             UIColor {
+                    //                 r: shape.background_color.r / 255.0,
+                    //                 g: shape.background_color.g / 255.0,
+                    //                 b: shape.background_color.b / 255.0,
+                    //             },
+                    //             UICornerRadii {
+                    //                 top_left: (shape.bounding_box.width/2.0) * self.dpi_scale,
+                    //                 top_right: (shape.bounding_box.width/2.0) * self.dpi_scale,
+                    //                 bottom_left: (shape.bounding_box.width/2.0) * self.dpi_scale,
+                    //                 bottom_right: (shape.bounding_box.width/2.0) * self.dpi_scale,
+                    //             },
+                    //         );
+                    //     }
+                    //     Shapes::Line{width} => {
+                    //         self.draw_filled_rectangle(
+                    //             UIPosition {
+                    //                 x: (shape.bounding_box.x+(shape.bounding_box.width/2.0)-(*width/2.0)) * self.dpi_scale,
+                    //                 y: shape.bounding_box.y * self.dpi_scale,
+                    //                 z: depth,
+                    //             },
+                    //             UIPosition {
+                    //                 x: (*width) * self.dpi_scale,
+                    //                 y: shape.bounding_box.height * self.dpi_scale,
+                    //                 z: depth,
+                    //             },
+                    //             UIColor {
+                    //                 r: shape.background_color.r / 255.0,
+                    //                 g: shape.background_color.g / 255.0,
+                    //                 b: shape.background_color.b / 255.0,
+                    //             },
+                    //             UICornerRadii {
+                    //                 top_left: 0.0,
+                    //                 top_right: 0.0,
+                    //                 bottom_left: 0.0,
+                    //                 bottom_right: 0.0,
+                    //             },
+                    //         );
+                    //     }
+                    // }
                 }
                 RenderCommand::None => {}
             }
@@ -836,6 +909,45 @@ impl UIRenderer {
         }
 
         self.end(render_pass, &device, &queue, &surface_config);
+    }
+
+    fn render_rectangle(
+        &mut self,
+        position: UIPosition,
+        size: UIPosition,
+        color: UIColor,
+        radii: UICornerRadii,
+    ) {
+        let mut builder = Path::builder();
+        builder.add_rounded_rectangle(
+            &Box2D::from_origin_and_size(
+                    Point2D::new(position.x, position.y), 
+                    Size2D::new(size.x, size.y)
+                ),
+                &BorderRadii { top_left: radii.top_left, top_right: radii.top_right, bottom_left: radii.bottom_left, bottom_right: radii.bottom_right },
+            path::Winding::Negative
+        );
+        let path = builder.build();
+        let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
+        let mut tessellator = FillTessellator::new();
+        {
+            // Compute the tessellation.
+            tessellator.tessellate_path(
+                &path,
+                &FillOptions::default(),
+                &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| { 
+                    UIVertex {
+                        position: vertex.position().into(),
+                        texture: 0,
+                        color: color
+                    }
+                }),
+            ).unwrap();
+        }
+        let mut offset_indices = geometry.indices.iter().map(|index|{index+self.vertices.len() as u32}).collect::<Vec::<u32>>();
+        self.vertices.append(&mut geometry.vertices);
+        self.indices.append(&mut offset_indices);
+        self.batch_index_end = self.indices.len() as u32;
     }
 
     fn render_text(
@@ -1328,22 +1440,30 @@ impl UIRenderer {
     }
 }
 
-fn make_ui_buffer(
+fn create_or_extend_vertex_buffer(
     device: &wgpu::Device,
     label: &str,
-    number_of_triangles: usize,
-) -> (wgpu::Buffer, Vec<UIVertex>) {
-    let vertices: Vec<UIVertex> = vec![UIVertex::new(); number_of_triangles * 3];
-
-    let buffer_desctriptor = wgpu::util::BufferInitDescriptor {
+    vertices: &Vec::<UIVertex>,
+) -> wgpu::Buffer {
+    let vertex_buffer_desctriptor = wgpu::util::BufferInitDescriptor {
         label: Some(label),
         contents: bytemuck::cast_slice(&vertices),
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
     };
+    device.create_buffer_init(&vertex_buffer_desctriptor)
+}
 
-    let buffer = device.create_buffer_init(&buffer_desctriptor);
-
-    (buffer, vertices)
+fn create_or_extend_index_buffer(
+    device: &wgpu::Device,
+    label: &str,
+    indices: &Vec::<u32>,
+) -> wgpu::Buffer {
+    let index_buffer_descriptor = wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    };
+    device.create_buffer_init(&index_buffer_descriptor)
 }
 
 pub struct UIPipeline {
