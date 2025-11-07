@@ -1,5 +1,17 @@
-# Main-
-- `element`
+# Main
+- `element` popup
     - `config`
-        - `grow`
-        - `color` black
+        - `width-fixed` 100
+        - `height-fixed` 100
+        - `color` green
+        - `padding-all` 5
+        - `border-all` 2
+        - `radius-all` 20
+        - `floating`
+            - `attach-self` center
+            - `attatch-parent` center
+    - `element` x
+        - `config`
+            - `width-fixed` 20
+            - `height-fixed` 20
+            - `image` pic

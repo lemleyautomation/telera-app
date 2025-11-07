@@ -47,5 +47,4 @@ fn fs_main(in:VertexPayload) -> @location(0) vec4<f32> {
         case 1u { return textureSample(t_diffuse, s_diffuse, in.tex_coords); }
         case default { return textureSample(t_diffuse, s_diffuse, in.tex_coords); }
     }
-    //return vec4<f32>(in.color, 1.0);
 }

@@ -112,7 +112,7 @@ where
                 pointer
             );
 
-            api.viewports.get_mut(&window_id).as_mut().unwrap().window.set_cursor(Cursor::Icon(pointer));
+            //api.viewports.get_mut(&window_id).as_mut().unwrap().window.set_cursor(Cursor::Icon(pointer));
             
         }
 
@@ -523,7 +523,11 @@ where
     };
 
     match config_command {
-        Config::Id(_id) => {}//config.id(DEFAULT_TEXT).parse(),
+        Config::Id(id) => {
+            if let DataSrc::Static(id) = id {
+                config.id(id.as_str());
+            }
+        }//config.id(DEFAULT_TEXT).parse(),
         Config::FitX  => config.x_fit().parse(),
         Config::FitXmin(min)  => config.x_fit_min(f32::resolve_src(min, locals, user_app, list_data)).parse(),
         Config::FitXmax(max)  => config.x_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data)).parse(),

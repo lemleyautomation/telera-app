@@ -41,7 +41,7 @@
             - `color` white
         - *label*
 
-# Main
+# -Main
 - `declarations`
     - `set-color` *content background color* rgb(90,90,90)
 - `element` outer container

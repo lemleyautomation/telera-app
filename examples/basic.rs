@@ -1,5 +1,6 @@
 //#![windows_subsystem = "windows"]
 
+use symbol_table::GlobalSymbol;
 use telera_app::*;
 use strum::EnumString;
 
@@ -47,6 +48,7 @@ struct BasicApp {
     selected_document: usize,
     file_menu_open: bool,
     search_bar: String,
+    pic: UIImageDescriptor,
 }
 
 impl App for BasicApp {
@@ -54,22 +56,36 @@ impl App for BasicApp {
         let new_window =
             winit::window::Window::default_attributes().with_inner_size(LogicalSize::new(800, 600));
         core.create_viewport("Main", "Main", new_window);
+        let pic = include_bytes!("../pic.jpg");
+        let pic = pic.as_slice();
+        let pic = image::load_from_memory(pic).unwrap();
+        core.add_image("pic", pic);
+        self.pic = UIImageDescriptor {
+            atlas: "pic".to_string(),
+            u1: 0.0, v1: 0.0, u2: 1.0, v2: 1.0
+        }
     }
 }
 
 impl ParserDataAccess<BasicEvents> for BasicApp {
-    fn get_bool(&self, name: &str, list: &Option<ListData>) -> Option<bool> {
+    fn get_image<'render_pass, 'application>(&'application self, name: &GlobalSymbol, list_data: &Option<(GlobalSymbol, usize)>) -> Option<&'render_pass UIImageDescriptor> where 'application: 'render_pass {
+        if name.as_str() == "pic" {
+            return Some(&self.pic)
+        }
+        return None;
+    }
+    fn get_bool(&self, name: &GlobalSymbol, list: &Option<(GlobalSymbol, usize)>) -> Option<bool> {
         match list {
             None => {
-                if name == "file-menu-opened" {
+                if name.as_str() == "file-menu-opened" {
                     return Some(self.file_menu_open);
                 }
                 return None;
             }
             Some(list) => {
-                if list.src == "Documents" {
-                    if name == "selected" {
-                        if self.selected_document == list.index as usize {
+                if list.0.as_str() == "Documents" {
+                    if name.as_str() == "selected" {
+                        if self.selected_document == list.1 {
                             return Some(true);
                         } else {
                             return Some(false);
@@ -82,8 +98,8 @@ impl ParserDataAccess<BasicEvents> for BasicApp {
     }
     fn get_text<'render_pass, 'application>(
         &'application self,
-        name: &str,
-        list: &Option<ListData>,
+        name: &GlobalSymbol,
+        list: &Option<(GlobalSymbol, usize)>
     ) -> Option<&'render_pass String>
     where
         'application: 'render_pass,
@@ -91,41 +107,41 @@ impl ParserDataAccess<BasicEvents> for BasicApp {
         //println!("{:?}, {:?}", name, list);
         match list {
             None => {
-                if name == "title" {
+                if name.as_str() == "title" {
                     return Some(&self.documents.get(self.selected_document).unwrap().title);
                 }
-                else if name == "contents" {
+                else if name.as_str() == "contents" {
                     return Some(&self.documents.get(self.selected_document).unwrap().contents);
                 }
-                else if name == "search_bar" {
+                else if name.as_str() == "search_bar" {
                     return Some(&self.search_bar)
                 }
                 None
             }
             Some(list) => {
-                if list.src == "Documents" {
-                    if name == "title" {
+                if list.0.as_str() == "Documents" {
+                    if name.as_str() == "title" {
                         //println!("asking for list element {:?} title", list.index);
-                        return Some(&self.documents.get(list.index as usize).unwrap().title);
+                        return Some(&self.documents.get(list.1).unwrap().title);
                     }
-                    if name == "contents" {
-                        return Some(&self.documents.get(list.index as usize).unwrap().contents);
+                    if name.as_str() == "contents" {
+                        return Some(&self.documents.get(list.1).unwrap().contents);
                     }
                 }
                 None
             }
         }
     }
-    fn get_list_length(&self, name: &str, _list: &Option<ListData>) -> Option<i32> {
-        if name == "Documents" {
-            return Some(self.documents.len() as i32);
+    fn get_list_length(&self, name: &GlobalSymbol, _list: &Option<(GlobalSymbol, usize)>) -> Option<usize> {
+        if name.as_str() == "Documents" {
+            return Some(self.documents.len());
         }
         None
     }
     fn get_event<'render_pass, 'application>(
         &'application self,
-        name: &str,
-        list: &Option<ListData>,
+        name: &GlobalSymbol,
+        list: &Option<(GlobalSymbol, usize)>
     ) -> Option<BasicEvents>
     where
         'application: 'render_pass,
@@ -133,8 +149,8 @@ impl ParserDataAccess<BasicEvents> for BasicApp {
         match list {
             None => return None,
             Some(list) => {
-                if name == "Clicked" && list.src == "Documents" {
-                    match list.index {
+                if name.as_str() == "Clicked" && list.0.as_str() == "Documents" {
+                    match list.1 as u32 {
                         0 => return Some(BasicEvents::SquirrelClicked),
                         1 => return Some(BasicEvents::LoremClicked),
                         _ => return None,
@@ -163,7 +179,8 @@ fn main() {
         documents,
         selected_document: 1,
         file_menu_open: false,
-        search_bar: "hello".to_string()
+        search_bar: "hello".to_string(),
+        pic: UIImageDescriptor::default()
     };
 
     run::<BasicEvents, BasicApp>(app);

@@ -429,7 +429,7 @@ where
                 self.core.viewports.get_mut(&window_id).as_mut().unwrap().resize(&self.core.ctx.device, size, MULTI_SAMPLE_COUNT);
             }
             WindowEvent::RedrawRequested => {
-
+                //self.core.ui_layout.set_debug_mode(true);
 
                 let window_size: (f32, f32) = self.core.viewports.get_mut(&window_id).as_mut().unwrap().window.inner_size().into();
                 let dpi_scale  = self.core.viewports.get_mut(&window_id).as_mut().unwrap().window.scale_factor() as f32;

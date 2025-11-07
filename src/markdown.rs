@@ -108,6 +108,10 @@ where <Event as FromStr>::Err: Debug
             "element" => {
                 layout_commands.push(Layout::Element(Element::ElementOpened { id: None }));
                 layout_commands.push(Layout::Element(Element::ConfigOpened));
+                if let Some(element_name) = element_declaration.children.get(1)
+                && let Node::Text(element_name) = element_name {
+                    layout_commands.push(Layout::Config(Config::Id(DataSrc::Static(element_name.value.trim().to_string()))));
+                }
                 if let Some(config) = element.children.get(1)
                 && let Node::List(configs) = config
                 && let Some(configs) = configs.children.get(0)
