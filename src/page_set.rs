@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
 use symbol_table::GlobalSymbol;
-use winit::window::Cursor;
+//use winit::window::Cursor;
 
 use crate::{ui_toolkit, UIImageDescriptor};
 use crate::EventContext;
@@ -81,7 +81,7 @@ where
     ) {
         let page = api.viewports.get_mut(&window_id).as_mut().unwrap().page.clone();
         let mut events = Vec::<(Event, Option<EventContext>)>::new();
-        let mut pointer = winit::window::CursorIcon::Default;
+        let pointer = winit::window::CursorIcon::Default;
 
         if let Some(page_commands) = self.pages.get(&page) {
             let mut command_references = Vec::<&Layout<Event>>::new();
@@ -99,7 +99,7 @@ where
                 else {break}
             }
 
-            (events, pointer) = set_layout(
+            let (eevents, _pointer) = set_layout(
                 api,
                 &command_references,
                 &self.reusable,
@@ -111,6 +111,8 @@ where
                 events,
                 pointer
             );
+
+            events = eevents;
 
             //api.viewports.get_mut(&window_id).as_mut().unwrap().window.set_cursor(Cursor::Icon(pointer));
             

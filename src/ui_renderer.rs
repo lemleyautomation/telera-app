@@ -8,7 +8,6 @@ use lyon::geom::euclid::{Box2D, Point2D, Size2D, UnknownUnit};
 //use lyon::math::point;
 use lyon::path::builder::BorderRadii;
 use lyon::path::Path;
-use lyon::path::traits::PathBuilder;
 use lyon::tessellation::*;
 
 use image::{DynamicImage, RgbImage};
@@ -742,9 +741,7 @@ impl UIRenderer {
 
                     let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
                     let mut tessellator = FillTessellator::new();
-                    {
-                        // Compute the tessellation.
-                        tessellator.tessellate_path(
+                    if tessellator.tessellate_path(
                             &path,
                             &FillOptions::default().with_tolerance(0.1).with_fill_rule(lyon::tessellation::FillRule::EvenOdd),
                             &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| { 
@@ -762,12 +759,12 @@ impl UIRenderer {
                                     },
                                 }
                             }),
-                        ).unwrap();
+                        ).is_ok() {
+                        let mut offset_indices = geometry.indices.iter().map(|index|{index+self.vertices.len() as u32}).collect::<Vec::<u32>>();
+                        self.vertices.append(&mut geometry.vertices);
+                        self.indices.append(&mut offset_indices);
+                        self.batch_index_end = self.indices.len() as u32;
                     }
-                    let mut offset_indices = geometry.indices.iter().map(|index|{index+self.vertices.len() as u32}).collect::<Vec::<u32>>();
-                    self.vertices.append(&mut geometry.vertices);
-                    self.indices.append(&mut offset_indices);
-                    self.batch_index_end = self.indices.len() as u32;
                 }
                 RenderCommand::Border(b) => {
                     let mut builder = Path::builder();
@@ -791,11 +788,10 @@ impl UIRenderer {
                         path::Winding::Negative
                     );
                     let path = builder.build();
+
                     let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
                     let mut tessellator = StrokeTessellator::new();
-                    {
-                        // Compute the tessellation.
-                        tessellator.tessellate_path(
+                    if tessellator.tessellate_path(
                             &path,
                             &StrokeOptions::default().with_line_width(b.width.top as f32),
                             &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex  | { 
@@ -809,12 +805,12 @@ impl UIRenderer {
                                     }
                                 }
                             }),
-                        ).unwrap();
+                        ).is_ok() {
+                            let mut offset_indices = geometry.indices.iter().map(|index|{index+self.vertices.len() as u32}).collect::<Vec::<u32>>();
+                        self.vertices.append(&mut geometry.vertices);
+                        self.indices.append(&mut offset_indices);
+                        self.batch_index_end = self.indices.len() as u32;
                     }
-                    let mut offset_indices = geometry.indices.iter().map(|index|{index+self.vertices.len() as u32}).collect::<Vec::<u32>>();
-                    self.vertices.append(&mut geometry.vertices);
-                    self.indices.append(&mut offset_indices);
-                    self.batch_index_end = self.indices.len() as u32;
                 }
                 RenderCommand::Text(t) => self.draw_text(
                     t.text,
@@ -841,7 +837,8 @@ impl UIRenderer {
                 ),
                 RenderCommand::ScissorEnd => self.end_scissor(),
                 RenderCommand::Image(image) => {
-                    let mut builder = Path::builder_with_attributes(1);
+                    
+                    let mut builder = Path::builder();
                     builder.add_rounded_rectangle(
                         &Box2D::from_origin_and_size(
                                 Point2D::new(
@@ -854,81 +851,50 @@ impl UIRenderer {
                                 )
                             ),
                             &BorderRadii {
-                                top_left: 0.0 * self.dpi_scale,
-                                top_right: 0.0 * self.dpi_scale,
-                                bottom_left: 0.0 * self.dpi_scale,
-                                bottom_right: 0.0 * self.dpi_scale
+                                top_left: 10.0 * self.dpi_scale,
+                                top_right: 10.0 * self.dpi_scale,
+                                bottom_left: 10.0 * self.dpi_scale,
+                                bottom_right: 10.0 * self.dpi_scale
                             },
-                        path::Winding::Negative,
-                        &[0.0]
+                        path::Winding::Negative
                     );
-                    // builder.add_rounded_rectangle(
-                        // &Box2D::from_origin_and_size(
-                        //         Point2D::new(
-                        //             image.bounding_box.x * self.dpi_scale,
-                        //             image.bounding_box.y * self.dpi_scale
-                        //         ), 
-                        //         Size2D::new(
-                        //             image.bounding_box.width * self.dpi_scale,
-                        //             image.bounding_box.height * self.dpi_scale
-                        //         )
-                        //     ),
-                        //     &BorderRadii {
-                        //         top_left: 0.0 * self.dpi_scale,
-                        //         top_right: 0.0 * self.dpi_scale,
-                        //         bottom_left: 0.0 * self.dpi_scale,
-                        //         bottom_right: 0.0 * self.dpi_scale
-                        //     },
-                        // path::Winding::Negative,
-                    //     &[1]
-                    // );
                     let path = builder.build();
 
                     let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
                     let mut tessellator = FillTessellator::new();
-                    {
-                        // Compute the tessellation.
-                        tessellator.tessellate_path(
+                    if tessellator.tessellate_path(
                             &path,
                             &FillOptions::default().with_tolerance(0.1).with_fill_rule(lyon::tessellation::FillRule::EvenOdd),
-                            &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| { 
-                                vertex.
+                            &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| {
+                                // example for pixel to uv mapping:
+                                //
+                                // let t = (vertex.position() - rect.min) / rect.size();
+                                // uv = uv_rect.min + uv_rect.size() * t;
+                                //
                                 UIVertex {
                                     position: UIPosition { 
                                         x: vertex.position().x,
                                         y: vertex.position().y,
                                         z: depth
                                     },
-                                    texture: 0,
-                                    color: UIColor{r:0.0,g:0.0,b:0.0}
-                                    // color: UIColor {
-                                    //     r: image.color.r / 255.0,
-                                    //     g: image.color.g / 255.0,
-                                    //     b: image.color.b / 255.0,
-                                    // },
+                                    texture: 1,
+                                    color: UIColor {
+                                        r: vertex.position().x,
+                                        g: vertex.position().y,
+                                        b: 0.0,
+                                    },
                                 }
                             }),
-                        ).unwrap();
+                        ).is_ok() {
+                        self.bind_atlas(&image.data.atlas);
+                        let mut offset_indices = geometry.indices.iter().map(|index|{index+self.vertices.len() as u32}).collect::<Vec::<u32>>();
+                        self.vertices.append(&mut geometry.vertices);
+                        self.indices.append(&mut offset_indices);
+                        self.batch_index_end = self.indices.len() as u32;
+                        self.end_atlas();
                     }
-                    let mut offset_indices = geometry.indices.iter().map(|index|{index+self.vertices.len() as u32}).collect::<Vec::<u32>>();
-                    self.vertices.append(&mut geometry.vertices);
-                    self.indices.append(&mut offset_indices);
-                    self.batch_index_end = self.indices.len() as u32;
-                    // self.draw_image(
-                    //     image.data,
-                    //     UIPosition {
-                    //         x: image.bounding_box.x * self.dpi_scale,
-                    //         y: image.bounding_box.y * self.dpi_scale,
-                    //         z: depth as f32,
-                    //     },
-                    //     UIPosition {
-                    //         x: image.bounding_box.width * self.dpi_scale,
-                    //         y: image.bounding_box.height * self.dpi_scale,
-                    //         z: depth as f32,
-                    //     },
-                    // );
                 }
-                RenderCommand::Custom(shape) => {
+                RenderCommand::Custom(_shape) => {
                     // match shape.data {
                     //     Shapes::Circle => {
                     //         self.draw_filled_rectangle(

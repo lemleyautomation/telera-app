@@ -126,9 +126,9 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                         && let GenericArgument::Type(t) = args
                         && let Type::Path(vp) = t
                         && let None = vp.path.leading_colon
-                        && let Some(st) = vp.path.segments.get(0) {
+                        && let Some(_st) = vp.path.segments.get(0) {
                             //panic!("{:#?}", st.ident);
-                            let list_ident = st.ident.clone();
+                            //let list_ident = st.ident.clone();
                             lists.push(quote::quote! {
                                 s if s == symbol_table::static_symbol!(#field_name) => Some(self.#field_ident.len()),
                             });

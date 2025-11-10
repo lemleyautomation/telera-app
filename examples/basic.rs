@@ -68,7 +68,7 @@ impl App for BasicApp {
 }
 
 impl ParserDataAccess<BasicEvents> for BasicApp {
-    fn get_image<'render_pass, 'application>(&'application self, name: &GlobalSymbol, list_data: &Option<(GlobalSymbol, usize)>) -> Option<&'render_pass UIImageDescriptor> where 'application: 'render_pass {
+    fn get_image<'render_pass, 'application>(&'application self, name: &GlobalSymbol, _list_data: &Option<(GlobalSymbol, usize)>) -> Option<&'render_pass UIImageDescriptor> where 'application: 'render_pass {
         if name.as_str() == "pic" {
             return Some(&self.pic)
         }
