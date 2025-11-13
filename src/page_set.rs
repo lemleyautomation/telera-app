@@ -141,9 +141,6 @@ where
         Some(text_config) => text_config
     };
 
-    let mut circle_open = false;
-    let mut line_open = false;
-
     #[allow(unused_variables)]
     for (index, command) in commands.iter_mut().enumerate() {
         if collect_list_commands {
@@ -318,7 +315,6 @@ where
 
                         if skip.is_none() {
                             api.ui_layout.open_element();
-                            circle_open = true;
                             if api.ui_layout.hovered() {
                                 let x = api.ui_layout.get_element_id("hi");
                             }
@@ -328,7 +324,6 @@ where
                         nesting_level -= 1;
 
                         if skip.is_none() {
-                            circle_open = false;
                             api.ui_layout.close_element();
                         }
                     }
@@ -336,7 +331,6 @@ where
                         nesting_level += 1;
 
                         if skip.is_none() {
-                            line_open = true;
                             api.ui_layout.open_element();
                             if api.ui_layout.hovered() {
                                 let x = api.ui_layout.get_element_id("hi");
@@ -347,7 +341,6 @@ where
                         nesting_level -= 1;
 
                         if skip.is_none() {
-                            line_open = false;
                             api.ui_layout.close_element();
                         }
                     }
@@ -507,8 +500,6 @@ where
                         &list_data,
                         api,
                         user_app,
-                        circle_open,
-                        line_open,
                     );
                 }
             }
@@ -523,25 +514,23 @@ fn execute_config<'render_pass, Event, UserApp>(
     config_command: &mut Config,
     config: Option<&mut ElementConfiguration>,
     text_config: Option<&mut TextConfig>,
-    reusables: &mut HashMap<GlobalSymbol, Vec<Layout<Event>>>,
+    _reusables: &mut HashMap<GlobalSymbol, Vec<Layout<Event>>>,
     locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
     list_data: &Option<(GlobalSymbol, usize)>,
     api: &mut API,
     user_app: &UserApp,
-    cirlce_open: bool,
-    line_open: bool,
 )
 where
     Event: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>,
     <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
-    let mut config = match config {
+    let config = match config {
         None => &mut ElementConfiguration::default(),
         Some(config) => config
     };
 
-    let mut text_config = match text_config {
+    let text_config = match text_config {
         None => &mut TextConfig::default(),
         Some(c) => c
     };
@@ -696,7 +685,6 @@ where
         Config::FontColor(color)  => text_config.color(Color::resolve_src(color, locals, user_app, list_data)).parse(),
         Config::FontSize(size) => text_config.font_size(u16::resolve_src(size, locals, user_app, list_data)).parse(),
         Config::LineHeight(height) => text_config.line_height(u16::resolve_src(height, locals, user_app, list_data)).parse(),
-        _ => {}
     }
 }
 

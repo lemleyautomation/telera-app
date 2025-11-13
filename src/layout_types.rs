@@ -3,7 +3,7 @@ use strum_macros::Display;
 use symbol_table::GlobalSymbol;
 use telera_layout::Color;
 
-use crate::{EventHandler, TreeViewItem, UIImageDescriptor, ui_shapes::{self, CustomElement}};
+use crate::{EventHandler, TreeViewItem, UIImageDescriptor, ui_shapes::CustomElement};
 
 #[derive(Clone, Debug, Display, PartialEq)]
 pub enum Layout<Event>
