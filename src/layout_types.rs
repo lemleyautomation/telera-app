@@ -3,12 +3,12 @@ use strum_macros::Display;
 use symbol_table::GlobalSymbol;
 use telera_layout::Color;
 
-use crate::{EventHandler, TreeViewItem, UIImageDescriptor};
+use crate::{EventHandler, TreeViewItem, UIImageDescriptor, ui_shapes::{self, CustomElement}};
 
 #[derive(Clone, Debug, Display, PartialEq)]
 pub enum Layout<Event>
 where
-    Event: Clone+Debug+PartialEq
+    Event: Clone+Debug+PartialEq+Default
 {
     Element(Element<Event>),
     Declaration{name:GlobalSymbol, value:DataSrc<Declaration<Event>>},
@@ -18,7 +18,7 @@ where
 #[derive(Clone, Debug, Display, PartialEq)]
 pub enum Element<Event>
 where
-    Event: Clone+Debug+PartialEq
+    Event: Clone+Debug+PartialEq+Default
 {
     ElementOpened{id: Option<DataSrc<String>>},
     ElementClosed,
@@ -47,7 +47,7 @@ where
     CircleOpened{id: Option<DataSrc<String>>},
     CircleClosed,
 
-    LineOpened{id: Option<f32>},
+    LineOpened{id: Option<DataSrc<String>>},
     LineClosed,
 
     // if not
@@ -151,7 +151,6 @@ pub enum Config{
 
     Color(DataSrc<Color>),
 
-    Radius(DataSrc<f32>),
     RadiusAll(DataSrc<f32>),
     RadiusTopLeft(DataSrc<f32>),
     RadiusTopRight(DataSrc<f32>),
@@ -196,7 +195,7 @@ pub enum Config{
     FloatingAttachElementToElement{other_element_id:String},
     FloatingAttachElementToRoot,
 
-    LineWidth(DataSrc<f32>),
+    CustomElement(CustomElement),
 
     Use{name: GlobalSymbol},
 
@@ -213,7 +212,7 @@ pub enum Config{
 #[derive(Clone, Debug, Display, PartialEq)]
 pub enum Declaration<Event>
 where
-    Event: Clone+Debug+PartialEq
+    Event: Clone+Debug+PartialEq+Default
 {
     Bool(bool),
     Numeric(f32),
@@ -223,10 +222,22 @@ where
     Image(GlobalSymbol)
 }
 
+impl<Event: Clone+Debug+PartialEq+Default> Default for Declaration<Event> {
+    fn default() -> Self {
+        Declaration::Bool(false)
+    }
+}
+
 #[derive(Clone, Debug, Display, PartialEq)]
-pub enum DataSrc<T> {
+pub enum DataSrc<T:Default> {
     Static(T),
     Dynamic(GlobalSymbol)
+}
+
+impl<T:Default> Default for DataSrc<T> {
+    fn default() -> Self {
+        DataSrc::Static(T::default())
+    }
 }
 
 #[allow(unused_variables)]

@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
 use markdown::mdast::{List, Node, Paragraph};
 use symbol_table::GlobalSymbol;
-use crate::{Config, DataSrc, Declaration, Element, Layout};
+use crate::{Config, DataSrc, Declaration, Element, Layout, ui_shapes::{CustomElement, LineConfig}};
 use telera_layout::Color;
 
 #[derive(Debug)]
@@ -13,8 +13,8 @@ enum ParsingMode {
     ReusableConfig,
 }
 
-pub fn process_layout<Event: Clone+Debug+PartialEq+FromStr>(file: String) -> Result<(String, Vec<Layout<Event>>, HashMap::<String, Vec<Layout<Event>>>), String> 
-where <Event as FromStr>::Err: Debug
+pub fn process_layout<Event: Clone+Debug+Default+PartialEq+FromStr>(file: String) -> Result<(String, Vec<Layout<Event>>, HashMap::<String, Vec<Layout<Event>>>), String> 
+where <Event as FromStr>::Err: Debug+Default
 {
     let mut parsing_mode = ParsingMode::None;
     let mut page_name = "".to_string();
@@ -51,7 +51,7 @@ where <Event as FromStr>::Err: Debug
                 Node::List(list) => {
                     match parsing_mode {
                         ParsingMode::ReusableConfig => {
-                            let mut reusable_items = process_configs(list);
+                            let mut reusable_items = process_configs(list, &mut None);
                             let mut formatted_reusable_items = Vec::<Layout<Event>>::new();
                             formatted_reusable_items.append(&mut reusable_items);
                             reusables.insert(open_reuseable_name.clone(), formatted_reusable_items);
@@ -83,8 +83,8 @@ where <Event as FromStr>::Err: Debug
     }
 }
 
-fn process_element<Event: Clone+Debug+PartialEq+FromStr>(element: &Node) -> Vec<Layout<Event>>
-where <Event as FromStr>::Err: Debug
+fn process_element<Event: Clone+Debug+Default+PartialEq+FromStr>(element: &Node) -> Vec<Layout<Event>>
+where <Event as FromStr>::Err: Debug+Default
 {
     let mut layout_commands: Vec<Layout<Event>> = Vec::new();
 
@@ -118,7 +118,7 @@ where <Event as FromStr>::Err: Debug
                 && let Node::ListItem(configs) = configs
                 && let Some(configs) = configs.children.get(1)
                 && let Node::List(config_commands) = configs {
-                    let mut layout_config_commands = process_configs(&config_commands);
+                    let mut layout_config_commands = process_configs(&config_commands, &mut None);
                     layout_commands.append(&mut layout_config_commands);
                 }
                 layout_commands.push(Layout::Element(Element::ConfigClosed));
@@ -146,8 +146,10 @@ where <Event as FromStr>::Err: Debug
                 && let Node::ListItem(configs) = configs
                 && let Some(configs) = configs.children.get(1)
                 && let Node::List(config_commands) = configs {
-                    let mut layout_config_commands = process_configs(&config_commands);
+                    let mut custom_element = crate::ui_shapes::CustomElement::Circle;
+                    let mut layout_config_commands = process_configs(&config_commands, &mut Some(&mut custom_element));
                     layout_commands.append(&mut layout_config_commands);
+                    layout_commands.push(Layout::Config(Config::CustomElement(custom_element)));
                 }
                 layout_commands.push(Layout::Element(Element::ConfigClosed));
                 layout_commands.push(Layout::Element(Element::CircleClosed));
@@ -165,8 +167,14 @@ where <Event as FromStr>::Err: Debug
                 && let Node::ListItem(configs) = configs
                 && let Some(configs) = configs.children.get(1)
                 && let Node::List(config_commands) = configs {
-                    let mut layout_config_commands = process_configs(&config_commands);
+                    let line_config = LineConfig::default();
+                    let mut custom_element = CustomElement::Line(line_config);
+                    let mut layout_config_commands = process_configs(
+                        &config_commands,
+                        &mut Some(&mut custom_element)
+                    );
                     layout_commands.append(&mut layout_config_commands);
+                    layout_commands.push(Layout::Config(Config::CustomElement(custom_element)));
                 }
                 layout_commands.push(Layout::Element(Element::ConfigClosed));
                 layout_commands.push(Layout::Element(Element::LineClosed));
@@ -188,7 +196,7 @@ where <Event as FromStr>::Err: Debug
                 && let Node::ListItem(config) = config
                 && let Some(configs) = config.children.get(1)
                 && let Node::List(configs) = configs {
-                    let mut configs = process_configs(configs);
+                    let mut configs = process_configs(configs, &mut None);
                     layout_commands.append(&mut configs);
                 }
                 layout_commands.push(Layout::Element(Element::TextConfigClosed));
@@ -520,7 +528,7 @@ fn parameter_check<T: FromStr>(parameters: &Paragraph, bound_a: &str, bound_b: &
     }
 }
 
-fn process_variable<Event: Clone+Debug+PartialEq+FromStr>(declaration: &Node) -> Option<(String, DataSrc<Declaration<Event>>)>{
+fn process_variable<Event: Clone+Debug+Default+PartialEq+FromStr>(declaration: &Node) -> Option<(String, DataSrc<Declaration<Event>>)>{
     if let Node::ListItem(declaration) = declaration
     && let Some(declaration) = declaration.children.get(0)
     && let Node::Paragraph(declaration) = declaration
@@ -613,7 +621,7 @@ fn process_variable<Event: Clone+Debug+PartialEq+FromStr>(declaration: &Node) ->
     }
 }
 
-fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &List) -> Vec<Layout<Event>> {
+fn process_configs<Event: Clone+Debug+Default+PartialEq+FromStr>(configuration_set: &List, custom_element: &mut Option<&mut crate::ui_shapes::CustomElement>) -> Vec<Layout<Event>> {
     let mut configs = Vec::new();
 
     for configuration_item in &configuration_set.children {
@@ -813,17 +821,13 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                 }
                 "width" => {
-                    match parameter_check::<f32>(config, "", "") {
-                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Config(Config::LineWidth(DataSrc::Dynamic(a)))),
-                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Config(Config::LineWidth(DataSrc::Static(a)))),
-                        _ => {}
-                    }
-                }
-                "radius" => {
-                    match parameter_check::<f32>(config, "", "") {
-                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Config(Config::Radius(DataSrc::Dynamic(a)))),
-                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Config(Config::Radius(DataSrc::Static(a)))),
-                        _ => {}
+                    if let Some(custom_element) = custom_element
+                    && let crate::ui_shapes::CustomElement::Line(line_config) = custom_element {
+                        match parameter_check::<f32>(config, "", "") {
+                            AvailableParameters::SingleDynamic(a) => line_config.width_source = Some(a),
+                            AvailableParameters::SingleStatic(a) => line_config.width = a,
+                            _ => {}
+                        }
                     }
                 }
                 "radius-all" => {
@@ -941,7 +945,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     configs.push(Layout::Config(Config::Floating));
                     if let Some(floating_commands) = config_elements.get(1)
                     && let Node::List(floating_commands) = floating_commands {
-                        let mut floating = process_configs(floating_commands);
+                        let mut floating = process_configs(floating_commands, &mut None);
                         configs.append(&mut floating);
                     }
                 }
@@ -968,7 +972,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                     && let Node::List(onconfig_on) = onconfig_on {
-                        configs.append(&mut process_configs(onconfig_on));
+                        configs.append(&mut process_configs(onconfig_on, &mut None));
                     }
                     configs.push(Layout::Element(Element::HoveredClosed));
                 }
@@ -987,7 +991,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                     && let Node::List(onconfig_on) = onconfig_on {
-                        configs.append(&mut process_configs(onconfig_on));
+                        configs.append(&mut process_configs(onconfig_on, &mut None));
                     }
                     configs.push(Layout::Element(Element::UnHoveredClosed));
                 }
@@ -1006,7 +1010,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                     && let Node::List(onconfig_on) = onconfig_on {
-                        configs.append(&mut process_configs(onconfig_on));
+                        configs.append(&mut process_configs(onconfig_on, &mut None));
                     }
                     configs.push(Layout::Element(Element::HoverClosed));
                 }
@@ -1025,7 +1029,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                     && let Node::List(onconfig_on) = onconfig_on {
-                        configs.append(&mut process_configs(onconfig_on));
+                        configs.append(&mut process_configs(onconfig_on, &mut None));
                     }
                     configs.push(Layout::Element(Element::FocusedClosed));
                 }
@@ -1044,7 +1048,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                     && let Node::List(onconfig_on) = onconfig_on {
-                        configs.append(&mut process_configs(onconfig_on));
+                        configs.append(&mut process_configs(onconfig_on, &mut None));
                     }
                     configs.push(Layout::Element(Element::UnFocusedClosed));
                 }
@@ -1063,7 +1067,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                     && let Node::List(onconfig_on) = onconfig_on {
-                        configs.append(&mut process_configs(onconfig_on));
+                        configs.append(&mut process_configs(onconfig_on, &mut None));
                     }
                     configs.push(Layout::Element(Element::FocusClosed));
                 }
@@ -1082,7 +1086,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                     && let Node::List(onconfig_on) = onconfig_on {
-                        configs.append(&mut process_configs(onconfig_on));
+                        configs.append(&mut process_configs(onconfig_on, &mut None));
                     }
                     configs.push(Layout::Element(Element::LeftPressedClosed));
                 }
@@ -1101,7 +1105,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                     && let Node::List(onconfig_on) = onconfig_on {
-                        configs.append(&mut process_configs(onconfig_on));
+                        configs.append(&mut process_configs(onconfig_on, &mut None));
                     }
                     configs.push(Layout::Element(Element::LeftDownClosed));
                 }
@@ -1120,7 +1124,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                     && let Node::List(onconfig_on) = onconfig_on {
-                        configs.append(&mut process_configs(onconfig_on));
+                        configs.append(&mut process_configs(onconfig_on, &mut None));
                     }
                     configs.push(Layout::Element(Element::LeftReleasedClosed));
                 }
@@ -1139,7 +1143,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                     && let Node::List(config_on_click) = config_on_click {
-                        configs.append(&mut process_configs(config_on_click));
+                        configs.append(&mut process_configs(config_on_click, &mut None));
                     }
                     configs.push(Layout::Element(Element::LeftClickedClosed));
                 }
@@ -1158,7 +1162,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                     && let Node::List(config_on_click) = config_on_click {
-                        configs.append(&mut process_configs(config_on_click));
+                        configs.append(&mut process_configs(config_on_click, &mut None));
                     }
                     configs.push(Layout::Element(Element::LeftDoubleClickedClosed));
                 }
@@ -1177,7 +1181,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                     && let Node::List(config_on_click) = config_on_click {
-                        configs.append(&mut process_configs(config_on_click));
+                        configs.append(&mut process_configs(config_on_click, &mut None));
                     }
                     configs.push(Layout::Element(Element::LeftTripleClickedClosed));
                 }
@@ -1196,7 +1200,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                     && let Node::List(config_on_click) = config_on_click {
-                        configs.append(&mut process_configs(config_on_click));
+                        configs.append(&mut process_configs(config_on_click, &mut None));
                     }
                     configs.push(Layout::Element(Element::RightPressedClosed));
                 }
@@ -1215,7 +1219,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                     && let Node::List(config_on_click) = config_on_click {
-                        configs.append(&mut process_configs(config_on_click));
+                        configs.append(&mut process_configs(config_on_click, &mut None));
                     }
                     configs.push(Layout::Element(Element::RightDownClosed));
                 }
@@ -1234,7 +1238,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                     && let Node::List(config_on_click) = config_on_click {
-                        configs.append(&mut process_configs(config_on_click));
+                        configs.append(&mut process_configs(config_on_click, &mut None));
                     }
                     configs.push(Layout::Element(Element::RightReleasedClosed));
                 }
@@ -1253,7 +1257,7 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                     && let Node::List(config_on_click) = config_on_click {
-                        configs.append(&mut process_configs(config_on_click));
+                        configs.append(&mut process_configs(config_on_click, &mut None));
                     }
                     configs.push(Layout::Element(Element::RightClickedClosed));
                 }

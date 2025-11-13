@@ -4,7 +4,7 @@ use std::{collections::HashMap, fmt::Debug, str::FromStr};
 use symbol_table::GlobalSymbol;
 //use winit::window::Cursor;
 
-use crate::ui_shapes::{LineDirection, Shapes};
+use crate::ui_shapes::{CustomElement};
 use crate::{ui_toolkit, UIImageDescriptor};
 use crate::EventContext;
 
@@ -79,88 +79,36 @@ where
         window_id: winit::window::WindowId,
         api: &mut API,
         user_app: &mut UserApp,
-    ) {
-        let page = api.viewports.get_mut(&window_id).as_mut().unwrap().page.clone();
-        let mut events = Vec::<(Event, Option<EventContext>)>::new();
-        let pointer = winit::window::CursorIcon::Default;
+    ) where <Event as FromStr>::Err: Default {
+        if let Some(viewport) = api.viewports.get_mut(&window_id)
+        && let Some(layout_commands) = self.pages.get_mut(&viewport.page) {
 
-        api.ui_layout.open_element();
+            //println!("{:#?}\n\n", &layout_commands);
 
-        let config = ElementConfiguration::new()
-            .id("popup")
-            .x_fixed(200.0)
-            .y_fixed(200.0)
-            .color(Color{r:0.0,g:255.0,b:0.0,a:255.0})
-            .padding_all(25)
-            .border_all(2)
-            .radius_all(20.0)
-            .floating()
-            .floating_attach_element_at_center()
-            .floating_attach_to_parent_at_center()
-            .end();
-        api.ui_layout.configure_element(&config);
+            let (events, _pointer) = set_layout(
+                api,
+                layout_commands,
+                &mut self.reusable,
+                None,
+                None,
+                None,
+                None,
+                user_app,
+                Vec::<(Event, Option<EventContext>)>::new(),
+                winit::window::CursorIcon::Default
+            );
 
-        api.ui_layout.open_element();
-        let config = ElementConfiguration::new()
-            .color(Color{r:0.0,g:0.0,b:0.0,a:255.0})
-            .x_grow()
-            .y_grow()
-            .custom_element(&Shapes::Line { width: 4.0 })
-            .end();
-        api.ui_layout.configure_element(&config);
-        api.ui_layout.close_element();
-
-        api.ui_layout.close_element();
-
-        if let Some(page_commands) = self.pages.get(&page) {
-            println!("{:#?}", page_commands);
+            for (event, context) in events {
+                event.dispatch(user_app, context, api);
+            }
         }
-
-        // if let Some(page_commands) = self.pages.get(&page) {
-        //     let mut command_references = Vec::<&Layout<Event>>::new();
-        //     for command in page_commands.iter() {
-        //         command_references.push(command);
-        //     }
-
-        //     let mut page_call_stack = HashMap::<GlobalSymbol, &DataSrc<Declaration<Event>>>::new();
-        //     for command in &command_references {
-        //         if let Layout::Declaration { name, value } = command {
-        //             page_call_stack.insert(*name, value);
-        //         }
-        //         else if let Layout::Element(e) = command
-        //         && let Element::Pointer(_) = e {}
-        //         else {break}
-        //     }
-
-        //     let (eevents, _pointer) = set_layout(
-        //         api,
-        //         &command_references,
-        //         &self.reusable,
-        //         Some(&page_call_stack),
-        //         None,
-        //         None,
-        //         None,
-        //         user_app,
-        //         events,
-        //         pointer
-        //     );
-
-        //     events = eevents;
-
-        //     //api.viewports.get_mut(&window_id).as_mut().unwrap().window.set_cursor(Cursor::Icon(pointer));
-            
-        // }
-
-        // for (event, context) in events {
-        //     event.dispatch(user_app, context, api);
-        // }
     }
 }
 
 fn set_layout<'render_pass, Event, UserApp>(
     api: &mut API,
-    commands: &Vec<&Layout<Event>>,
-    reusables: &HashMap<GlobalSymbol, Vec<Layout<Event>>>,
+    commands: &mut [Layout<Event>],
+    reusables: &mut HashMap<GlobalSymbol, Vec<Layout<Event>>>,
     locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
     list_data: Option<(GlobalSymbol, usize)>,
     config: Option<&mut ElementConfiguration>,
@@ -171,13 +119,13 @@ fn set_layout<'render_pass, Event, UserApp>(
 ) -> (Vec::<(Event, Option<EventContext>)>, winit::window::CursorIcon)
 where
     Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
     let mut nesting_level: u32 = 0;
     let mut skip: Option<u32> = None;
 
-    let mut recursive_commands = Vec::<&Layout<Event>>::new();
+    let mut recursive_commands = Vec::<Layout<Event>>::new();
     let mut recursive_call_stack = HashMap::<GlobalSymbol, &DataSrc<Declaration<Event>>>::new();
     let mut collect_declarations = false;
 
@@ -197,7 +145,7 @@ where
     let mut line_open = false;
 
     #[allow(unused_variables)]
-    for (index, command) in commands.iter().enumerate() {
+    for (index, command) in commands.iter_mut().enumerate() {
         if collect_list_commands {
             match command {
                 Layout::Element(flow_command) => {
@@ -208,15 +156,15 @@ where
                 Layout::Declaration{name:_,value:_} => {}
                 other => {
                     collect_declarations = false;
-                    recursive_commands.push(other);
+                    recursive_commands.push(other.clone());
                     continue;
                 }
             }
         }
 
         match command {
-            Layout::Element(element_type) => {
-                match element_type {
+            Layout::Element(element) => {
+                match element {
                     Element::IfOpened { condition } => {
                         if skip.is_none()
                         && !bool::resolve_name(condition, locals, user_app, &list_data) {
@@ -334,7 +282,7 @@ where
                                 for index in 0..length {
                                     (events, pointer) = set_layout(
                                         api,
-                                        &recursive_commands, 
+                                        &mut recursive_commands, 
                                         reusables,
                                         Some(&recursive_call_stack), 
                                         Some((*src, index)), 
@@ -460,12 +408,12 @@ where
                             if let Some(reusable) = reusables.get(src){
                                 //println!("use: {:?}", recursive_source);
                                 for command in reusable.iter() {
-                                    recursive_commands.push(command);
+                                    recursive_commands.push(command.clone());
                                 }
                                 if recursive_call_stack.len() > 0 {
                                     (events, pointer) = set_layout(
                                         api,
-                                        &recursive_commands,
+                                        &mut recursive_commands,
                                         reusables,
                                         Some(&recursive_call_stack), 
                                         None,
@@ -479,7 +427,7 @@ where
                                 else {
                                     (events, pointer) = set_layout(
                                         api,
-                                        &recursive_commands,
+                                        &mut recursive_commands,
                                         reusables,
                                         None,
                                         None,
@@ -540,7 +488,7 @@ where
                             api.ui_layout.close_element();
                         }
                     }
-                    _ => {todo!("")}
+                    _ => {}
                 }
             }
             Layout::Declaration { name, value } => {
@@ -567,15 +515,15 @@ where
         }
     }
 
-    (events, pointer)
-
+    (events,pointer)
 }
 
+
 fn execute_config<'render_pass, Event, UserApp>(
-    config_command: &Config,
+    config_command: &mut Config,
     config: Option<&mut ElementConfiguration>,
     text_config: Option<&mut TextConfig>,
-    reusables: &HashMap<GlobalSymbol, Vec<Layout<Event>>>,
+    reusables: &mut HashMap<GlobalSymbol, Vec<Layout<Event>>>,
     locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
     list_data: &Option<(GlobalSymbol, usize)>,
     api: &mut API,
@@ -585,7 +533,7 @@ fn execute_config<'render_pass, Event, UserApp>(
 )
 where
     Event: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
     let mut config = match config {
@@ -654,18 +602,14 @@ where
             let color = Color::resolve_src(color, locals, user_app, list_data);
             config.color(color).parse();
         }
-        Config::LineWidth(width) => {
-            println!("yes");
-            if line_open {
-                let width = f32::resolve_src(width, locals, user_app, list_data);
-                config.custom_element(&Shapes::Line { width }).parse();
+
+        Config::CustomElement(custom_element) => {
+            if let CustomElement::Line(line) = custom_element
+            && let Some(source) = line.width_source
+            && let Some(width) = user_app.get_numeric(&source, list_data) {
+                line.width = width;
             }
-        }
-        Config::Radius(_radius) => {
-            println!("no");
-            if cirlce_open {
-                config.custom_element(&Shapes::Circle).parse();
-            }
+            config.custom_element(custom_element).parse();
         }
         Config::RadiusAll(radius)  => config.radius_all(f32::resolve_src(radius, locals, user_app, list_data)).parse(),
         Config::RadiusTopLeft(radius)  => config.radius_top_left(f32::resolve_src(radius, locals, user_app, list_data)).parse(),
@@ -723,25 +667,25 @@ where
             config.floating_attach_to_element(0).parse()
         }
         Config::FloatingAttachElementToRoot => config.floating_attach_to_root().parse(),
-        Config::Use { name } => {
-            if let Some(reusable) = reusables.get(name) {
-                for config_command in reusable {
-                    if let Layout::Config(config_command) = config_command {
-                        execute_config(
-                            config_command, 
-                            Some(&mut config), 
-                            Some(&mut text_config),
-                            reusables, 
-                            locals, 
-                            list_data, 
-                            api, 
-                            user_app,
-                            cirlce_open,
-                            line_open,
-                        );
-                    }
-                }
-            }
+        Config::Use { name:_ } => {
+            // if let Some(reusable) = reusables.get_mut(name) {
+            //     for config_command in reusable {
+            //         if let Layout::Config(config_command) = config_command {
+            //             execute_config(
+            //                 config_command, 
+            //                 Some(&mut config), 
+            //                 Some(&mut text_config),
+            //                 reusables, 
+            //                 locals, 
+            //                 list_data, 
+            //                 api, 
+            //                 user_app,
+            //                 cirlce_open,
+            //                 line_open,
+            //             );
+            //         }
+            //     }
+            // }
         }
 
         Config::AlignCenter => text_config.alignment_center().parse(),
@@ -752,6 +696,7 @@ where
         Config::FontColor(color)  => text_config.color(Color::resolve_src(color, locals, user_app, list_data)).parse(),
         Config::FontSize(size) => text_config.font_size(u16::resolve_src(size, locals, user_app, list_data)).parse(),
         Config::LineHeight(height) => text_config.line_height(u16::resolve_src(height, locals, user_app, list_data)).parse(),
+        _ => {}
     }
 }
 
@@ -759,11 +704,11 @@ trait ResolveValue<'frame,'application, Event,UserApp>
 where
     'application: 'frame,
     Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 
 {
-    type DeclarationType;
+    type DeclarationType: Default;
     type ReturnType;
     fn resolve_src (
         var: &'frame DataSrc<Self::DeclarationType>,
@@ -783,7 +728,7 @@ impl<'frame, 'application, Event,UserApp> ResolveValue<'frame,'application, Even
 where
     'application: 'frame,
     Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
     type DeclarationType = Option<&'frame UIImageDescriptor>;
@@ -821,7 +766,7 @@ impl<'frame, 'application, Event,UserApp> ResolveValue<'frame,'application, Even
 where
     'application: 'frame,
     Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
     type DeclarationType = Color;
@@ -889,7 +834,7 @@ impl<'frame, 'application, Event,UserApp> ResolveValue<'frame,'application, Even
 where
     'application: 'frame,
     Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
     type DeclarationType = String;
@@ -957,7 +902,7 @@ impl<'frame, 'application, Event,UserApp> ResolveValue<'frame, 'application, Eve
 where
     'application: 'frame,
     Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
     type DeclarationType = f32;
@@ -1025,7 +970,7 @@ impl<'frame, 'application, Event,UserApp> ResolveValue<'frame, 'application, Eve
 where
     'application: 'frame,
     Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
     type DeclarationType = u16;
@@ -1093,7 +1038,7 @@ impl<'frame, 'application, Event,UserApp> ResolveValue<'frame, 'application, Eve
 where
     'application: 'frame,
     Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
     type DeclarationType = i16;
@@ -1161,7 +1106,7 @@ impl<'frame, 'application, Event,UserApp> ResolveValue<'frame, 'application, Eve
 where
     'application: 'frame,
     Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
     type DeclarationType = bool;
@@ -1229,7 +1174,7 @@ impl<'frame, 'application, Event,UserApp> ResolveValue<'frame, 'application, Eve
 where
     'application:'frame,
     Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
+    <Event as FromStr>::Err: Debug+Default,
     UserApp: ParserDataAccess<Event>
 {
     type DeclarationType = Event;

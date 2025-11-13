@@ -17,7 +17,7 @@ use wgpu::util::DeviceExt;
 
 use telera_layout::{MeasureText, RenderCommand, Vec2};
 
-use crate::ui_shapes::Shapes;
+use crate::ui_shapes::CustomElement;
 
 pub struct TextLine {
     line: glyphon::Buffer,
@@ -708,7 +708,7 @@ impl UIRenderer {
     (
         &mut self,
         render_commands: Vec<
-            RenderCommand<'render_pass, UIImageDescriptor, Shapes, CustomLayoutSettings>,
+            RenderCommand<'render_pass, UIImageDescriptor, CustomElement, CustomLayoutSettings>,
         >,
         render_pass: &mut wgpu::RenderPass,
         device: &wgpu::Device,
@@ -719,6 +719,8 @@ impl UIRenderer {
         let mut z: f32 = 0.1;
 
         self.begin(render_pass, device, queue);
+
+        //println!("{:#?}", &render_commands);
 
         for command in render_commands {
             match command {
@@ -902,9 +904,8 @@ impl UIRenderer {
                     }
                 }
                 RenderCommand::Custom(shape) => {
-                    //println!("{:?}",shape);
                     match shape.data {
-                        Shapes::Circle => {
+                        CustomElement::Circle => {
                             let mut builder = Path::builder();
                             builder.add_circle(
                                 Point2D::new(
@@ -943,17 +944,17 @@ impl UIRenderer {
                                 self.batch_index_end = self.indices.len() as u32;
                             }
                         }
-                        Shapes::Line{width} => {
+                        CustomElement::Line(line_config) => {
                             let mut builder = Path::builder();
                             builder.begin(
                                 Point2D::new(
-                                    (shape.bounding_box.x+(shape.bounding_box.width/2.0)-(*width/2.0)) * self.dpi_scale,
+                                    (shape.bounding_box.x+(shape.bounding_box.width/2.0)-(line_config.width/2.0)) * self.dpi_scale,
                                     shape.bounding_box.y * self.dpi_scale
                                 )
                             );
                             builder.line_to(
                                 Point2D::new(
-                                    (shape.bounding_box.x+(shape.bounding_box.width/2.0)-(*width/2.0)) * self.dpi_scale,
+                                    (shape.bounding_box.x+(shape.bounding_box.width/2.0)-(line_config.width/2.0)) * self.dpi_scale,
                                     (shape.bounding_box.y+shape.bounding_box.height) * self.dpi_scale
                                 )
                             );
@@ -965,7 +966,7 @@ impl UIRenderer {
                             let mut tessellator = StrokeTessellator::new();
                             if tessellator.tessellate_path(
                                     &path,
-                                    &StrokeOptions::default().with_line_width(*width as f32),
+                                    &StrokeOptions::default().with_line_width(line_config.width as f32),
                                     &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex  | { 
                                         UIVertex {
                                             position: vertex.position().into(),

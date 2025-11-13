@@ -1,17 +1,29 @@
 //#![windows_subsystem = "windows"]
 
+use std::str::FromStr;
+
 use symbol_table::GlobalSymbol;
 use telera_app::*;
-use strum::EnumString;
 
-#[derive(EnumString, Debug, Default, Clone, PartialEq)]
-#[strum(crate = "self::strum")] 
+#[derive(Debug, Default, Clone, PartialEq)]
 enum BasicEvents {
     #[default]
     None,
     SquirrelClicked,
     LoremClicked,
     FileButtonClicked,
+}
+
+impl FromStr for BasicEvents{
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "FileButtonClicked" => Ok(BasicEvents::FileButtonClicked),
+            "SquirrelClicked" => Ok(BasicEvents::SquirrelClicked),
+            "LoremClicked" => Ok(BasicEvents::LoremClicked),
+            _ => Err(())
+        }
+    }
 }
 
 impl EventHandler for BasicEvents{
@@ -38,11 +50,13 @@ fn file_button_clicked_handler(app: &mut BasicApp, _context: Option<EventContext
     app.file_menu_open = !app.file_menu_open;
 }
 
+#[derive(Default)]
 pub struct Document {
     pub title: String,
     pub contents: String,
 }
 
+#[derive(Default)]
 struct BasicApp {
     documents: Vec<Document>,
     selected_document: usize,

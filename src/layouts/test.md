@@ -14,4 +14,8 @@
         - `config`
             - `color` black
             - `grow`
-            - `width` 4
+            - `width` 8
+    - `circle`
+        - `config`
+            - `color` red
+            - `grow`

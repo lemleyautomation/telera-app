@@ -55,7 +55,7 @@ use ui_renderer::UIRenderer;
 use ui_renderer::CustomLayoutSettings;
 pub use ui_renderer::UIImageDescriptor;
 mod ui_shapes;
-use ui_shapes::Shapes;
+use ui_shapes::CustomElement;
 
 use telera_layout::LayoutEngine;
 
@@ -127,7 +127,7 @@ pub struct API{
     ctx: GraphicsContext,
     pub scene_renderer: SceneRenderer,
     ui_renderer: Option<UIRenderer>,
-    pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, Shapes, CustomLayoutSettings>,
+    pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, CustomElement, CustomLayoutSettings>,
     model_ids: HashMap<String, usize>,
     models: Vec<Model>,
     
@@ -282,7 +282,7 @@ where
 impl<UserEvents, UserApp> Application<UserApp, UserEvents>
 where 
     UserEvents: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>,
-    <UserEvents as FromStr>::Err: Debug,
+    <UserEvents as FromStr>::Err: Debug+Default,
     UserApp: App + ParserDataAccess<UserEvents>,
 {
     pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp, watcher: Option<ReadDirectoryChangesWatcher>) -> Self {
@@ -296,7 +296,7 @@ where
             ctx,
             scene_renderer,
             ui_renderer,
-            ui_layout: LayoutEngine::<UIRenderer, UIImageDescriptor, Shapes, CustomLayoutSettings>::new((1.0, 1.0)),
+            ui_layout: LayoutEngine::<UIRenderer, UIImageDescriptor, CustomElement, CustomLayoutSettings>::new((1.0, 1.0)),
             model_ids: HashMap::new(),
             models: Vec::<Model>::new(),
             viewport_lookup: bimap::BiMap::new(),
@@ -397,7 +397,7 @@ impl<UserEvents, UserApp> ApplicationHandler<InternalEvents> for Application<Use
 where 
     UserEvents: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>,
     UserEvents: EventHandler<UserApplication = UserApp>, 
-    <UserEvents as FromStr>::Err: Debug,
+    <UserEvents as FromStr>::Err: Debug+Default,
     UserApp: App + ParserDataAccess<UserEvents>,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -598,7 +598,7 @@ where
 pub fn run<UserEvents, UserApp>(user_application: UserApp)
 where 
     UserEvents: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <UserEvents as FromStr>::Err: Debug,
+    <UserEvents as FromStr>::Err: Debug+Default,
     UserApp: App + ParserDataAccess<UserEvents>,
 {
     let event_loop = match EventLoop::<InternalEvents>::with_user_event().build() {

@@ -8,7 +8,7 @@ use telera_layout::{Color, TextConfig};
 use telera_layout::ElementConfiguration;
 use crate::API;
 
-use crate::ui_shapes::{Shapes};
+use crate::ui_shapes::{CustomElement, LineConfig};
 use crate::ParserDataAccess;
 
 #[derive(Clone)]
@@ -116,7 +116,14 @@ fn recursive_treeview_layout<Event: FromStr+Clone+PartialEq+Debug+EventHandler>(
                     .x_fixed(20.0)
                     .y_grow()
                     .color(Color{r:0.0,g:96.0,b:255.0,a:255.0})
-                    .custom_element(&Shapes::Line{width:2.0})
+                    .custom_element(
+                        &CustomElement::Line(
+                            LineConfig{
+                                width_source: None,
+                                width: 2.0
+                            }
+                        )
+                    )
                 );
                 api.ui_layout.close_element();
 
@@ -158,7 +165,7 @@ fn add_treeview_image_to_layout<Event: FromStr+Clone+PartialEq+Debug+EventHandle
         .y_fixed(20.0)
         .padding_all(0)
         .padding_right(10)
-        .custom_element(&Shapes::Circle)
+        .custom_element(&CustomElement::Circle)
         .end();
     let mut label_config = TextConfig::new()
         .color(black)
