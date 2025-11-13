@@ -4,6 +4,7 @@ use std::{collections::HashMap, fmt::Debug, str::FromStr};
 use symbol_table::GlobalSymbol;
 //use winit::window::Cursor;
 
+use crate::ui_shapes::{LineDirection, Shapes};
 use crate::{ui_toolkit, UIImageDescriptor};
 use crate::EventContext;
 
@@ -83,44 +84,76 @@ where
         let mut events = Vec::<(Event, Option<EventContext>)>::new();
         let pointer = winit::window::CursorIcon::Default;
 
+        api.ui_layout.open_element();
+
+        let config = ElementConfiguration::new()
+            .id("popup")
+            .x_fixed(200.0)
+            .y_fixed(200.0)
+            .color(Color{r:0.0,g:255.0,b:0.0,a:255.0})
+            .padding_all(25)
+            .border_all(2)
+            .radius_all(20.0)
+            .floating()
+            .floating_attach_element_at_center()
+            .floating_attach_to_parent_at_center()
+            .end();
+        api.ui_layout.configure_element(&config);
+
+        api.ui_layout.open_element();
+        let config = ElementConfiguration::new()
+            .color(Color{r:0.0,g:0.0,b:0.0,a:255.0})
+            .x_grow()
+            .y_grow()
+            .custom_element(&Shapes::Line { width: 4.0 })
+            .end();
+        api.ui_layout.configure_element(&config);
+        api.ui_layout.close_element();
+
+        api.ui_layout.close_element();
+
         if let Some(page_commands) = self.pages.get(&page) {
-            let mut command_references = Vec::<&Layout<Event>>::new();
-            for command in page_commands.iter() {
-                command_references.push(command);
-            }
+            println!("{:#?}", page_commands);
+        }
 
-            let mut page_call_stack = HashMap::<GlobalSymbol, &DataSrc<Declaration<Event>>>::new();
-            for command in &command_references {
-                if let Layout::Declaration { name, value } = command {
-                    page_call_stack.insert(*name, value);
-                }
-                else if let Layout::Element(e) = command
-                && let Element::Pointer(_) = e {}
-                else {break}
-            }
+        // if let Some(page_commands) = self.pages.get(&page) {
+        //     let mut command_references = Vec::<&Layout<Event>>::new();
+        //     for command in page_commands.iter() {
+        //         command_references.push(command);
+        //     }
 
-            let (eevents, _pointer) = set_layout(
-                api,
-                &command_references,
-                &self.reusable,
-                Some(&page_call_stack),
-                None,
-                None,
-                None,
-                user_app,
-                events,
-                pointer
-            );
+        //     let mut page_call_stack = HashMap::<GlobalSymbol, &DataSrc<Declaration<Event>>>::new();
+        //     for command in &command_references {
+        //         if let Layout::Declaration { name, value } = command {
+        //             page_call_stack.insert(*name, value);
+        //         }
+        //         else if let Layout::Element(e) = command
+        //         && let Element::Pointer(_) = e {}
+        //         else {break}
+        //     }
 
-            events = eevents;
+        //     let (eevents, _pointer) = set_layout(
+        //         api,
+        //         &command_references,
+        //         &self.reusable,
+        //         Some(&page_call_stack),
+        //         None,
+        //         None,
+        //         None,
+        //         user_app,
+        //         events,
+        //         pointer
+        //     );
 
-            //api.viewports.get_mut(&window_id).as_mut().unwrap().window.set_cursor(Cursor::Icon(pointer));
+        //     events = eevents;
+
+        //     //api.viewports.get_mut(&window_id).as_mut().unwrap().window.set_cursor(Cursor::Icon(pointer));
             
-        }
+        // }
 
-        for (event, context) in events {
-            event.dispatch(user_app, context, api);
-        }
+        // for (event, context) in events {
+        //     event.dispatch(user_app, context, api);
+        // }
     }
 }
 
@@ -160,7 +193,8 @@ where
         Some(text_config) => text_config
     };
 
-    //println!("{:?}", commands);
+    let mut circle_open = false;
+    let mut line_open = false;
 
     #[allow(unused_variables)]
     for (index, command) in commands.iter().enumerate() {
@@ -331,6 +365,44 @@ where
                             api.ui_layout.close_element();
                         }
                     }
+                    Element::CircleOpened { id } => {
+                        nesting_level += 1;
+
+                        if skip.is_none() {
+                            api.ui_layout.open_element();
+                            circle_open = true;
+                            if api.ui_layout.hovered() {
+                                let x = api.ui_layout.get_element_id("hi");
+                            }
+                        }
+                    }
+                    Element::CircleClosed => {
+                        nesting_level -= 1;
+
+                        if skip.is_none() {
+                            circle_open = false;
+                            api.ui_layout.close_element();
+                        }
+                    }
+                    Element::LineOpened { id } => {
+                        nesting_level += 1;
+
+                        if skip.is_none() {
+                            line_open = true;
+                            api.ui_layout.open_element();
+                            if api.ui_layout.hovered() {
+                                let x = api.ui_layout.get_element_id("hi");
+                            }
+                        }
+                    }
+                    Element::LineClosed => {
+                        nesting_level -= 1;
+
+                        if skip.is_none() {
+                            line_open = false;
+                            api.ui_layout.close_element();
+                        }
+                    }
                     Element::ConfigOpened => {
                         nesting_level += 1;
         
@@ -486,7 +558,9 @@ where
                         locals,
                         &list_data,
                         api,
-                        user_app
+                        user_app,
+                        circle_open,
+                        line_open,
                     );
                 }
             }
@@ -506,14 +580,14 @@ fn execute_config<'render_pass, Event, UserApp>(
     list_data: &Option<(GlobalSymbol, usize)>,
     api: &mut API,
     user_app: &UserApp,
+    cirlce_open: bool,
+    line_open: bool,
 )
 where
     Event: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>,
     <Event as FromStr>::Err: Debug,
     UserApp: ParserDataAccess<Event>
 {
-
-
     let mut config = match config {
         None => &mut ElementConfiguration::default(),
         Some(config) => config
@@ -578,8 +652,20 @@ where
         Config::ChildAlignmentYBottom  => config.align_children_y_bottom().parse(),
         Config::Color(color)  => {
             let color = Color::resolve_src(color, locals, user_app, list_data);
-            //println!("{:?}", color);
             config.color(color).parse();
+        }
+        Config::LineWidth(width) => {
+            println!("yes");
+            if line_open {
+                let width = f32::resolve_src(width, locals, user_app, list_data);
+                config.custom_element(&Shapes::Line { width }).parse();
+            }
+        }
+        Config::Radius(_radius) => {
+            println!("no");
+            if cirlce_open {
+                config.custom_element(&Shapes::Circle).parse();
+            }
         }
         Config::RadiusAll(radius)  => config.radius_all(f32::resolve_src(radius, locals, user_app, list_data)).parse(),
         Config::RadiusTopLeft(radius)  => config.radius_top_left(f32::resolve_src(radius, locals, user_app, list_data)).parse(),
@@ -649,7 +735,9 @@ where
                             locals, 
                             list_data, 
                             api, 
-                            user_app
+                            user_app,
+                            cirlce_open,
+                            line_open,
                         );
                     }
                 }

@@ -133,6 +133,44 @@ where <Event as FromStr>::Err: Debug
 
                 layout_commands.push(Layout::Element(Element::ElementClosed));
             }
+            "circle" => {
+                layout_commands.push(Layout::Element(Element::CircleOpened { id: None }));
+                layout_commands.push(Layout::Element(Element::ConfigOpened));
+                if let Some(element_name) = element_declaration.children.get(1)
+                && let Node::Text(element_name) = element_name {
+                    layout_commands.push(Layout::Config(Config::Id(DataSrc::Static(element_name.value.trim().to_string()))));
+                }
+                if let Some(config) = element.children.get(1)
+                && let Node::List(configs) = config
+                && let Some(configs) = configs.children.get(0)
+                && let Node::ListItem(configs) = configs
+                && let Some(configs) = configs.children.get(1)
+                && let Node::List(config_commands) = configs {
+                    let mut layout_config_commands = process_configs(&config_commands);
+                    layout_commands.append(&mut layout_config_commands);
+                }
+                layout_commands.push(Layout::Element(Element::ConfigClosed));
+                layout_commands.push(Layout::Element(Element::CircleClosed));
+            }
+            "line" => {
+                layout_commands.push(Layout::Element(Element::LineOpened { id: None }));
+                layout_commands.push(Layout::Element(Element::ConfigOpened));
+                if let Some(element_name) = element_declaration.children.get(1)
+                && let Node::Text(element_name) = element_name {
+                    layout_commands.push(Layout::Config(Config::Id(DataSrc::Static(element_name.value.trim().to_string()))));
+                }
+                if let Some(config) = element.children.get(1)
+                && let Node::List(configs) = config
+                && let Some(configs) = configs.children.get(0)
+                && let Node::ListItem(configs) = configs
+                && let Some(configs) = configs.children.get(1)
+                && let Node::List(config_commands) = configs {
+                    let mut layout_config_commands = process_configs(&config_commands);
+                    layout_commands.append(&mut layout_config_commands);
+                }
+                layout_commands.push(Layout::Element(Element::ConfigClosed));
+                layout_commands.push(Layout::Element(Element::LineClosed));
+            }
             "grow" => {
                 layout_commands.push(Layout::Element(Element::ElementOpened { id: None }));
                 layout_commands.push(Layout::Element(Element::ConfigOpened));
@@ -304,6 +342,7 @@ where <Event as FromStr>::Err: Debug
     layout_commands
 }
 
+#[derive(Debug)]
 enum AvailableParameters<T>{
     None,
     AStatic(T),
@@ -770,6 +809,20 @@ fn process_configs<Event: Clone+Debug+PartialEq+FromStr>(configuration_set: &Lis
                     match parameter_check::<Color>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => configs.push(Layout::Config(Config::Color(DataSrc::Dynamic(a)))),
                         AvailableParameters::SingleStatic(a) => configs.push(Layout::Config(Config::Color(DataSrc::Static(a)))),
+                        _ => {}
+                    }
+                }
+                "width" => {
+                    match parameter_check::<f32>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Config(Config::LineWidth(DataSrc::Dynamic(a)))),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Config(Config::LineWidth(DataSrc::Static(a)))),
+                        _ => {}
+                    }
+                }
+                "radius" => {
+                    match parameter_check::<f32>(config, "", "") {
+                        AvailableParameters::SingleDynamic(a) => configs.push(Layout::Config(Config::Radius(DataSrc::Dynamic(a)))),
+                        AvailableParameters::SingleStatic(a) => configs.push(Layout::Config(Config::Radius(DataSrc::Static(a)))),
                         _ => {}
                     }
                 }

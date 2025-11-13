@@ -27,6 +27,12 @@ pub struct TextLine {
     bounds: Option<(UIPosition, UIPosition)>,
 }
 
+#[derive(Debug)]
+pub enum CustomLayoutSettings {
+    Radii{top_left:f32,top_right:f32,bottom_left:f32,bottom_right:f32},
+    Inverted
+}
+
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct UIColor {
@@ -702,7 +708,7 @@ impl UIRenderer {
     (
         &mut self,
         render_commands: Vec<
-            RenderCommand<'render_pass, UIImageDescriptor, Shapes, ()>,
+            RenderCommand<'render_pass, UIImageDescriptor, Shapes, CustomLayoutSettings>,
         >,
         render_pass: &mut wgpu::RenderPass,
         device: &wgpu::Device,
@@ -710,7 +716,7 @@ impl UIRenderer {
         surface_config: &wgpu::SurfaceConfiguration,
     ) 
     {
-        let mut depth: f32 = 0.1;
+        let mut z: f32 = 0.1;
 
         self.begin(render_pass, device, queue);
 
@@ -749,7 +755,7 @@ impl UIRenderer {
                                     position: UIPosition { 
                                         x: vertex.position().x,
                                         y: vertex.position().y,
-                                        z: depth
+                                        z
                                     },
                                     texture: 0,
                                     color: UIColor {
@@ -822,14 +828,14 @@ impl UIRenderer {
                     UIPosition {
                         x: t.bounding_box.x * self.dpi_scale,
                         y: t.bounding_box.y * self.dpi_scale,
-                        z: depth,
+                        z,
                     },
                     match self.scissor_active {
                         true => Some((self.scissor_position.clone(), self.scissor_size.clone())),
                         false => None,
                     },
                     Color::rgb(t.color.r as u8, t.color.g as u8, t.color.b as u8),
-                    depth,
+                    z,
                 ),
                 RenderCommand::ScissorStart(b) => self.begin_scissor(
                     UIPosition::xy(b.x, b.y) * self.dpi_scale,
@@ -837,25 +843,35 @@ impl UIRenderer {
                 ),
                 RenderCommand::ScissorEnd => self.end_scissor(),
                 RenderCommand::Image(image) => {
+                    let ipx = image.bounding_box.x * self.dpi_scale;
+                    let ipy = image.bounding_box.y * self.dpi_scale;
+                    let isx = image.bounding_box.width * self.dpi_scale;
+                    let isy = image.bounding_box.height * self.dpi_scale;
+                    let radii = if let Some(settings) = image.custom_layout_settings
+                    && let CustomLayoutSettings::Radii { top_left, top_right, bottom_left, bottom_right } = settings {
+                        BorderRadii {
+                            top_left: top_left * self.dpi_scale,
+                            top_right: top_right * self.dpi_scale,
+                            bottom_left: bottom_left * self.dpi_scale,
+                            bottom_right: bottom_right * self.dpi_scale
+                        }
+                    }
+                    else { 
+                        BorderRadii {
+                            top_left: 0.0 * self.dpi_scale,
+                            top_right: 0.0 * self.dpi_scale,
+                            bottom_left: 0.0 * self.dpi_scale,
+                            bottom_right: 0.0 * self.dpi_scale
+                        }
+                    };
                     
                     let mut builder = Path::builder();
                     builder.add_rounded_rectangle(
                         &Box2D::from_origin_and_size(
-                                Point2D::new(
-                                    image.bounding_box.x * self.dpi_scale,
-                                    image.bounding_box.y * self.dpi_scale
-                                ), 
-                                Size2D::new(
-                                    image.bounding_box.width * self.dpi_scale,
-                                    image.bounding_box.height * self.dpi_scale
-                                )
+                                Point2D::new(ipx, ipy), 
+                                Size2D::new(isx, isy)
                             ),
-                            &BorderRadii {
-                                top_left: 10.0 * self.dpi_scale,
-                                top_right: 10.0 * self.dpi_scale,
-                                bottom_left: 10.0 * self.dpi_scale,
-                                bottom_right: 10.0 * self.dpi_scale
-                            },
+                            &radii,
                         path::Winding::Negative
                     );
                     let path = builder.build();
@@ -866,23 +882,14 @@ impl UIRenderer {
                             &path,
                             &FillOptions::default().with_tolerance(0.1).with_fill_rule(lyon::tessellation::FillRule::EvenOdd),
                             &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| {
-                                // example for pixel to uv mapping:
-                                //
-                                // let t = (vertex.position() - rect.min) / rect.size();
-                                // uv = uv_rect.min + uv_rect.size() * t;
-                                //
+                                let x = vertex.position().x;
+                                let y = vertex.position().y;
+                                let r = (x - ipx) / isx;
+                                let g = (y - ipy) / isy;
                                 UIVertex {
-                                    position: UIPosition { 
-                                        x: vertex.position().x,
-                                        y: vertex.position().y,
-                                        z: depth
-                                    },
+                                    position: UIPosition {x,y,z},
                                     texture: 1,
-                                    color: UIColor {
-                                        r: vertex.position().x,
-                                        g: vertex.position().y,
-                                        b: 0.0,
-                                    },
+                                    color: UIColor {r,g,b: 0.}
                                 }
                             }),
                         ).is_ok() {
@@ -894,63 +901,94 @@ impl UIRenderer {
                         self.end_atlas();
                     }
                 }
-                RenderCommand::Custom(_shape) => {
-                    // match shape.data {
-                    //     Shapes::Circle => {
-                    //         self.draw_filled_rectangle(
-                    //             UIPosition {
-                    //                 x: shape.bounding_box.x * self.dpi_scale,
-                    //                 y: shape.bounding_box.y * self.dpi_scale,
-                    //                 z: depth,
-                    //             },
-                    //             UIPosition {
-                    //                 x: shape.bounding_box.width * self.dpi_scale,
-                    //                 y: shape.bounding_box.height * self.dpi_scale,
-                    //                 z: depth,
-                    //             },
-                    //             UIColor {
-                    //                 r: shape.background_color.r / 255.0,
-                    //                 g: shape.background_color.g / 255.0,
-                    //                 b: shape.background_color.b / 255.0,
-                    //             },
-                    //             UICornerRadii {
-                    //                 top_left: (shape.bounding_box.width/2.0) * self.dpi_scale,
-                    //                 top_right: (shape.bounding_box.width/2.0) * self.dpi_scale,
-                    //                 bottom_left: (shape.bounding_box.width/2.0) * self.dpi_scale,
-                    //                 bottom_right: (shape.bounding_box.width/2.0) * self.dpi_scale,
-                    //             },
-                    //         );
-                    //     }
-                    //     Shapes::Line{width} => {
-                    //         self.draw_filled_rectangle(
-                    //             UIPosition {
-                    //                 x: (shape.bounding_box.x+(shape.bounding_box.width/2.0)-(*width/2.0)) * self.dpi_scale,
-                    //                 y: shape.bounding_box.y * self.dpi_scale,
-                    //                 z: depth,
-                    //             },
-                    //             UIPosition {
-                    //                 x: (*width) * self.dpi_scale,
-                    //                 y: shape.bounding_box.height * self.dpi_scale,
-                    //                 z: depth,
-                    //             },
-                    //             UIColor {
-                    //                 r: shape.background_color.r / 255.0,
-                    //                 g: shape.background_color.g / 255.0,
-                    //                 b: shape.background_color.b / 255.0,
-                    //             },
-                    //             UICornerRadii {
-                    //                 top_left: 0.0,
-                    //                 top_right: 0.0,
-                    //                 bottom_left: 0.0,
-                    //                 bottom_right: 0.0,
-                    //             },
-                    //         );
-                    //     }
-                    // }
+                RenderCommand::Custom(shape) => {
+                    //println!("{:?}",shape);
+                    match shape.data {
+                        Shapes::Circle => {
+                            let mut builder = Path::builder();
+                            builder.add_circle(
+                                Point2D::new(
+                                    (shape.bounding_box.x + (shape.bounding_box.width/2.0)) * self.dpi_scale,
+                                    (shape.bounding_box.y + (shape.bounding_box.height/2.0)) * self.dpi_scale
+                                ), 
+                                shape.bounding_box.width/2.0,
+                                path::Winding::Negative
+                            );
+                            let path = builder.build();
+
+                            let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
+                            let mut tessellator = FillTessellator::new();
+                            if tessellator.tessellate_path(
+                                    &path,
+                                    &FillOptions::default().with_tolerance(0.1).with_fill_rule(lyon::tessellation::FillRule::EvenOdd),
+                                    &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| { 
+                                        UIVertex {
+                                            position: UIPosition { 
+                                                x: vertex.position().x,
+                                                y: vertex.position().y,
+                                                z
+                                            },
+                                            texture: 0,
+                                            color: UIColor {
+                                                r: shape.background_color.r / 255.0,
+                                                g: shape.background_color.g / 255.0,
+                                                b: shape.background_color.b / 255.0,
+                                            },
+                                        }
+                                    }),
+                                ).is_ok() {
+                                let mut offset_indices = geometry.indices.iter().map(|index|{index+self.vertices.len() as u32}).collect::<Vec::<u32>>();
+                                self.vertices.append(&mut geometry.vertices);
+                                self.indices.append(&mut offset_indices);
+                                self.batch_index_end = self.indices.len() as u32;
+                            }
+                        }
+                        Shapes::Line{width} => {
+                            let mut builder = Path::builder();
+                            builder.begin(
+                                Point2D::new(
+                                    (shape.bounding_box.x+(shape.bounding_box.width/2.0)-(*width/2.0)) * self.dpi_scale,
+                                    shape.bounding_box.y * self.dpi_scale
+                                )
+                            );
+                            builder.line_to(
+                                Point2D::new(
+                                    (shape.bounding_box.x+(shape.bounding_box.width/2.0)-(*width/2.0)) * self.dpi_scale,
+                                    (shape.bounding_box.y+shape.bounding_box.height) * self.dpi_scale
+                                )
+                            );
+                            builder.end(true);
+                            
+                            let path = builder.build();
+
+                            let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
+                            let mut tessellator = StrokeTessellator::new();
+                            if tessellator.tessellate_path(
+                                    &path,
+                                    &StrokeOptions::default().with_line_width(*width as f32),
+                                    &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex  | { 
+                                        UIVertex {
+                                            position: vertex.position().into(),
+                                            texture: 0,
+                                            color: UIColor {
+                                                r: shape.background_color.r / 255.0,
+                                                g: shape.background_color.g / 255.0,
+                                                b: shape.background_color.b / 255.0,
+                                            }
+                                        }
+                                    }),
+                                ).is_ok() {
+                                let mut offset_indices = geometry.indices.iter().map(|index|{index+self.vertices.len() as u32}).collect::<Vec::<u32>>();
+                                self.vertices.append(&mut geometry.vertices);
+                                self.indices.append(&mut offset_indices);
+                                self.batch_index_end = self.indices.len() as u32;
+                            }
+                        }
+                    }
                 }
                 RenderCommand::None => {}
             }
-            depth -= 0.0001;
+            z -= 0.0001;
         }
 
         self.end(render_pass, &device, &queue, &surface_config);
@@ -1057,80 +1095,6 @@ impl UIRenderer {
             self.atlas_map.insert(name.clone(), new_atlas);
             self.active_atlas = name;
         }
-    }
-
-    pub fn draw_image(
-        &mut self,
-        image: &UIImageDescriptor,
-        mut position: UIPosition,
-        size: UIPosition,
-    ) {
-        self.bind_atlas(&image.atlas);
-
-        let positions = [
-            position.clone(),
-            position.with_y(size.y),
-            position + size,
-            position.with_x(size.x),
-        ];
-
-        self.vertices.push(UIVertex {
-            position: positions[0],
-            texture: 1,
-            color: UIColor {
-                r: image.u1,
-                g: image.v1,
-                b: 0.0,
-            },
-        });
-        self.vertices.push(UIVertex {
-            position: positions[1],
-            texture: 1,
-            color: UIColor {
-                r: image.u1,
-                g: image.v2,
-                b: 0.0,
-            },
-        });
-        self.vertices.push(UIVertex {
-            position: positions[2],
-            texture: 1,
-            color: UIColor {
-                r: image.u2,
-                g: image.v2,
-                b: 0.0,
-            },
-        });
-        self.vertices.push(UIVertex {
-            position: positions[0],
-            texture: 1,
-            color: UIColor {
-                r: image.u1,
-                g: image.v1,
-                b: 0.0,
-            },
-        });
-        self.vertices.push(UIVertex {
-            position: positions[2],
-            texture: 1,
-            color: UIColor {
-                r: image.u2,
-                g: image.v2,
-                b: 0.0,
-            },
-        });
-        self.vertices.push(UIVertex {
-            position: positions[3],
-            texture: 1,
-            color: UIColor {
-                r: image.u2,
-                g: image.v1,
-                b: 0.0,
-            },
-        });
-        self.batch_index_end += 6;
-
-        self.end_atlas();
     }
 }
 

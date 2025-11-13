@@ -44,6 +44,12 @@ where
     TextBoxOpened,
     TextBoxClosed(DataSrc<String>),
 
+    CircleOpened{id: Option<DataSrc<String>>},
+    CircleClosed,
+
+    LineOpened{id: Option<f32>},
+    LineClosed,
+
     // if not
     IfOpened{condition: GlobalSymbol},
     IfNotOpened{condition: GlobalSymbol},
@@ -145,6 +151,7 @@ pub enum Config{
 
     Color(DataSrc<Color>),
 
+    Radius(DataSrc<f32>),
     RadiusAll(DataSrc<f32>),
     RadiusTopLeft(DataSrc<f32>),
     RadiusTopRight(DataSrc<f32>),
@@ -188,6 +195,8 @@ pub enum Config{
     FloatingPointerPassThrough,
     FloatingAttachElementToElement{other_element_id:String},
     FloatingAttachElementToRoot,
+
+    LineWidth(DataSrc<f32>),
 
     Use{name: GlobalSymbol},
 

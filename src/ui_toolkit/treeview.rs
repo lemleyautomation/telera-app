@@ -8,7 +8,7 @@ use telera_layout::{Color, TextConfig};
 use telera_layout::ElementConfiguration;
 use crate::API;
 
-use crate::ui_shapes::Shapes;
+use crate::ui_shapes::{Shapes};
 use crate::ParserDataAccess;
 
 #[derive(Clone)]

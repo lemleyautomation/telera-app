@@ -52,6 +52,7 @@ use viewport::BuildViewport;
 
 mod ui_renderer;
 use ui_renderer::UIRenderer;
+use ui_renderer::CustomLayoutSettings;
 pub use ui_renderer::UIImageDescriptor;
 mod ui_shapes;
 use ui_shapes::Shapes;
@@ -126,7 +127,7 @@ pub struct API{
     ctx: GraphicsContext,
     pub scene_renderer: SceneRenderer,
     ui_renderer: Option<UIRenderer>,
-    pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, Shapes, ()>,
+    pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, Shapes, CustomLayoutSettings>,
     model_ids: HashMap<String, usize>,
     models: Vec<Model>,
     
@@ -295,7 +296,7 @@ where
             ctx,
             scene_renderer,
             ui_renderer,
-            ui_layout: LayoutEngine::<UIRenderer, UIImageDescriptor, Shapes, ()>::new((1.0, 1.0)),
+            ui_layout: LayoutEngine::<UIRenderer, UIImageDescriptor, Shapes, CustomLayoutSettings>::new((1.0, 1.0)),
             model_ids: HashMap::new(),
             models: Vec::<Model>::new(),
             viewport_lookup: bimap::BiMap::new(),
