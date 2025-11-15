@@ -4,14 +4,20 @@ use std::{collections::HashMap, fmt::Debug, str::FromStr};
 use symbol_table::GlobalSymbol;
 //use winit::window::Cursor;
 
-use crate::ui_shapes::{CustomElement};
-use crate::{ui_toolkit, UIImageDescriptor};
-use crate::EventContext;
-
-use crate::EventHandler;
-use crate::API;
-
-use crate::layout_types::*;
+use crate::{
+    UIImageDescriptor,
+    ParserDataAccess,
+    Layout,
+    DataSrc,
+    Declaration,
+    Element,
+    Config,
+    CustomElement,
+    ui_toolkit::treeview::treeview,
+    API,
+    EventContext,
+    EventHandler
+};
 
 use telera_layout::{Color, ElementConfiguration, TextConfig};
 
@@ -79,7 +85,8 @@ where
         window_id: winit::window::WindowId,
         api: &mut API,
         user_app: &mut UserApp,
-    ) where <Event as FromStr>::Err: Default {
+    ) -> Result<Vec::<(Event, Option<EventContext>)>, ()>
+    where <Event as FromStr>::Err: Default  {
         if let Some(viewport) = api.viewports.get_mut(&window_id)
         && let Some(layout_commands) = self.pages.get_mut(&viewport.page) {
 
@@ -98,10 +105,9 @@ where
                 winit::window::CursorIcon::Default
             );
 
-            for (event, context) in events {
-                event.dispatch(user_app, context, api);
-            }
+            return Ok(events)
         }
+        Err(())
     }
 }
 
@@ -449,7 +455,7 @@ where
 
                         if skip.is_none() {
                             collect_declarations = false;
-                            events = ui_toolkit::treeview::treeview(src, &list_data, api, user_app, events);
+                            events = treeview(src, &list_data, api, user_app, events);
                         }
                     }
                     Element::TextBoxOpened => {

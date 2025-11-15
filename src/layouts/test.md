@@ -1,4 +1,4 @@
-# Main
+# testing
 - `element` popup
     - `config`
         - `width-fixed` 200
@@ -12,10 +12,6 @@
             - `attatch-parent` center
     - `line`
         - `config`
-            - `color` black
             - `grow`
-            - `width` 8
-    - `circle`
-        - `config`
             - `color` red
-            - `grow`
+            - `width` 5

@@ -1,10 +1,18 @@
 use wgpu::util::DeviceExt;
 
-use crate::camera_controller::{Camera, CameraController, CameraUniform};
-
-use crate::model::{Model, Vertex};
-use crate::texture::Texture;
-use crate::Transform;
+use crate::{
+    graphics::{
+        camera_controller::{
+            Camera,
+            CameraController,
+            CameraUniform
+        },
+        model::Vertex,
+    },
+    texture::Texture,
+    Model,
+    Transform
+};
 
 pub struct SceneRenderer {
     pub camera_controller: CameraController,

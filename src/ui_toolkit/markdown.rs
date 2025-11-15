@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
 use markdown::mdast::{List, Node, Paragraph};
 use symbol_table::GlobalSymbol;
-use crate::{Config, DataSrc, Declaration, Element, Layout, ui_shapes::{CustomElement, LineConfig}};
+use crate::{Config, CustomElement, DataSrc, Declaration, Element, Layout, ui_toolkit::ui_shapes::LineConfig};
 use telera_layout::Color;
 
 #[derive(Debug)]
@@ -146,7 +146,7 @@ where <Event as FromStr>::Err: Debug+Default
                 && let Node::ListItem(configs) = configs
                 && let Some(configs) = configs.children.get(1)
                 && let Node::List(config_commands) = configs {
-                    let mut custom_element = crate::ui_shapes::CustomElement::Circle;
+                    let mut custom_element = CustomElement::Circle;
                     let mut layout_config_commands = process_configs(&config_commands, &mut Some(&mut custom_element));
                     layout_commands.append(&mut layout_config_commands);
                     layout_commands.push(Layout::Config(Config::CustomElement(custom_element)));
@@ -621,7 +621,7 @@ fn process_variable<Event: Clone+Debug+Default+PartialEq+FromStr>(declaration: &
     }
 }
 
-fn process_configs<Event: Clone+Debug+Default+PartialEq+FromStr>(configuration_set: &List, custom_element: &mut Option<&mut crate::ui_shapes::CustomElement>) -> Vec<Layout<Event>> {
+fn process_configs<Event: Clone+Debug+Default+PartialEq+FromStr>(configuration_set: &List, custom_element: &mut Option<&mut CustomElement>) -> Vec<Layout<Event>> {
     let mut configs = Vec::new();
 
     for configuration_item in &configuration_set.children {
@@ -822,7 +822,7 @@ fn process_configs<Event: Clone+Debug+Default+PartialEq+FromStr>(configuration_s
                 }
                 "width" => {
                     if let Some(custom_element) = custom_element
-                    && let crate::ui_shapes::CustomElement::Line(line_config) = custom_element {
+                    && let CustomElement::Line(line_config) = custom_element {
                         match parameter_check::<f32>(config, "", "") {
                             AvailableParameters::SingleDynamic(a) => line_config.width_source = Some(a),
                             AvailableParameters::SingleStatic(a) => line_config.width = a,

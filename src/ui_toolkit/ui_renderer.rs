@@ -17,7 +17,7 @@ use wgpu::util::DeviceExt;
 
 use telera_layout::{MeasureText, RenderCommand, Vec2};
 
-use crate::ui_shapes::CustomElement;
+use crate::ui_toolkit::ui_shapes::CustomElement;
 
 pub struct TextLine {
     line: glyphon::Buffer,

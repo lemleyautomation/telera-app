@@ -1,14 +1,11 @@
 use std::str::FromStr;
 use std::fmt::Debug;
 
-use crate::{EventContext, EventHandler};
-
 use symbol_table::GlobalSymbol;
 use telera_layout::{Color, TextConfig};
 use telera_layout::ElementConfiguration;
-use crate::API;
 
-use crate::ParserDataAccess;
+use crate::{ParserDataAccess, API, EventContext, EventHandler};
 
 const DEFAULT_TEXT: &str = "";
 

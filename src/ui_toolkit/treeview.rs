@@ -1,14 +1,11 @@
 use std::str::FromStr;
 use std::fmt::Debug;
 
-use crate::{EventContext, EventHandler};
-
 use symbol_table::GlobalSymbol;
 use telera_layout::{Color, TextConfig};
 use telera_layout::ElementConfiguration;
-use crate::API;
 
-use crate::ui_shapes::{CustomElement, LineConfig};
+use crate::{CustomElement, ui_toolkit::ui_shapes::LineConfig, API, EventContext, EventHandler};
 use crate::ParserDataAccess;
 
 #[derive(Clone)]

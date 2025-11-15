@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 telera_macros = { path = "telera_macros" }
 telera-layout = { path = "../telera-layout"}
-winit = "0.30.9"
+winit = "0.30.12"
 rfd = "0.15.3"
 wgpu = "24.0.1"
 env_logger = "0.9"

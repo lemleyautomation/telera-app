@@ -1,6 +1,6 @@
 use wgpu::{Device, Queue, RenderPass, SurfaceConfiguration};
 
-use crate::viewport::Viewport;
+use crate::graphics::viewport::Viewport;
 
 pub struct GraphicsContext {
     pub instance: wgpu::Instance,
@@ -46,8 +46,8 @@ impl GraphicsContext {
     pub fn render<
         F: for<'a, 'b> FnOnce(&'b mut RenderPass<'a>, &Device, &Queue, &SurfaceConfiguration),
     >(
-        &mut self,
-        view_port: &mut Viewport,
+        &self,
+        view_port: &Viewport,
         multi_sample_count: u32,
         render_middleware: F,
     ) -> Result<(), wgpu::SurfaceError> {

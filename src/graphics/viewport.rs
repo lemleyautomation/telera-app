@@ -4,9 +4,11 @@ use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes};
 
-use crate::depth_texture::DepthTexture;
-use crate::graphics_context::GraphicsContext;
-use crate::multi_sample_texture::MultiSampleTexture;
+use crate::graphics::{
+    depth_texture::DepthTexture,
+    graphics_context::GraphicsContext,
+    multi_sample_texture::MultiSampleTexture,
+};
 
 pub struct Viewport {
     pub window: Arc<Window>,
@@ -97,7 +99,7 @@ impl Viewport {
                 MultiSampleTexture::new(&device, &self.config, multi_sample_count);
         }
     }
-    pub fn get_current_texture(&mut self) -> wgpu::SurfaceTexture {
+    pub fn get_current_texture(&self) -> wgpu::SurfaceTexture {
         self.surface
             .get_current_texture()
             .expect("Failed to acquire next swap chain texture")
