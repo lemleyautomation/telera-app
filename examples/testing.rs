@@ -8,19 +8,21 @@ enum BasicEvents {
     None,
 }
 
-impl std::str::FromStr for BasicEvents{
+impl std::str::FromStr for BasicEvents {
     type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            _ => Err(())
-        }
+    fn from_str(_s: &str) -> Result<Self, Self::Err> {
+        Ok(BasicEvents::None)
     }
 }
 
 impl EventHandler for BasicEvents {
     type UserApplication = BasicApp;
-    fn dispatch(&self, _app: &mut Self::UserApplication, _context: Option<EventContext>, _api: &mut API) {
-        
+    fn dispatch(
+        &self,
+        _app: &mut Self::UserApplication,
+        _context: Option<EventContext>,
+        _api: &mut API,
+    ) {
     }
 }
 
@@ -44,12 +46,10 @@ impl App for BasicApp {
     }
 }
 
-impl ParserDataAccess<BasicEvents> for BasicApp {
-    
-}
+impl ParserDataAccess<BasicEvents> for BasicApp {}
 
 fn main() {
-    let app = BasicApp { };
+    let app = BasicApp {};
 
     run::<BasicEvents, BasicApp>(app);
 }
