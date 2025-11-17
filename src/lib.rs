@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 #[cfg(target_os = "windows")]
@@ -56,9 +56,10 @@ pub enum APIError {
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 enum InternalEvents {
     Hi,
-    RebuildLayout(PathBuf),
+    RebuildLayout(String),
 }
 
 #[derive(Clone, Default)]
@@ -114,10 +115,13 @@ pub trait EventHandler {
 
 #[allow(unused_variables)]
 pub trait App {
+    /// called before Graphics card is initiallized.
+    /// if the user doesn't implement this function,
+    /// a default window of 800x600 will be created
     fn initial_window(&self) -> (WindowAttributes, String) {
         (
             winit::window::Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)),
-            "Main".to_string(),
+            "testing".to_string(),
         )
     }
     /// called once before start
@@ -134,7 +138,9 @@ pub trait App {
 pub struct API {
     staged_windows: Vec<(String, String, WindowAttributes)>,
 
+    #[warn(dead_code)]
     instance: wgpu::Instance,
+    #[warn(dead_code)]
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -245,7 +251,14 @@ impl API {
             FromStr + Debug + Default + Clone + PartialEq + EventHandler<UserApplication = UserApp>,
         <UserEvents as FromStr>::Err: Debug + Default,
     {
+        //println!("attempting viewport redraw");
+        //let x = self.viewports.keys();
+        //println!(
+        //    "available viewports: {:?}, requested viewport: {:?}",
+        //    x, window_id
+        //);
         let ui_renderer = if let Some(viewport) = self.viewports.get_mut(&window_id) {
+            //println!("UI renderer good");
             let size: (f32, f32) = viewport.window.inner_size().into();
             self.dpi_scale = viewport.window.scale_factor() as f32;
 
@@ -277,34 +290,119 @@ impl API {
 
         if let Some(ui_renderer) = ui_renderer {
             self.ui_layout.begin_layout(ui_renderer);
-
+            //println!("beginning UI layout");
             if let Ok(events) = layout_binder.set_page(window_id, self, user_application) {
                 for (event, event_context) in events.iter() {
                     event.dispatch(user_application, event_context.clone(), self);
                 }
+                //println!("UI layout successful");
             }
 
             let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
 
             if let Some(viewport) = self.viewports.get_mut(&window_id) {
-                self.ctx
-                    .render(
-                        viewport,
-                        MULTI_SAMPLE_COUNT,
-                        |render_pass, device, queue, config| {
-                            self.scene_renderer
-                                .render(&mut self.models, render_pass, queue);
+                let drawable = viewport.get_current_texture();
+                //println!("render surface acquired");
+                let mut command_encoder =
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("Render Encoder"),
+                        });
 
-                            ui_renderer.render_layout(
-                                render_commands,
-                                render_pass,
-                                device,
-                                queue,
-                                config,
-                            );
-                        },
-                    )
-                    .unwrap();
+                if MULTI_SAMPLE_COUNT == 1 {
+                    //println!("beginning render pass");
+                    let mut render_pass: wgpu::RenderPass =
+                        command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("RenderPass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &drawable
+                                    .texture
+                                    .create_view(&wgpu::TextureViewDescriptor::default()), //&view_port.multi_sample_texture.view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: 0.15,
+                                        g: 0.15,
+                                        b: 0.15,
+                                        a: 1.0,
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view: &viewport.depth_texture.view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(1.0),
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                    stencil_ops: None,
+                                },
+                            ),
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                        });
+
+                    self.scene_renderer
+                        .render(&mut self.models, &mut render_pass, &self.queue);
+
+                    ui_renderer.render_layout(
+                        render_commands,
+                        &mut render_pass,
+                        &self.device,
+                        &self.queue,
+                        &viewport.surface_config,
+                    );
+                    //println!("frame rendreed");
+                } else {
+                    let mut render_pass: wgpu::RenderPass =
+                        command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("RenderPass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &viewport.multi_sample_texture.view,
+                                resolve_target: Some(
+                                    &drawable
+                                        .texture
+                                        .create_view(&wgpu::TextureViewDescriptor::default()),
+                                ),
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: 1.0,
+                                        g: 1.0,
+                                        b: 1.0,
+                                        a: 1.0,
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view: &viewport.depth_texture.view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(1.0),
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                    stencil_ops: None,
+                                },
+                            ),
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                        });
+
+                    self.scene_renderer
+                        .render(&mut self.models, &mut render_pass, &self.queue);
+
+                    ui_renderer.render_layout(
+                        render_commands,
+                        &mut render_pass,
+                        &self.device,
+                        &self.queue,
+                        &viewport.surface_config,
+                    );
+                }
+
+                self.queue.submit(std::iter::once(command_encoder.finish()));
+                drawable.present();
             }
 
             self.ui_renderer = Some(ui_renderer);
@@ -454,9 +552,23 @@ where
         user_application: UserApp,
         watcher: Option<DirectoryWatcher>,
     ) -> Self {
-        let mut layout_binder = Binder::new();
+        let layout_binder = Binder::new();
 
-        let entries = std::fs::read_dir("src/layouts").unwrap_or_else(|e| {
+        let mut application = Application {
+            layout_binder,
+            core: None,
+            app_events,
+            user_application,
+            watcher,
+        };
+
+        application.load_layouts("src/layouts".to_string());
+
+        application
+    }
+
+    fn load_layouts(&mut self, dir: String) {
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
             eprintln!("Error reading directory: {}", e);
             std::process::exit(1);
         });
@@ -470,20 +582,12 @@ where
                     && let Ok((page_name, page_layout, reusables)) =
                         process_layout::<UserEvents>(file)
                 {
-                    layout_binder.add_page(&page_name, page_layout);
+                    self.layout_binder.add_page(&page_name, page_layout);
                     for (name, reusable) in reusables {
-                        layout_binder.add_reusable(&name, reusable);
+                        self.layout_binder.add_reusable(&name, reusable);
                     }
                 }
             }
-        }
-
-        Application {
-            layout_binder,
-            core: None,
-            app_events,
-            user_application,
-            watcher,
         }
     }
 }
@@ -497,22 +601,27 @@ where
     UserApp: App + ParserDataAccess<UserEvents>,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        //println!("building context");
         if self.core.is_none() {
             let (new_window, window_name) = self.user_application.initial_window();
 
             if let Ok(window) = event_loop.create_window(new_window) {
+                //println!("window created");
                 let window_id = window.id();
                 let window = Arc::new(window);
                 let instance = wgpu::Instance::default();
                 if let Ok(surface) = instance.create_surface(window.clone()) {
+                    //println!("render surface created");
                     let adapter_options = wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        power_preference: wgpu::PowerPreference::default(),
                         compatible_surface: Some(&surface),
-                        force_fallback_adapter: true,
+                        force_fallback_adapter: false,
                     };
+                    //println!("requesting adapater context");
                     if let Some(adapter) =
                         pollster::block_on(instance.request_adapter(&adapter_options))
                     {
+                        //println!("adapter context established");
                         let device_descriptor = wgpu::DeviceDescriptor {
                             label: Some("main device"),
                             required_features: wgpu::Features::empty(),
@@ -522,11 +631,13 @@ where
                         if let Ok((device, queue)) =
                             pollster::block_on(adapter.request_device(&device_descriptor, None))
                         {
+                            //println!("device connection established");
                             let size = window.inner_size();
                             let surface_capabilities = surface.get_capabilities(&adapter);
                             if let Some(surface_format) =
                                 surface_capabilities.formats.iter().find(|f| f.is_srgb())
                             {
+                                //println!("context established, opening window");
                                 let surface_config = wgpu::SurfaceConfiguration {
                                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                                     format: *surface_format,
@@ -538,6 +649,7 @@ where
                                     view_formats: vec![],
                                 };
                                 surface.configure(&device, &surface_config);
+                                //println!("surface configured");
                                 let depth_texture =
                                     DepthTexture::new(&device, &surface_config, MULTI_SAMPLE_COUNT);
                                 let multi_sample_texture = MultiSampleTexture::new(
@@ -545,13 +657,14 @@ where
                                     &surface_config,
                                     MULTI_SAMPLE_COUNT,
                                 );
-
+                                //println!("depth texture created");
                                 let mut scene_renderer = SceneRenderer::new(&device);
                                 scene_renderer.build_shaders(
                                     &device,
                                     &surface_config,
                                     MULTI_SAMPLE_COUNT,
                                 );
+                                //println!("3d Shader compiled");
                                 let mut ui_renderer = UIRenderer::new(&device, &queue);
                                 ui_renderer.build_shaders(
                                     &device,
@@ -560,8 +673,8 @@ where
                                     MULTI_SAMPLE_COUNT,
                                 );
                                 let ui_renderer = Some(ui_renderer);
-
-                                let mut viewport_lookup = HashMap::new();
+                                //println!("2d shader compiled");
+                                let mut viewport_lookup = bimap::BiMap::new();
                                 viewport_lookup.insert(window_name.clone(), window_id);
 
                                 let initial_viewport = Viewport {
@@ -574,15 +687,15 @@ where
                                 };
 
                                 let mut viewports = HashMap::new();
-                                viewports.insert(window_name.clone(), initial_viewport);
-
+                                viewports.insert(window_id, initial_viewport);
+                                //println!("viewport configured");
                                 let ui_layout = LayoutEngine::<
                                     UIRenderer,
                                     UIImageDescriptor,
                                     CustomElement,
                                     CustomLayoutSettings,
                                 >::new(size.into());
-
+                                println!("API initialized");
                                 let mut api = API {
                                     staged_windows: Vec::new(),
                                     instance,
@@ -594,8 +707,8 @@ where
                                     ui_layout,
                                     model_ids: HashMap::new(),
                                     models: Vec::<Model>::new(),
-                                    viewport_lookup: bimap::BiMap::new(),
-                                    viewports: HashMap::new(),
+                                    viewport_lookup,
+                                    viewports,
                                     event_string: "".to_string(),
                                     left_mouse_pressed: false,
                                     left_mouse_down: false,
@@ -619,6 +732,12 @@ where
                                     scroll_delta_time: Instant::now(),
                                     scroll_delta_distance: (0.0, 0.0),
                                 };
+
+                                api.redraw_viewport(
+                                    window_id,
+                                    &mut self.layout_binder,
+                                    &mut self.user_application,
+                                );
 
                                 self.user_application.initialize(&mut api);
                                 self.core = Some(api);
@@ -659,6 +778,7 @@ where
                     api.dpi_scale = scale_factor as f32;
                 }
                 WindowEvent::RedrawRequested => {
+                    //println!("redraw requested");
                     api.redraw_viewport(
                         window_id,
                         &mut self.layout_binder,
@@ -758,15 +878,10 @@ where
         _event_loop: &winit::event_loop::ActiveEventLoop,
         event: InternalEvents,
     ) {
+        //println!("file changed");
         if let InternalEvents::RebuildLayout(path) = event {
-            let file = read_to_string(path).unwrap();
-            if let Ok((page_name, page_layout, reusables)) = process_layout::<UserEvents>(file) {
-                let _ = self.layout_binder.replace_page(&page_name, page_layout);
-                self.layout_binder.reusable.clear();
-                for (name, reusable) in reusables {
-                    self.layout_binder.add_reusable(&name, reusable);
-                }
-            }
+            //println!("{:?}", &path);
+            self.load_layouts(path);
         }
     }
 }
@@ -774,11 +889,28 @@ where
 fn watch_file(file: &str, sender: EventLoopProxy<InternalEvents>) -> Result<DirectoryWatcher, ()> {
     if let Ok(mut watcher) =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            if let Ok(event) = event
-                && let Some(path) = event.paths.first()
-                && event.kind == notify::EventKind::Modify(notify::event::ModifyKind::Any)
-            {
-                let _ = sender.send_event(InternalEvents::RebuildLayout(path.to_owned()));
+            //println!("file event result: {:?}", &event);
+            if let Ok(event) = event {
+                let path = event.paths.first();
+                //println!("file path: {:?}", path);
+                if let Some(path) = path {
+                    let event_kind = event.kind;
+                    //println!("file event kind: {:?}", event_kind);
+                    if let notify::EventKind::Modify(_kind) = event_kind {
+                        let path = path
+                            .parent()
+                            .unwrap()
+                            .to_owned()
+                            .to_str()
+                            .unwrap()
+                            .to_owned();
+                        //println!(
+                        //    "sending {:?}, to main thread {:?}",
+                        //    kind,
+                        let _ = sender.send_event(InternalEvents::RebuildLayout(path));
+                        //);
+                    }
+                }
             }
         })
         && let Ok(()) = watcher.watch(Path::new(file), RecursiveMode::NonRecursive)
@@ -799,6 +931,7 @@ where
     if let Ok(event_loop) = EventLoop::<InternalEvents>::with_user_event().build() {
         event_loop.set_control_flow(ControlFlow::Wait);
         let file_watcher_proxy = event_loop.create_proxy();
+
         if let Ok(watcher) = watch_file("src/layouts", file_watcher_proxy) {
             let mut app =
                 Application::new(event_loop.create_proxy(), user_application, Some(watcher));

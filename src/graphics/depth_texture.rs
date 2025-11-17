@@ -1,3 +1,4 @@
+#[derive(Debug)]
 pub struct DepthTexture {
     #[allow(dead_code)]
     pub texture: wgpu::Texture,

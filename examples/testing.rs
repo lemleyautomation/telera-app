@@ -30,11 +30,7 @@ impl EventHandler for BasicEvents {
 struct BasicApp {}
 
 impl App for BasicApp {
-    fn initialize(&mut self, core: &mut API) {
-        let new_window =
-            winit::window::Window::default_attributes().with_inner_size(LogicalSize::new(800, 600));
-        core.create_viewport("Main", "testing", new_window);
-
+    fn initialize(&mut self, _core: &mut API) {
         // let pic = include_bytes!("../pic.jpg");
         // let pic = pic.as_slice();
         // let pic = image::load_from_memory(pic).unwrap();

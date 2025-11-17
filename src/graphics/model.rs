@@ -1,9 +1,12 @@
 use std::{
-    collections::HashMap, fs, io::{BufReader, Cursor}, path::{Path, PathBuf}
+    collections::HashMap,
+    fs,
+    io::{BufReader, Cursor},
+    path::{Path, PathBuf},
 };
 
-pub use cgmath::Quaternion;
 pub use cgmath::Euler;
+pub use cgmath::Quaternion;
 use cgmath::{Deg, Matrix4, Rotation3, Vector4};
 use gltf::Gltf;
 use wgpu::util::DeviceExt;
@@ -11,8 +14,18 @@ use wgpu::util::DeviceExt;
 use crate::texture::Texture;
 
 #[repr(C)]
-#[derive(Copy, Clone, Archive, Deserialize, Serialize, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-#[rkyv(compare(PartialEq), derive(Debug),)]
+#[derive(
+    Copy,
+    Clone,
+    Archive,
+    Deserialize,
+    Serialize,
+    Debug,
+    PartialEq,
+    bytemuck::Pod,
+    bytemuck::Zeroable,
+)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct Vertex {
     pub position: [f32; 3],
     pub tex_coords: [f32; 2],
@@ -53,6 +66,16 @@ pub struct Transform {
     pub scale: cgmath::Vector3<f32>,
 }
 
+impl Default for Transform {
+    fn default() -> Self {
+        Self {
+            position: [0.0, 0.0, 0.0].into(),
+            rotation: Quaternion::new(1.0, 0.0, 0.0, 0.0),
+            scale: [1.0, 1.0, 1.0].into(),
+        }
+    }
+}
+
 #[allow(dead_code)]
 impl Transform {
     pub fn new() -> Self {
@@ -63,39 +86,39 @@ impl Transform {
         }
     }
 
-    pub fn move_x_axis(&mut self, meters: f32){
+    pub fn move_x_axis(&mut self, meters: f32) {
         self.position.x += meters;
     }
 
-    pub fn move_y_axis(&mut self, meters: f32){
+    pub fn move_y_axis(&mut self, meters: f32) {
         self.position.y += meters;
     }
 
-    pub fn move_z_axis(&mut self, meters: f32){
+    pub fn move_z_axis(&mut self, meters: f32) {
         self.position.z += meters;
     }
 
-    pub fn rotate_x_axis(&mut self, degree: f32){
+    pub fn rotate_x_axis(&mut self, degree: f32) {
         self.rotation = Quaternion::from_angle_x(Deg(degree)) * self.rotation;
     }
 
-    pub fn rotate_y_axis(&mut self, degree: f32){
+    pub fn rotate_y_axis(&mut self, degree: f32) {
         self.rotation = Quaternion::from_angle_y(Deg(degree)) * self.rotation;
     }
 
-    pub fn rotate_z_axis(&mut self, degree: f32){
+    pub fn rotate_z_axis(&mut self, degree: f32) {
         self.rotation = Quaternion::from_angle_y(Deg(degree)) * self.rotation;
     }
 
-    pub fn scale_x_axis(&mut self, scale: f32){
+    pub fn scale_x_axis(&mut self, scale: f32) {
         self.scale.x = scale;
     }
 
-    pub fn scale_y_axis(&mut self, scale: f32){
+    pub fn scale_y_axis(&mut self, scale: f32) {
         self.scale.y = scale;
     }
 
-    pub fn scale_z_axis(&mut self, scale: f32){
+    pub fn scale_z_axis(&mut self, scale: f32) {
         self.scale.z = scale;
     }
 
@@ -147,27 +170,36 @@ impl Transform {
         }
     }
     pub fn bindgroup_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(
-            &wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            }
-        )
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        })
     }
 }
 
 #[repr(C)]
-#[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-#[rkyv(compare(PartialEq), derive(Debug),)]
+#[derive(
+    Archive,
+    Deserialize,
+    Serialize,
+    Debug,
+    PartialEq,
+    Clone,
+    Copy,
+    Default,
+    bytemuck::Pod,
+    bytemuck::Zeroable,
+)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct TransformMatrix {
     pub model: [[f32; 4]; 4],
 }
@@ -211,17 +243,24 @@ impl TransformMatrix {
     }
 
     pub fn empty() -> Self {
-        TransformMatrix { model: [[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],] }
+        TransformMatrix {
+            model: [
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
+            ],
+        }
     }
 }
 
 use crate::rkyv::{Archive, Deserialize, Serialize};
 
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone)]
-#[rkyv(compare(PartialEq), derive(Debug),)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct TextureRaw {
     name: String,
-    data: Vec::<u8>,
+    data: Vec<u8>,
 }
 
 #[allow(dead_code)]
@@ -234,7 +273,6 @@ pub struct Model {
     pub transform_bind_group: wgpu::BindGroup,
     pub dir: String,
     pub filename: String,
-
 }
 
 #[allow(dead_code)]
@@ -252,7 +290,7 @@ pub struct Mesh {
     pub index_buffer_raw: wgpu::Buffer,
     pub num_elements: u32,
     pub material: usize,
-    
+
     pub instances_shown: u32,
     pub instance_lookup: HashMap<String, usize>,
     pub instances_dirty: bool,
@@ -272,42 +310,41 @@ pub struct BaseMesh {
 }
 
 impl Mesh {
-    pub fn add_instance(&mut self, instance_name: String, device: &wgpu::Device, transform: Option<Transform>){
+    pub fn add_instance(
+        &mut self,
+        instance_name: String,
+        device: &wgpu::Device,
+        transform: Option<Transform>,
+    ) {
         self.instances_dirty = true;
         self.instances_shown += 1;
-        self.instance_lookup.insert(instance_name, self.instances.len());
+        self.instance_lookup
+            .insert(instance_name, self.instances.len());
         let transform = match transform {
             Some(transform) => transform,
-            None => Transform::new()
+            None => Transform::new(),
         };
         self.instances.push(transform);
 
-        let instance_data = self.instances.iter().map(
-            |data| {
-                data.to_wgpu_buffer()
-            }
-        ).collect::<Vec<TransformMatrix>>();
-        let instance_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Instance Buffer"),
-                contents: bytemuck::cast_slice(&instance_data),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            }
-        );
+        let instance_data = self
+            .instances
+            .iter()
+            .map(|data| data.to_wgpu_buffer())
+            .collect::<Vec<TransformMatrix>>();
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instance_data),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
 
         self.instance_buffer = instance_buffer;
     }
 
     pub fn get_instance_buffer_raw(&self) -> Vec<TransformMatrix> {
-        let raw_buffer = self.instances.iter().map(
-            |data| {
-                data.to_wgpu_buffer()
-            }
-        ).collect::<Vec<TransformMatrix>>();
-
-        //println!("{:?}", raw_buffer);
-
-        raw_buffer
+        self.instances
+            .iter()
+            .map(|data| data.to_wgpu_buffer())
+            .collect::<Vec<TransformMatrix>>()
     }
 }
 
@@ -316,16 +353,16 @@ pub fn load_model_gltf(
     file: PathBuf,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    transform: Option<Transform>
+    transform: Option<Transform>,
 ) -> anyhow::Result<Model> {
     let mut user_model_directory: String = "".to_string();
     let mut file_name: String = "".to_string();
 
-    if let Some(dir) = file.parent() {
-        if let Some(filename) = file.file_name() {
-            user_model_directory = dir.to_str().unwrap().to_string();
-            file_name = filename.to_str().unwrap().to_string();
-        }
+    if let Some(dir) = file.parent()
+        && let Some(filename) = file.file_name()
+    {
+        user_model_directory = dir.to_str().unwrap().to_string();
+        file_name = filename.to_str().unwrap().to_string();
     }
 
     let gltf_text = fs::read_to_string(Path::new(&user_model_directory).join(&file_name)).unwrap();
@@ -377,7 +414,7 @@ pub fn load_model_gltf(
         let pbr = material.pbr_metallic_roughness();
         //let base_color_texture = &pbr.base_color_texture();
         let texture_source = &pbr
-            .base_color_texture()    
+            .base_color_texture()
             .map(|tex| tex.texture().source().source())
             .expect("texture");
 
@@ -385,13 +422,8 @@ pub fn load_model_gltf(
             gltf::image::Source::View { view, mime_type: _ } => {
                 let bytes = buffer_data[view.buffer().index()].clone();
 
-                let diffuse_texture = Texture::from_bytes(
-                    device,
-                    queue,
-                    &bytes,
-                    &file_name,
-                )
-                .expect("Couldn't load diffuse");
+                let diffuse_texture = Texture::from_bytes(device, queue, &bytes, &file_name)
+                    .expect("Couldn't load diffuse");
 
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     layout: &texture_bind_group_layout,
@@ -412,7 +444,7 @@ pub fn load_model_gltf(
 
                 let new_texture = TextureRaw {
                     name: name.clone(),
-                    data: bytes.clone()
+                    data: bytes.clone(),
                 };
                 textures.push(new_texture);
 
@@ -425,8 +457,7 @@ pub fn load_model_gltf(
             gltf::image::Source::Uri { uri, mime_type: _ } => {
                 let path = Path::new(&user_model_directory).join(uri);
                 let bytes = fs::read(path).unwrap();
-                let diffuse_texture =
-                    Texture::from_bytes(&device, &queue, &bytes, uri).unwrap();
+                let diffuse_texture = Texture::from_bytes(device, queue, &bytes, uri).unwrap();
 
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     layout: &texture_bind_group_layout,
@@ -447,7 +478,7 @@ pub fn load_model_gltf(
 
                 let new_texture = TextureRaw {
                     name: name.clone(),
-                    data: bytes.clone()
+                    data: bytes.clone(),
                 };
                 textures.push(new_texture);
 
@@ -476,26 +507,28 @@ pub fn load_model_gltf(
                     let reader = primitive.reader(|buffer| Some(&buffer_data[buffer.index()]));
 
                     let mut vertex_buffer = Vec::new();
-                    if let Some(position_buffer) = reader.read_positions() {
-                        if let Some(normal_buffer) = reader.read_normals() {
-                            if let Some(tex_coord_buffer) =
-                                reader.read_tex_coords(0).map(|v| v.into_f32())
-                            {
-                                vertex_buffer = position_buffer
-                                    .zip(normal_buffer)
-                                    .zip(tex_coord_buffer)
-                                    .map(|((position, normal), tex_coords)| {
-                                                let transformed_position = node_transform * Vector4::new(position[0], position[1], position[2], 1.0);
-                                                Vertex {
-                                                    position: [transformed_position.x, transformed_position.y, transformed_position.z],
-                                                    tex_coords,
-                                                    normal,
-                                                }
-                                            }
-                                        )
-                                    .collect::<Vec<Vertex>>();
-                            }
-                        }
+                    if let Some(position_buffer) = reader.read_positions()
+                        && let Some(normal_buffer) = reader.read_normals()
+                        && let Some(tex_coord_buffer) =
+                            reader.read_tex_coords(0).map(|v| v.into_f32())
+                    {
+                        vertex_buffer = position_buffer
+                            .zip(normal_buffer)
+                            .zip(tex_coord_buffer)
+                            .map(|((position, normal), tex_coords)| {
+                                let transformed_position = node_transform
+                                    * Vector4::new(position[0], position[1], position[2], 1.0);
+                                Vertex {
+                                    position: [
+                                        transformed_position.x,
+                                        transformed_position.y,
+                                        transformed_position.z,
+                                    ],
+                                    tex_coords,
+                                    normal,
+                                }
+                            })
+                            .collect::<Vec<Vertex>>();
                     }
 
                     let mut index_buffer = Vec::new();
@@ -514,36 +547,31 @@ pub fn load_model_gltf(
             }
         }
     }
-    
-    let vertex_buffer_raw =
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{:?} Vertex Buffer", file_name)),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-    let index_buffer_raw =
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{:?} Index Buffer", file_name)),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+
+    let vertex_buffer_raw = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(&format!("{:?} Vertex Buffer", file_name)),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer_raw = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(&format!("{:?} Index Buffer", file_name)),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
 
     let mut instances = Vec::<Transform>::new();
     let mut instance_lookup = HashMap::new();
     instances.push(Transform::new());
     instance_lookup.insert("default".to_string(), 0);
-    let instance_data = instances.iter().map(
-        |data| {
-            data.to_wgpu_buffer()
-        }
-    ).collect::<Vec<TransformMatrix>>();
-    let instance_buffer = device.create_buffer_init(
-        &wgpu::util::BufferInitDescriptor {
-            label: Some("Instance Buffer"),
-            contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        }
-    );
+    let instance_data = instances
+        .iter()
+        .map(|data| data.to_wgpu_buffer())
+        .collect::<Vec<TransformMatrix>>();
+    let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Instance Buffer"),
+        contents: bytemuck::cast_slice(&instance_data),
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    });
 
     let index_buffer_len = indices.len() as u32;
 
@@ -553,7 +581,7 @@ pub fn load_model_gltf(
         textures,
         material: 0,
         vertices,
-        indices
+        indices,
     };
 
     let mesh = Mesh {
@@ -568,13 +596,12 @@ pub fn load_model_gltf(
         instance_lookup,
         instances_dirty: false,
         instances,
-        instance_buffer
+        instance_buffer,
     };
-
 
     let transform = match transform {
         Some(transform) => transform,
-        None => Transform::new()
+        None => Transform::new(),
     };
     let transform_matrix = transform.to_wgpu_buffer();
     let transform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

@@ -5,27 +5,17 @@ use symbol_table::GlobalSymbol;
 //use winit::window::Cursor;
 
 use crate::{
-    UIImageDescriptor,
-    ParserDataAccess,
-    Layout,
-    DataSrc,
-    Declaration,
-    Element,
-    Config,
-    CustomElement,
-    ui_toolkit::treeview::treeview,
-    API,
-    EventContext,
-    EventHandler
+    API, Config, CustomElement, DataSrc, Declaration, Element, EventContext, EventHandler, Layout,
+    ParserDataAccess, UIImageDescriptor, ui_toolkit::treeview::treeview,
 };
 
 use telera_layout::{Color, ElementConfiguration, TextConfig};
 
 const DEFAULT_TEXT: &str = ":(";
 
-pub struct Binder<Event,UserApp>
+pub struct Binder<Event, UserApp>
 where
-    Event: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>, 
+    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
     <Event as FromStr>::Err: Debug,
     UserApp: ParserDataAccess<Event>,
 {
@@ -34,9 +24,9 @@ where
     _x: PhantomData<UserApp>,
 }
 
-impl<Event,UserApp> Binder<Event,UserApp>
-where 
-    Event: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>, 
+impl<Event, UserApp> Binder<Event, UserApp>
+where
+    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
     <Event as FromStr>::Err: Debug,
     UserApp: ParserDataAccess<Event>,
 {
@@ -51,13 +41,17 @@ where
     pub fn add_page(&mut self, name: &str, page: Vec<Layout<Event>>) {
         if self.pages.get(name).is_none() {
             self.pages.insert(name.to_string(), page);
+        } else {
+            self.replace_page(name, page);
         }
     }
 
     pub fn add_reusable(&mut self, name: &str, page: Vec<Layout<Event>>) {
-        let name = GlobalSymbol::new(name);
-        if self.reusable.get(&name).is_none() {
-            self.reusable.insert(name, page);
+        let symbol_name = GlobalSymbol::new(name);
+        if self.reusable.get(&symbol_name).is_none() {
+            self.reusable.insert(symbol_name, page);
+        } else {
+            self.replace_reusable(name, page);
         }
     }
 
@@ -85,11 +79,13 @@ where
         window_id: winit::window::WindowId,
         api: &mut API,
         user_app: &mut UserApp,
-    ) -> Result<Vec::<(Event, Option<EventContext>)>, ()>
-    where <Event as FromStr>::Err: Default  {
+    ) -> Result<Vec<(Event, Option<EventContext>)>, ()>
+    where
+        <Event as FromStr>::Err: Default,
+    {
         if let Some(viewport) = api.viewports.get_mut(&window_id)
-        && let Some(layout_commands) = self.pages.get_mut(&viewport.page) {
-
+            && let Some(layout_commands) = self.pages.get_mut(&viewport.page)
+        {
             //println!("{:#?}\n\n", &layout_commands);
 
             let (events, _pointer) = set_layout(
@@ -102,10 +98,10 @@ where
                 None,
                 user_app,
                 Vec::<(Event, Option<EventContext>)>::new(),
-                winit::window::CursorIcon::Default
+                winit::window::CursorIcon::Default,
             );
 
-            return Ok(events)
+            return Ok(events);
         }
         Err(())
     }
@@ -120,13 +116,16 @@ fn set_layout<'render_pass, Event, UserApp>(
     config: Option<&mut ElementConfiguration>,
     text_config: Option<&mut TextConfig>,
     user_app: &UserApp,
-    mut events: Vec::<(Event, Option<EventContext>)>,
-    mut pointer: winit::window::CursorIcon
-) -> (Vec::<(Event, Option<EventContext>)>, winit::window::CursorIcon)
+    mut events: Vec<(Event, Option<EventContext>)>,
+    mut pointer: winit::window::CursorIcon,
+) -> (
+    Vec<(Event, Option<EventContext>)>,
+    winit::window::CursorIcon,
+)
 where
-    Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
+    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     let mut nesting_level: u32 = 0;
     let mut skip: Option<u32> = None;
@@ -136,15 +135,15 @@ where
     let mut collect_declarations = false;
 
     let mut collect_list_commands = false;
-    
+
     let mut config = match config {
         None => &mut ElementConfiguration::default(),
-        Some(config) => config
+        Some(config) => config,
     };
 
     let mut text_config = match text_config {
         None => &mut TextConfig::default(),
-        Some(text_config) => text_config
+        Some(text_config) => text_config,
     };
 
     #[allow(unused_variables)]
@@ -156,7 +155,7 @@ where
                         collect_list_commands = false;
                     }
                 }
-                Layout::Declaration{name:_,value:_} => {}
+                Layout::Declaration { name: _, value: _ } => {}
                 other => {
                     collect_declarations = false;
                     recursive_commands.push(other.clone());
@@ -170,14 +169,16 @@ where
                 match element {
                     Element::IfOpened { condition } => {
                         if skip.is_none()
-                        && !bool::resolve_name(condition, locals, user_app, &list_data) {
+                            && !bool::resolve_name(condition, locals, user_app, &list_data)
+                        {
                             skip = Some(nesting_level)
                         }
                         nesting_level += 1;
                     }
                     Element::IfNotOpened { condition } => {
                         if skip.is_none()
-                        && bool::resolve_name(condition, locals, user_app, &list_data) {
+                            && bool::resolve_name(condition, locals, user_app, &list_data)
+                        {
                             skip = Some(nesting_level)
                         }
                         nesting_level += 1;
@@ -185,7 +186,7 @@ where
                     Element::IfClosed => {
                         nesting_level -= 1;
                         if let Some(skip_level) = skip {
-                            if skip_level >= nesting_level{
+                            if skip_level >= nesting_level {
                                 skip = None;
                             }
                         }
@@ -198,7 +199,10 @@ where
                                 skip = None;
 
                                 if let Some(event) = event {
-                                    events.push((Event::resolve_src(event, locals, user_app, &list_data),None));
+                                    events.push((
+                                        Event::resolve_src(event, locals, user_app, &list_data),
+                                        None,
+                                    ));
                                 }
                             }
                         }
@@ -208,7 +212,7 @@ where
                         nesting_level -= 1;
 
                         if let Some(skip_level) = skip {
-                            if skip_level == nesting_level{
+                            if skip_level == nesting_level {
                                 skip = None;
                             }
                         }
@@ -222,7 +226,10 @@ where
                                 skip = None;
 
                                 if let Some(event) = event {
-                                    events.push((Event::resolve_src(event, locals, user_app, &list_data),None));
+                                    events.push((
+                                        Event::resolve_src(event, locals, user_app, &list_data),
+                                        None,
+                                    ));
                                 }
                             }
                         }
@@ -232,7 +239,7 @@ where
                         nesting_level -= 1;
 
                         if let Some(skip_level) = skip {
-                            if skip_level == nesting_level{
+                            if skip_level == nesting_level {
                                 skip = None;
                             }
                         }
@@ -245,7 +252,10 @@ where
                                 skip = None;
 
                                 if let Some(event) = event {
-                                    events.push((Event::resolve_src(event, locals, user_app, &list_data),None));
+                                    events.push((
+                                        Event::resolve_src(event, locals, user_app, &list_data),
+                                        None,
+                                    ));
                                 }
                             }
                         }
@@ -255,7 +265,7 @@ where
                         nesting_level -= 1;
 
                         if let Some(skip_level) = skip {
-                            if skip_level == nesting_level{
+                            if skip_level == nesting_level {
                                 skip = None;
                             }
                         }
@@ -274,32 +284,30 @@ where
                             collect_list_commands = true;
                             collect_declarations = true;
                         }
-                        
                     }
                     Element::ListClosed(src) => {
                         nesting_level -= 1;
 
-                        if skip.is_none(){
-
+                        if skip.is_none() {
                             if let Some(length) = user_app.get_list_length(src, &None) {
                                 for index in 0..length {
                                     (events, pointer) = set_layout(
                                         api,
-                                        &mut recursive_commands, 
+                                        &mut recursive_commands,
                                         reusables,
-                                        Some(&recursive_call_stack), 
-                                        Some((*src, index)), 
-                                        None, 
-                                        None, 
+                                        Some(&recursive_call_stack),
+                                        Some((*src, index)),
+                                        None,
+                                        None,
                                         user_app,
                                         events,
-                                        pointer
+                                        pointer,
                                     );
                                 }
                             }
                         }
                     }
-                    Element::ElementOpened { id:_ } => {
+                    Element::ElementOpened { id: _ } => {
                         nesting_level += 1;
 
                         if skip.is_none() {
@@ -352,16 +360,15 @@ where
                     }
                     Element::ConfigOpened => {
                         nesting_level += 1;
-        
+
                         if skip.is_none() {
                             *config = ElementConfiguration::default();
                         }
                     }
                     Element::ConfigClosed => {
                         nesting_level -= 1;
-        
+
                         if skip.is_none() {
-                            
                             let id = api.ui_layout.configure_element(&config);
                             //config = Some(ElementConfiguration::default());
                             if api.ui_layout.hovered() && api.left_mouse_clicked {
@@ -374,8 +381,10 @@ where
                     Element::TextElementClosed(content) => {
                         nesting_level -= 1;
                         if skip.is_none() {
-                            let text_content = String::resolve_src(content, locals, user_app, &list_data);
-                            api.ui_layout.add_text_element(text_content, &text_config, false);
+                            let text_content =
+                                String::resolve_src(content, locals, user_app, &list_data);
+                            api.ui_layout
+                                .add_text_element(text_content, &text_config, false);
                         }
                     }
                     Element::TextConfigOpened => {
@@ -387,7 +396,7 @@ where
                     }
                     Element::TextConfigClosed => {
                         nesting_level -= 1;
-                    },
+                    }
                     Element::UseOpened => {
                         nesting_level += 1;
 
@@ -396,7 +405,6 @@ where
                             recursive_call_stack.clear();
                             collect_declarations = true;
                         }
-                        
                     }
                     Element::UseClosed(src) => {
                         nesting_level -= 1;
@@ -404,7 +412,7 @@ where
                         if skip.is_none() {
                             collect_declarations = false;
                             //println!("try to use: {:?}", recursive_source);
-                            if let Some(reusable) = reusables.get(src){
+                            if let Some(reusable) = reusables.get(src) {
                                 //println!("use: {:?}", recursive_source);
                                 for command in reusable.iter() {
                                     recursive_commands.push(command.clone());
@@ -414,16 +422,15 @@ where
                                         api,
                                         &mut recursive_commands,
                                         reusables,
-                                        Some(&recursive_call_stack), 
+                                        Some(&recursive_call_stack),
                                         None,
                                         Some(&mut config),
                                         Some(&mut text_config),
                                         user_app,
                                         events,
-                                        pointer
+                                        pointer,
                                     );
-                                }
-                                else {
+                                } else {
                                     (events, pointer) = set_layout(
                                         api,
                                         &mut recursive_commands,
@@ -434,11 +441,10 @@ where
                                         Some(&mut text_config),
                                         user_app,
                                         events,
-                                        pointer
+                                        pointer,
                                     );
                                 }
                             }
-                            
                         }
                     }
                     Element::TreeViewOpened => {
@@ -470,7 +476,8 @@ where
                             if api.ui_layout.hovered() {
                                 pointer = winit::window::CursorIcon::Text;
                             }
-                            api.ui_layout.configure_element(&ElementConfiguration::default());
+                            api.ui_layout
+                                .configure_element(&ElementConfiguration::default());
                         }
                     }
                     Element::TextBoxClosed(_src) => {
@@ -479,10 +486,10 @@ where
                         if skip.is_none() {
                             collect_declarations = false;
                             // events = ui_toolkit::textbox::text_box(
-                            //     text_box_source, 
+                            //     text_box_source,
                             //     &list_data,
-                            //     api, 
-                            //     user_app, 
+                            //     api,
+                            //     user_app,
                             //     events);
                             api.ui_layout.close_element();
                         }
@@ -512,9 +519,8 @@ where
         }
     }
 
-    (events,pointer)
+    (events, pointer)
 }
-
 
 fn execute_config<'render_pass, Event, UserApp>(
     config_command: &mut Config,
@@ -525,20 +531,19 @@ fn execute_config<'render_pass, Event, UserApp>(
     list_data: &Option<(GlobalSymbol, usize)>,
     api: &mut API,
     user_app: &UserApp,
-)
-where
-    Event: FromStr+Clone+PartialEq+Debug+Default+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
+) where
+    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     let config = match config {
         None => &mut ElementConfiguration::default(),
-        Some(config) => config
+        Some(config) => config,
     };
 
     let text_config = match text_config {
         None => &mut TextConfig::default(),
-        Some(c) => c
+        Some(c) => c,
     };
 
     match config_command {
@@ -546,134 +551,253 @@ where
             if let DataSrc::Static(id) = id {
                 config.id(id.as_str());
             }
-        }//config.id(DEFAULT_TEXT).parse(),
-        Config::FitX  => config.x_fit().parse(),
-        Config::FitXmin(min)  => config.x_fit_min(f32::resolve_src(min, locals, user_app, list_data)).parse(),
-        Config::FitXmax(max)  => config.x_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data)).parse(),
-        Config::FitXminmax{min, max}  => config.x_fit_min_max(
-            f32::resolve_src(min, locals, user_app, list_data),
-            f32::resolve_src(max, locals, user_app, list_data)
-        ).parse(),
-        Config::FitY  => config.y_fit().parse(),
-        Config::FitYmin(min)  => config.y_fit_min(f32::resolve_src(min, locals, user_app, list_data)).parse(),
-        Config::FitYmax(max)  => config.y_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data)).parse(),
-        Config::FitYminmax{min, max}  => config.y_fit_min_max(
-            f32::resolve_src(min, locals, user_app, list_data),
-            f32::resolve_src(max, locals, user_app, list_data)
-        ).parse(),
-        Config::GrowX  => config.x_grow().parse(),
-        Config::GrowXmin(min) => config.x_grow_min(f32::resolve_src(min, locals, user_app, list_data)).parse(),
-        Config::GrowXmax(max) => config.x_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data)).parse(),
-        Config::GrowXminmax{min, max}  => config.x_grow_min_max(
-            f32::resolve_src(min, locals, user_app, list_data),
-            f32::resolve_src(max, locals, user_app, list_data)
-        ).parse(),
-        Config::GrowY  => config.y_grow().parse(),
-        Config::GrowYmin(min) => config.y_grow_min(f32::resolve_src(min, locals, user_app, list_data)).parse(),
-        Config::GrowYmax(max) => config.y_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data)).parse(),
-        Config::GrowYminmax{min, max}  => config.y_grow_min_max(
-            f32::resolve_src(min, locals, user_app, list_data),
-            f32::resolve_src(max, locals, user_app, list_data)
-        ).parse(),
-        Config::FixedX(size) => config.x_fixed(f32::resolve_src(size, locals, user_app, list_data)).parse(),
-        Config::FixedY(size) => config.y_fixed(f32::resolve_src(size, locals, user_app, list_data)).parse(),
-        Config::PercentX(size) => config.x_percent(f32::resolve_src(size, locals, user_app, list_data)).parse(),
-        Config::PercentY(size) => config.y_percent(f32::resolve_src(size, locals, user_app, list_data)).parse(),
-        Config::GrowAll  => config.grow_all().parse(),
-        Config::PaddingAll(padding)  => config.padding_all(u16::resolve_src(padding, locals, user_app, list_data)).parse(),
-        Config::PaddingTop(padding)  => config.padding_top(u16::resolve_src(padding, locals, user_app, list_data)).parse(),
-        Config::PaddingBottom(padding)  => config.padding_bottom(u16::resolve_src(padding, locals, user_app, list_data)).parse(),
-        Config::PaddingLeft(padding)  => config.padding_left(u16::resolve_src(padding, locals, user_app, list_data)).parse(),
-        Config::PaddingRight(padding)  => config.padding_right(u16::resolve_src(padding, locals, user_app, list_data)).parse(),
-        Config::Vertical  => config.direction(true).parse(),
-        Config::ChildGap(gap)  => config.child_gap(u16::resolve_src(gap, locals, user_app, list_data)).parse(),
-        Config::ChildAlignmentXLeft  => config.align_children_x_left().parse(),
-        Config::ChildAlignmentXRight  => config.align_children_x_right().parse(),
-        Config::ChildAlignmentXCenter  => config.align_children_x_center().parse(),
-        Config::ChildAlignmentYTop  => config.align_children_y_top().parse(),
-        Config::ChildAlignmentYCenter  => config.align_children_y_center().parse(),
-        Config::ChildAlignmentYBottom  => config.align_children_y_bottom().parse(),
-        Config::Color(color)  => {
+        } //config.id(DEFAULT_TEXT).parse(),
+        Config::FitX => config.x_fit().parse(),
+        Config::FitXmin(min) => config
+            .x_fit_min(f32::resolve_src(min, locals, user_app, list_data))
+            .parse(),
+        Config::FitXmax(max) => config
+            .x_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data))
+            .parse(),
+        Config::FitXminmax { min, max } => config
+            .x_fit_min_max(
+                f32::resolve_src(min, locals, user_app, list_data),
+                f32::resolve_src(max, locals, user_app, list_data),
+            )
+            .parse(),
+        Config::FitY => config.y_fit().parse(),
+        Config::FitYmin(min) => config
+            .y_fit_min(f32::resolve_src(min, locals, user_app, list_data))
+            .parse(),
+        Config::FitYmax(max) => config
+            .y_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data))
+            .parse(),
+        Config::FitYminmax { min, max } => config
+            .y_fit_min_max(
+                f32::resolve_src(min, locals, user_app, list_data),
+                f32::resolve_src(max, locals, user_app, list_data),
+            )
+            .parse(),
+        Config::GrowX => config.x_grow().parse(),
+        Config::GrowXmin(min) => config
+            .x_grow_min(f32::resolve_src(min, locals, user_app, list_data))
+            .parse(),
+        Config::GrowXmax(max) => config
+            .x_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data))
+            .parse(),
+        Config::GrowXminmax { min, max } => config
+            .x_grow_min_max(
+                f32::resolve_src(min, locals, user_app, list_data),
+                f32::resolve_src(max, locals, user_app, list_data),
+            )
+            .parse(),
+        Config::GrowY => config.y_grow().parse(),
+        Config::GrowYmin(min) => config
+            .y_grow_min(f32::resolve_src(min, locals, user_app, list_data))
+            .parse(),
+        Config::GrowYmax(max) => config
+            .y_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data))
+            .parse(),
+        Config::GrowYminmax { min, max } => config
+            .y_grow_min_max(
+                f32::resolve_src(min, locals, user_app, list_data),
+                f32::resolve_src(max, locals, user_app, list_data),
+            )
+            .parse(),
+        Config::FixedX(size) => config
+            .x_fixed(f32::resolve_src(size, locals, user_app, list_data))
+            .parse(),
+        Config::FixedY(size) => config
+            .y_fixed(f32::resolve_src(size, locals, user_app, list_data))
+            .parse(),
+        Config::PercentX(size) => config
+            .x_percent(f32::resolve_src(size, locals, user_app, list_data))
+            .parse(),
+        Config::PercentY(size) => config
+            .y_percent(f32::resolve_src(size, locals, user_app, list_data))
+            .parse(),
+        Config::GrowAll => config.grow_all().parse(),
+        Config::PaddingAll(padding) => config
+            .padding_all(u16::resolve_src(padding, locals, user_app, list_data))
+            .parse(),
+        Config::PaddingTop(padding) => config
+            .padding_top(u16::resolve_src(padding, locals, user_app, list_data))
+            .parse(),
+        Config::PaddingBottom(padding) => config
+            .padding_bottom(u16::resolve_src(padding, locals, user_app, list_data))
+            .parse(),
+        Config::PaddingLeft(padding) => config
+            .padding_left(u16::resolve_src(padding, locals, user_app, list_data))
+            .parse(),
+        Config::PaddingRight(padding) => config
+            .padding_right(u16::resolve_src(padding, locals, user_app, list_data))
+            .parse(),
+        Config::Vertical => config.direction(true).parse(),
+        Config::ChildGap(gap) => config
+            .child_gap(u16::resolve_src(gap, locals, user_app, list_data))
+            .parse(),
+        Config::ChildAlignmentXLeft => config.align_children_x_left().parse(),
+        Config::ChildAlignmentXRight => config.align_children_x_right().parse(),
+        Config::ChildAlignmentXCenter => config.align_children_x_center().parse(),
+        Config::ChildAlignmentYTop => config.align_children_y_top().parse(),
+        Config::ChildAlignmentYCenter => config.align_children_y_center().parse(),
+        Config::ChildAlignmentYBottom => config.align_children_y_bottom().parse(),
+        Config::Color(color) => {
             let color = Color::resolve_src(color, locals, user_app, list_data);
             config.color(color).parse();
         }
 
         Config::CustomElement(custom_element) => {
             if let CustomElement::Line(line) = custom_element
-            && let Some(source) = line.width_source
-            && let Some(width) = user_app.get_numeric(&source, list_data) {
+                && let Some(source) = line.width_source
+                && let Some(width) = user_app.get_numeric(&source, list_data)
+            {
                 line.width = width;
             }
             config.custom_element(custom_element).parse();
         }
-        Config::RadiusAll(radius)  => config.radius_all(f32::resolve_src(radius, locals, user_app, list_data)).parse(),
-        Config::RadiusTopLeft(radius)  => config.radius_top_left(f32::resolve_src(radius, locals, user_app, list_data)).parse(),
-        Config::RadiusTopRight(radius)  => config.radius_top_right(f32::resolve_src(radius, locals, user_app, list_data)).parse(),
-        Config::RadiusBottomRight(radius)  => config.radius_bottom_right(f32::resolve_src(radius, locals, user_app, list_data)).parse(),
-        Config::RadiusBottomLeft(radius)  => config.radius_bottom_left(f32::resolve_src(radius, locals, user_app, list_data)).parse(),
-        Config::BorderColor(color) => config.border_color(Color::resolve_src(color, locals, user_app, list_data)).parse(),
-        Config::BorderAll(border)  => config.border_all(u16::resolve_src(border, locals, user_app, list_data)).parse(),
-        Config::BorderTop(border)  => config.border_top(u16::resolve_src(border, locals, user_app, list_data)).parse(),
-        Config::BorderBottom(border)  => config.border_bottom(u16::resolve_src(border, locals, user_app, list_data)).parse(),
-        Config::BorderLeft(border)  => config.border_left(u16::resolve_src(border, locals, user_app, list_data)).parse(),
-        Config::BorderRight(border)  => config.border_right(u16::resolve_src(border, locals, user_app, list_data)).parse(),
-        Config::BorderBetweenChildren(border)  => config.border_between_children(u16::resolve_src(border, locals, user_app, list_data)).parse(),
-        Config::Clip { vertical, horizontal } => config.scroll(
-            bool::resolve_src(vertical, locals, user_app, list_data), 
-            bool::resolve_src(horizontal, locals, user_app, list_data), 
-            api.ui_layout.get_scroll_offset()
-        ).parse(),
+        Config::RadiusAll(radius) => config
+            .radius_all(f32::resolve_src(radius, locals, user_app, list_data))
+            .parse(),
+        Config::RadiusTopLeft(radius) => config
+            .radius_top_left(f32::resolve_src(radius, locals, user_app, list_data))
+            .parse(),
+        Config::RadiusTopRight(radius) => config
+            .radius_top_right(f32::resolve_src(radius, locals, user_app, list_data))
+            .parse(),
+        Config::RadiusBottomRight(radius) => config
+            .radius_bottom_right(f32::resolve_src(radius, locals, user_app, list_data))
+            .parse(),
+        Config::RadiusBottomLeft(radius) => config
+            .radius_bottom_left(f32::resolve_src(radius, locals, user_app, list_data))
+            .parse(),
+        Config::BorderColor(color) => config
+            .border_color(Color::resolve_src(color, locals, user_app, list_data))
+            .parse(),
+        Config::BorderAll(border) => config
+            .border_all(u16::resolve_src(border, locals, user_app, list_data))
+            .parse(),
+        Config::BorderTop(border) => config
+            .border_top(u16::resolve_src(border, locals, user_app, list_data))
+            .parse(),
+        Config::BorderBottom(border) => config
+            .border_bottom(u16::resolve_src(border, locals, user_app, list_data))
+            .parse(),
+        Config::BorderLeft(border) => config
+            .border_left(u16::resolve_src(border, locals, user_app, list_data))
+            .parse(),
+        Config::BorderRight(border) => config
+            .border_right(u16::resolve_src(border, locals, user_app, list_data))
+            .parse(),
+        Config::BorderBetweenChildren(border) => config
+            .border_between_children(u16::resolve_src(border, locals, user_app, list_data))
+            .parse(),
+        Config::Clip {
+            vertical,
+            horizontal,
+        } => config
+            .scroll(
+                bool::resolve_src(vertical, locals, user_app, list_data),
+                bool::resolve_src(horizontal, locals, user_app, list_data),
+                api.ui_layout.get_scroll_offset(),
+            )
+            .parse(),
         Config::Image { name } => {
-            if let Some(image) = UIImageDescriptor::resolve_name(name, locals, user_app, list_data){
+            if let Some(image) = UIImageDescriptor::resolve_name(name, locals, user_app, list_data)
+            {
                 config.image(image).parse();
             }
         }
         Config::Floating => config.floating().parse(),
-        Config::FloatingOffset { x, y } => config.floating_offset(
-            f32::resolve_src(x, locals, user_app, list_data), 
-            f32::resolve_src(y, locals, user_app, list_data)
-        ).parse(),
-        Config::FloatingDimensions { width, height } => config.floating_dimensions(
-            f32::resolve_src(width, locals, user_app, list_data),  
-            f32::resolve_src(height, locals, user_app, list_data), 
-        ).parse(),
-        Config::FloatingZIndex { z } => config.floating_z_index(i16::resolve_src(z, locals, user_app, list_data)).parse(),
-        Config::FloatingAttatchToParentAtTopLeft => config.floating_attach_to_parent_at_top_left().parse(),
-        Config::FloatingAttatchToParentAtCenterLeft => config.floating_attach_to_parent_at_center_left().parse(),
-        Config::FloatingAttatchToParentAtBottomLeft => config.floating_attach_to_parent_at_bottom_left().parse(),
-        Config::FloatingAttatchToParentAtTopCenter => config.floating_attach_to_parent_at_top_center().parse(),
-        Config::FloatingAttatchToParentAtCenter => config.floating_attach_to_parent_at_center().parse(),
-        Config::FloatingAttatchToParentAtBottomCenter => config.floating_attach_to_parent_at_bottom_center().parse(),
-        Config::FloatingAttatchToParentAtTopRight => config.floating_attach_to_parent_at_top_right().parse(),
-        Config::FloatingAttatchToParentAtCenterRight => config.floating_attach_to_parent_at_center_right().parse(),
-        Config::FloatingAttatchToParentAtBottomRight => config.floating_attach_to_parent_at_bottom_right().parse(),
-        Config::FloatingAttatchElementAtTopLeft => config.floating_attach_element_at_top_left().parse(),
-        Config::FloatingAttatchElementAtCenterLeft => config.floating_attach_element_at_center_left().parse(),
-        Config::FloatingAttatchElementAtBottomLeft => config.floating_attach_element_at_bottom_left().parse(),
-        Config::FloatingAttatchElementAtTopCenter => config.floating_attach_element_at_top_center().parse(),
-        Config::FloatingAttatchElementAtCenter => config.floating_attach_element_at_center().parse(),
-        Config::FloatingAttatchElementAtBottomCenter => config.floating_attach_element_at_bottom_center().parse(),
-        Config::FloatingAttatchElementAtTopRight => config.floating_attach_element_at_top_right().parse(),
-        Config::FloatingAttatchElementAtCenterRight => config.floating_attach_element_at_center_right().parse(),
-        Config::FloatingAttatchElementAtBottomRight => config.floating_attach_element_at_bottom_right().parse(),
+        Config::FloatingOffset { x, y } => config
+            .floating_offset(
+                f32::resolve_src(x, locals, user_app, list_data),
+                f32::resolve_src(y, locals, user_app, list_data),
+            )
+            .parse(),
+        Config::FloatingDimensions { width, height } => config
+            .floating_dimensions(
+                f32::resolve_src(width, locals, user_app, list_data),
+                f32::resolve_src(height, locals, user_app, list_data),
+            )
+            .parse(),
+        Config::FloatingZIndex { z } => config
+            .floating_z_index(i16::resolve_src(z, locals, user_app, list_data))
+            .parse(),
+        Config::FloatingAttatchToParentAtTopLeft => {
+            config.floating_attach_to_parent_at_top_left().parse()
+        }
+        Config::FloatingAttatchToParentAtCenterLeft => {
+            config.floating_attach_to_parent_at_center_left().parse()
+        }
+        Config::FloatingAttatchToParentAtBottomLeft => {
+            config.floating_attach_to_parent_at_bottom_left().parse()
+        }
+        Config::FloatingAttatchToParentAtTopCenter => {
+            config.floating_attach_to_parent_at_top_center().parse()
+        }
+        Config::FloatingAttatchToParentAtCenter => {
+            config.floating_attach_to_parent_at_center().parse()
+        }
+        Config::FloatingAttatchToParentAtBottomCenter => {
+            config.floating_attach_to_parent_at_bottom_center().parse()
+        }
+        Config::FloatingAttatchToParentAtTopRight => {
+            config.floating_attach_to_parent_at_top_right().parse()
+        }
+        Config::FloatingAttatchToParentAtCenterRight => {
+            config.floating_attach_to_parent_at_center_right().parse()
+        }
+        Config::FloatingAttatchToParentAtBottomRight => {
+            config.floating_attach_to_parent_at_bottom_right().parse()
+        }
+        Config::FloatingAttatchElementAtTopLeft => {
+            config.floating_attach_element_at_top_left().parse()
+        }
+        Config::FloatingAttatchElementAtCenterLeft => {
+            config.floating_attach_element_at_center_left().parse()
+        }
+        Config::FloatingAttatchElementAtBottomLeft => {
+            config.floating_attach_element_at_bottom_left().parse()
+        }
+        Config::FloatingAttatchElementAtTopCenter => {
+            config.floating_attach_element_at_top_center().parse()
+        }
+        Config::FloatingAttatchElementAtCenter => {
+            config.floating_attach_element_at_center().parse()
+        }
+        Config::FloatingAttatchElementAtBottomCenter => {
+            config.floating_attach_element_at_bottom_center().parse()
+        }
+        Config::FloatingAttatchElementAtTopRight => {
+            config.floating_attach_element_at_top_right().parse()
+        }
+        Config::FloatingAttatchElementAtCenterRight => {
+            config.floating_attach_element_at_center_right().parse()
+        }
+        Config::FloatingAttatchElementAtBottomRight => {
+            config.floating_attach_element_at_bottom_right().parse()
+        }
         Config::FloatingPointerPassThrough => config.floating_pointer_pass_through().parse(),
-        Config::FloatingAttachElementToElement { other_element_id:_ } => {
+        Config::FloatingAttachElementToElement {
+            other_element_id: _,
+        } => {
             //let id = layout_engine.get_id(other_element_id);
             config.floating_attach_to_element(0).parse()
         }
         Config::FloatingAttachElementToRoot => config.floating_attach_to_root().parse(),
-        Config::Use { name:_ } => {
+        Config::Use { name: _ } => {
             // if let Some(reusable) = reusables.get_mut(name) {
             //     for config_command in reusable {
             //         if let Layout::Config(config_command) = config_command {
             //             execute_config(
-            //                 config_command, 
-            //                 Some(&mut config), 
+            //                 config_command,
+            //                 Some(&mut config),
             //                 Some(&mut text_config),
-            //                 reusables, 
-            //                 locals, 
-            //                 list_data, 
-            //                 api, 
+            //                 reusables,
+            //                 locals,
+            //                 list_data,
+            //                 api,
             //                 user_app,
             //                 cirlce_open,
             //                 line_open,
@@ -687,547 +811,534 @@ where
         Config::AlignLeft => text_config.alignment_left().parse(),
         Config::AlignRight => text_config.alignment_right().parse(),
         Config::Editable(_state) => (),
-        Config::FontId(id) => text_config.font_id(u16::resolve_src(id, locals, user_app, list_data)).parse(),
-        Config::FontColor(color)  => text_config.color(Color::resolve_src(color, locals, user_app, list_data)).parse(),
-        Config::FontSize(size) => text_config.font_size(u16::resolve_src(size, locals, user_app, list_data)).parse(),
-        Config::LineHeight(height) => text_config.line_height(u16::resolve_src(height, locals, user_app, list_data)).parse(),
+        Config::FontId(id) => text_config
+            .font_id(u16::resolve_src(id, locals, user_app, list_data))
+            .parse(),
+        Config::FontColor(color) => text_config
+            .color(Color::resolve_src(color, locals, user_app, list_data))
+            .parse(),
+        Config::FontSize(size) => text_config
+            .font_size(u16::resolve_src(size, locals, user_app, list_data))
+            .parse(),
+        Config::LineHeight(height) => text_config
+            .line_height(u16::resolve_src(height, locals, user_app, list_data))
+            .parse(),
     }
 }
 
-trait ResolveValue<'frame,'application, Event,UserApp> 
+trait ResolveValue<'frame, 'application, Event, UserApp>
 where
     'application: 'frame,
-    Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
-
+    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     type DeclarationType: Default;
     type ReturnType;
-    fn resolve_src (
+    fn resolve_src(
         var: &'frame DataSrc<Self::DeclarationType>,
-        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
-        user_app: &'application UserApp, 
-        list_data: &Option<(GlobalSymbol, usize)>
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        user_app: &'application UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType;
-    fn resolve_name (
+    fn resolve_name(
         var: &GlobalSymbol,
-        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
-        user_app: &'application UserApp, 
-        list_data: &Option<(GlobalSymbol, usize)>
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        user_app: &'application UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType;
 }
 
-impl<'frame, 'application, Event,UserApp> ResolveValue<'frame,'application, Event,UserApp> for UIImageDescriptor
+impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+    for UIImageDescriptor
 where
     'application: 'frame,
-    Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
+    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     type DeclarationType = Option<&'frame UIImageDescriptor>;
     type ReturnType = Option<&'frame UIImageDescriptor>;
-    fn resolve_name (
-            name: &GlobalSymbol,
-            locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
-            user_app: &'application UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_name(
+        name: &GlobalSymbol,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        user_app: &'application UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Dynamic(local) = local
-        && let Some(value) = user_app.get_image(local, &list_data) {
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Dynamic(local) = local
+            && let Some(value) = user_app.get_image(local, &list_data)
+        {
             Some(value)
-        }
-        else if let Some(value) = user_app.get_image(name, &list_data) {
+        } else if let Some(value) = user_app.get_image(name, &list_data) {
             Some(value)
-        }
-        else {
+        } else {
             None
         }
     }
-    fn resolve_src (
-            _var: &'frame DataSrc<Self::DeclarationType>,
-            _locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
-            _user_app: &'application UserApp, 
-            _list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_src(
+        _var: &'frame DataSrc<Self::DeclarationType>,
+        _locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        _user_app: &'application UserApp,
+        _list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         None
     }
 }
 
-impl<'frame, 'application, Event,UserApp> ResolveValue<'frame,'application, Event,UserApp> for Color
+impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+    for Color
 where
     'application: 'frame,
-    Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
+    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     type DeclarationType = Color;
     type ReturnType = Color;
-    fn resolve_name (
-            name: &GlobalSymbol,
-            locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
-            user_app: &'application UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_name(
+        name: &GlobalSymbol,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        user_app: &'application UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Dynamic(local) = local
-        && let Some(value) = user_app.get_color(&local, &list_data) {
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Dynamic(local) = local
+            && let Some(value) = user_app.get_color(&local, &list_data)
+        {
             value.clone()
-        }
-        else if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Static(local) = local
-        && let Declaration::Color(value) = local {
+        } else if let Some(locals) = locals
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Static(local) = local
+            && let Declaration::Color(value) = local
+        {
             value.clone()
-        }
-        else if let Some(value) = user_app.get_color(&name, &list_data) {
+        } else if let Some(value) = user_app.get_color(&name, &list_data) {
             value.clone()
-        }
-        else {
+        } else {
             Color::default()
         }
     }
-    fn resolve_src (
-            var: &'frame DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
-            user_app: &'application UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_src(
+        var: &'frame DataSrc<Self::DeclarationType>,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        user_app: &'application UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
                 if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Dynamic(local) = local
-                && let Some(value) = user_app.get_color(&local, &list_data) {
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Dynamic(local) = local
+                    && let Some(value) = user_app.get_color(&local, &list_data)
+                {
                     value.clone()
-                }
-                else if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Static(local) = local
-                && let Declaration::Color(value) = local {
+                } else if let Some(locals) = locals
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Static(local) = local
+                    && let Declaration::Color(value) = local
+                {
                     value.clone()
-                }
-                else if let Some(value) = user_app.get_color(&name, &list_data) {
+                } else if let Some(value) = user_app.get_color(&name, &list_data) {
                     value.clone()
-                }
-                else {
+                } else {
                     Color::default()
                 }
             }
-            DataSrc::Static(value) => {
-                value.clone()
-            }
+            DataSrc::Static(value) => value.clone(),
         }
     }
 }
 
-impl<'frame, 'application, Event,UserApp> ResolveValue<'frame,'application, Event,UserApp> for String
+impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+    for String
 where
     'application: 'frame,
-    Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
+    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     type DeclarationType = String;
     type ReturnType = &'frame str;
-    fn resolve_name (
-            name: &GlobalSymbol,
-            locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
-            user_app: &'application UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_name(
+        name: &GlobalSymbol,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        user_app: &'application UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Dynamic(local) = local
-        && let Some(value) = user_app.get_text(&local, &list_data) {
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Dynamic(local) = local
+            && let Some(value) = user_app.get_text(&local, &list_data)
+        {
             value
-        }
-        else if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Static(local) = local
-        && let Declaration::Text(value) = local {
+        } else if let Some(locals) = locals
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Static(local) = local
+            && let Declaration::Text(value) = local
+        {
             value
-        }
-        else if let Some(value) = user_app.get_text(&name, &list_data) {
+        } else if let Some(value) = user_app.get_text(&name, &list_data) {
             value
-        }
-        else {
+        } else {
             DEFAULT_TEXT
         }
     }
-    fn resolve_src (
-            var: &'frame DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>, 
-            user_app: &'application UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_src(
+        var: &'frame DataSrc<Self::DeclarationType>,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        user_app: &'application UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
                 if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Dynamic(local) = local
-                && let Some(value) = user_app.get_text(&local, &list_data) {
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Dynamic(local) = local
+                    && let Some(value) = user_app.get_text(&local, &list_data)
+                {
                     value
-                }
-                else if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Static(local) = local
-                && let Declaration::Text(value) = local {
+                } else if let Some(locals) = locals
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Static(local) = local
+                    && let Declaration::Text(value) = local
+                {
                     value
-                }
-                else if let Some(value) = user_app.get_text(&name, &list_data) {
+                } else if let Some(value) = user_app.get_text(&name, &list_data) {
                     value
-                }
-                else {
+                } else {
                     DEFAULT_TEXT
                 }
             }
-            DataSrc::Static(value) => {
-                value
-            }
+            DataSrc::Static(value) => value,
         }
     }
 }
 
-impl<'frame, 'application, Event,UserApp> ResolveValue<'frame, 'application, Event,UserApp> for f32
+impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+    for f32
 where
     'application: 'frame,
-    Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
+    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     type DeclarationType = f32;
     type ReturnType = f32;
-    fn resolve_src (
-            var: &DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
-            user_app: &UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_src(
+        var: &DataSrc<Self::DeclarationType>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
                 if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Dynamic(local) = local
-                && let Some(value) = user_app.get_numeric(&local, &list_data) {
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Dynamic(local) = local
+                    && let Some(value) = user_app.get_numeric(&local, &list_data)
+                {
                     value
-                }
-                else if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Static(local) = local
-                && let Declaration::Numeric(value) = local {
+                } else if let Some(locals) = locals
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Static(local) = local
+                    && let Declaration::Numeric(value) = local
+                {
                     *value
-                }
-                else if let Some(value) = user_app.get_numeric(&name, &list_data) {
+                } else if let Some(value) = user_app.get_numeric(&name, &list_data) {
                     value
-                }
-                else {
+                } else {
                     0.0
                 }
             }
-            DataSrc::Static(value) => {
-                *value
-            }
+            DataSrc::Static(value) => *value,
         }
     }
-    fn resolve_name (
-            name: &GlobalSymbol,
-            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
-            user_app: &UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_name(
+        name: &GlobalSymbol,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Dynamic(local) = local
-        && let Some(value) = user_app.get_numeric(&local, &list_data) {
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Dynamic(local) = local
+            && let Some(value) = user_app.get_numeric(&local, &list_data)
+        {
             value
-        }
-        else if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Static(local) = local
-        && let Declaration::Numeric(value) = local {
+        } else if let Some(locals) = locals
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Static(local) = local
+            && let Declaration::Numeric(value) = local
+        {
             *value
-        }
-        else if let Some(value) = user_app.get_numeric(&name, &list_data) {
+        } else if let Some(value) = user_app.get_numeric(&name, &list_data) {
             value
-        }
-        else {
+        } else {
             0.0
         }
     }
 }
 
-impl<'frame, 'application, Event,UserApp> ResolveValue<'frame, 'application, Event,UserApp> for u16
+impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+    for u16
 where
     'application: 'frame,
-    Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
+    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     type DeclarationType = u16;
     type ReturnType = u16;
-    fn resolve_src (
-            var: &DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
-            user_app: &UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_src(
+        var: &DataSrc<Self::DeclarationType>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
                 if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Dynamic(local) = local
-                && let Some(value) = user_app.get_numeric(&local, &list_data) {
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Dynamic(local) = local
+                    && let Some(value) = user_app.get_numeric(&local, &list_data)
+                {
                     value as u16
-                }
-                else if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Static(local) = local
-                && let Declaration::Numeric(value) = local {
+                } else if let Some(locals) = locals
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Static(local) = local
+                    && let Declaration::Numeric(value) = local
+                {
                     *value as u16
-                }
-                else if let Some(value) = user_app.get_numeric(&name, &list_data) {
+                } else if let Some(value) = user_app.get_numeric(&name, &list_data) {
                     value as u16
-                }
-                else {
+                } else {
                     0
                 }
             }
-            DataSrc::Static(value) => {
-                *value as u16
-            }
+            DataSrc::Static(value) => *value as u16,
         }
     }
-    fn resolve_name (
-            name: &GlobalSymbol,
-            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
-            user_app: &UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_name(
+        name: &GlobalSymbol,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Dynamic(local) = local
-        && let Some(value) = user_app.get_numeric(&local, &list_data) {
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Dynamic(local) = local
+            && let Some(value) = user_app.get_numeric(&local, &list_data)
+        {
             value as u16
-        }
-        else if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Static(local) = local
-        && let Declaration::Numeric(value) = local {
+        } else if let Some(locals) = locals
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Static(local) = local
+            && let Declaration::Numeric(value) = local
+        {
             *value as u16
-        }
-        else if let Some(value) = user_app.get_numeric(&name, &list_data) {
+        } else if let Some(value) = user_app.get_numeric(&name, &list_data) {
             value as u16
-        }
-        else {
+        } else {
             0
         }
     }
 }
 
-impl<'frame, 'application, Event,UserApp> ResolveValue<'frame, 'application, Event,UserApp> for i16
+impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+    for i16
 where
     'application: 'frame,
-    Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
+    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     type DeclarationType = i16;
     type ReturnType = i16;
-    fn resolve_src (
-            var: &DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
-            user_app: &UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_src(
+        var: &DataSrc<Self::DeclarationType>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
                 if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Dynamic(local) = local
-                && let Some(value) = user_app.get_numeric(&local, &list_data) {
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Dynamic(local) = local
+                    && let Some(value) = user_app.get_numeric(&local, &list_data)
+                {
                     value as i16
-                }
-                else if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Static(local) = local
-                && let Declaration::Numeric(value) = local {
+                } else if let Some(locals) = locals
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Static(local) = local
+                    && let Declaration::Numeric(value) = local
+                {
                     *value as i16
-                }
-                else if let Some(value) = user_app.get_numeric(&name, &list_data) {
+                } else if let Some(value) = user_app.get_numeric(&name, &list_data) {
                     value as i16
-                }
-                else {
+                } else {
                     0
                 }
             }
-            DataSrc::Static(value) => {
-                *value as i16
-            }
+            DataSrc::Static(value) => *value as i16,
         }
     }
-    fn resolve_name (
-            name: &GlobalSymbol,
-            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
-            user_app: &UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_name(
+        name: &GlobalSymbol,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Dynamic(local) = local
-        && let Some(value) = user_app.get_numeric(&local, &list_data) {
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Dynamic(local) = local
+            && let Some(value) = user_app.get_numeric(&local, &list_data)
+        {
             value as i16
-        }
-        else if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Static(local) = local
-        && let Declaration::Numeric(value) = local {
+        } else if let Some(locals) = locals
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Static(local) = local
+            && let Declaration::Numeric(value) = local
+        {
             *value as i16
-        }
-        else if let Some(value) = user_app.get_numeric(&name, &list_data) {
+        } else if let Some(value) = user_app.get_numeric(&name, &list_data) {
             value as i16
-        }
-        else {
+        } else {
             0
         }
     }
 }
 
-impl<'frame, 'application, Event,UserApp> ResolveValue<'frame, 'application, Event,UserApp> for bool
+impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+    for bool
 where
     'application: 'frame,
-    Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
+    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     type DeclarationType = bool;
     type ReturnType = bool;
-    fn resolve_src (
-            var: &DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
-            user_app: &UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_src(
+        var: &DataSrc<Self::DeclarationType>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
                 if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Dynamic(local) = local
-                && let Some(value) = user_app.get_bool(&local, &list_data) {
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Dynamic(local) = local
+                    && let Some(value) = user_app.get_bool(&local, &list_data)
+                {
                     value
-                }
-                else if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Static(local) = local
-                && let Declaration::Bool(value) = local {
+                } else if let Some(locals) = locals
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Static(local) = local
+                    && let Declaration::Bool(value) = local
+                {
                     *value
-                }
-                else if let Some(value) = user_app.get_bool(&name, &list_data) {
+                } else if let Some(value) = user_app.get_bool(&name, &list_data) {
                     value
-                }
-                else {
+                } else {
                     false
                 }
             }
-            DataSrc::Static(value) => {
-                *value
-            }
+            DataSrc::Static(value) => *value,
         }
     }
-    fn resolve_name (
-            name: &GlobalSymbol,
-            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
-            user_app: &UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_name(
+        name: &GlobalSymbol,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Dynamic(local) = local
-        && let Some(value) = user_app.get_bool(&local, &list_data) {
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Dynamic(local) = local
+            && let Some(value) = user_app.get_bool(&local, &list_data)
+        {
             value
-        }
-        else if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Static(local) = local
-        && let Declaration::Bool(value) = local {
+        } else if let Some(locals) = locals
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Static(local) = local
+            && let Declaration::Bool(value) = local
+        {
             *value
-        }
-        else if let Some(value) = user_app.get_bool(&name, &list_data) {
+        } else if let Some(value) = user_app.get_bool(&name, &list_data) {
             value
-        }
-        else {
+        } else {
             false
         }
     }
 }
 
-impl<'frame, 'application, Event,UserApp> ResolveValue<'frame, 'application, Event,UserApp> for Event
+impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+    for Event
 where
-    'application:'frame,
-    Event: FromStr+Clone+PartialEq+Default+Debug+EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug+Default,
-    UserApp: ParserDataAccess<Event>
+    'application: 'frame,
+    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug + Default,
+    UserApp: ParserDataAccess<Event>,
 {
     type DeclarationType = Event;
     type ReturnType = Event;
-    fn resolve_src (
-            var: &DataSrc<Self::DeclarationType>,
-            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
-            user_app: &UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_src(
+        var: &DataSrc<Self::DeclarationType>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         match var {
             DataSrc::Dynamic(name) => {
                 if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Dynamic(local) = local
-                && let Some(value) = user_app.get_event(&local, &list_data) {
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Dynamic(local) = local
+                    && let Some(value) = user_app.get_event(&local, &list_data)
+                {
                     value
-                }
-                else if let Some(locals) = locals
-                && let Some(local) = locals.get(name)
-                && let DataSrc::Static(local) = local
-                && let Declaration::Event(value) = local {
+                } else if let Some(locals) = locals
+                    && let Some(local) = locals.get(name)
+                    && let DataSrc::Static(local) = local
+                    && let Declaration::Event(value) = local
+                {
                     value.clone()
-                }
-                else if let Some(value) = user_app.get_event(&name, &list_data) {
+                } else if let Some(value) = user_app.get_event(&name, &list_data) {
                     value
-                }
-                else {
+                } else {
                     Event::default()
                 }
             }
-            DataSrc::Static(value) => {
-                value.clone()
-            }
+            DataSrc::Static(value) => value.clone(),
         }
     }
-    fn resolve_name (
-            name: &GlobalSymbol,
-            locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>, 
-            user_app: &UserApp, 
-            list_data: &Option<(GlobalSymbol, usize)>
-        ) -> Self::ReturnType {
+    fn resolve_name(
+        name: &GlobalSymbol,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> Self::ReturnType {
         if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Dynamic(local) = local
-        && let Some(value) = user_app.get_event(&local, &list_data) {
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Dynamic(local) = local
+            && let Some(value) = user_app.get_event(&local, &list_data)
+        {
             value
-        }
-        else if let Some(locals) = locals
-        && let Some(local) = locals.get(name)
-        && let DataSrc::Static(local) = local
-        && let Declaration::Event(value) = local {
+        } else if let Some(locals) = locals
+            && let Some(local) = locals.get(name)
+            && let DataSrc::Static(local) = local
+            && let Declaration::Event(value) = local
+        {
             value.clone()
-        }
-        else if let Some(value) = user_app.get_event(&name, &list_data) {
+        } else if let Some(value) = user_app.get_event(&name, &list_data) {
             value
-        }
-        else {
+        } else {
             Event::default()
         }
     }
 }
+

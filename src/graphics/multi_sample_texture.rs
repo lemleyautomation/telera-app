@@ -1,4 +1,5 @@
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct MultiSampleTexture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,

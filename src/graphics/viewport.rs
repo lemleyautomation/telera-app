@@ -5,6 +5,7 @@ use winit::window::Window;
 
 use crate::graphics::{depth_texture::DepthTexture, multi_sample_texture::MultiSampleTexture};
 
+#[derive(Debug)]
 pub struct Viewport {
     pub window: Arc<Window>,
     pub page: String,
@@ -26,9 +27,9 @@ impl Viewport {
 
         if size.width > 0 && size.height > 0 {
             self.depth_texture =
-                DepthTexture::new(&device, &self.surface_config, multi_sample_count);
+                DepthTexture::new(device, &self.surface_config, multi_sample_count);
             self.multi_sample_texture =
-                MultiSampleTexture::new(&device, &self.surface_config, multi_sample_count);
+                MultiSampleTexture::new(device, &self.surface_config, multi_sample_count);
         }
     }
     pub fn get_current_texture(&self) -> wgpu::SurfaceTexture {

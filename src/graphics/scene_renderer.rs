@@ -1,17 +1,12 @@
 use wgpu::util::DeviceExt;
 
 use crate::{
+    Model, Transform,
     graphics::{
-        camera_controller::{
-            Camera,
-            CameraController,
-            CameraUniform
-        },
+        camera_controller::{Camera, CameraController, CameraUniform},
         model::Vertex,
     },
     texture::Texture,
-    Model,
-    Transform
 };
 
 pub struct SceneRenderer {
@@ -54,7 +49,7 @@ impl SceneRenderer {
             }],
             label: Some("camera_bind_group"),
         });
-        
+
         Self {
             camera_controller: CameraController::new(5.0),
             camera,
@@ -76,7 +71,7 @@ impl SceneRenderer {
         pipeline_builder.add_buffer_layout(Vertex::buffer_description());
         pipeline_builder.add_buffer_layout(Transform::buffer_description());
         let render_pipeline = pipeline_builder.build_pipeline(
-            &device,
+            device,
             &[
                 &Camera::bindgroup_layout(device),
                 &Texture::bindgroup_layout(device),
@@ -88,11 +83,15 @@ impl SceneRenderer {
         self.render_pipeline = Some(render_pipeline);
     }
 
-    pub fn render(&mut self, models: &mut [Model], render_pass: &mut wgpu::RenderPass, queue: &wgpu::Queue) {
+    pub fn render(
+        &mut self,
+        models: &mut [Model],
+        render_pass: &mut wgpu::RenderPass,
+        queue: &wgpu::Queue,
+    ) {
         match self.render_pipeline.as_mut() {
-            None => return,
+            None => {}
             Some(render_pipeline) => {
-
                 //render_pass.set_viewport(``x``, y, w, h, min_depth, max_depth);
 
                 self.camera_controller.update_camera(&mut self.camera);
@@ -103,7 +102,7 @@ impl SceneRenderer {
                     bytemuck::cast_slice(&[self.camera_uniform]),
                 );
 
-                render_pass.set_pipeline(&render_pipeline);
+                render_pass.set_pipeline(render_pipeline);
                 render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
 
                 for model in models {
@@ -117,9 +116,9 @@ impl SceneRenderer {
                     }
                     if model.mesh.instances_dirty {
                         queue.write_buffer(
-                            &model.mesh.instance_buffer, 
-                            0, 
-                            bytemuck::cast_slice(&model.mesh.get_instance_buffer_raw())
+                            &model.mesh.instance_buffer,
+                            0,
+                            bytemuck::cast_slice(&model.mesh.get_instance_buffer_raw()),
                         );
                         model.mesh.instances_dirty = false;
                     }
@@ -133,7 +132,11 @@ impl SceneRenderer {
                         wgpu::IndexFormat::Uint32,
                     );
                     if model.mesh.instances_shown > 0 {
-                        render_pass.draw_indexed(0..model.mesh.num_elements, 0, 1..model.mesh.instances_shown+1);
+                        render_pass.draw_indexed(
+                            0..model.mesh.num_elements,
+                            0,
+                            1..model.mesh.instances_shown + 1,
+                        );
                     }
                 }
             }
