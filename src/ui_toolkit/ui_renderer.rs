@@ -261,7 +261,7 @@ pub struct UIRenderer {
     swash_cache: SwashCache,
     text_viewport: Option<glyphon::Viewport>,
     text_atlas: Option<glyphon::TextAtlas>,
-    text_renderer: Option<glyphon::TextRenderer>,
+    pub text_renderer: Option<glyphon::TextRenderer>,
     pub measurement_buffer: glyphon::Buffer,
     pub lines: Vec<TextLine>,
 

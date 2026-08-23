@@ -1,23 +1,7 @@
-use notify::{RecursiveMode, Watcher};
-pub use rkyv;
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    fs::read_to_string,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-    time::Instant,
-};
-
-#[cfg(target_os = "windows")]
-type DirectoryWatcher = notify::ReadDirectoryChangesWatcher;
-
-#[cfg(target_os = "linux")]
-type DirectoryWatcher = notify::INotifyWatcher;
-
 pub use image::DynamicImage;
 pub use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
+pub use rkyv;
+use std::{collections::HashMap, fmt::Debug, path::PathBuf, sync::Arc, time::Instant};
 pub use symbol_table;
 pub use telera_macros::*;
 use winit::{
@@ -42,14 +26,12 @@ use graphics::{
 const MULTI_SAMPLE_COUNT: u32 = 1;
 
 mod ui_toolkit;
-pub use ui_toolkit::{
-    layout_types::*, markdown::*, page_set::*, treeview::TreeViewEvents, treeview::TreeViewItem,
-    ui_renderer::UIImageDescriptor,
-};
+pub use ui_toolkit::ui_renderer::{UIImageDescriptor, UIRenderer as MT};
 use ui_toolkit::{
     telera_layout::LayoutEngine, ui_renderer::CustomLayoutSettings, ui_renderer::UIRenderer,
-    ui_shapes::CustomElement,
 };
+
+use crate::ui_toolkit::ui_shapes::CustomElement;
 
 pub enum APIError {
     ModelNotFound,
@@ -60,57 +42,6 @@ pub enum APIError {
 enum InternalEvents {
     Hi,
     RebuildLayout(String),
-}
-
-#[derive(Clone, Default)]
-pub struct EventContext {
-    pub text: Option<String>,
-    pub code: Option<u32>,
-    pub code2: Option<u32>,
-}
-
-impl EventContext {
-    pub fn new() -> Self {
-        EventContext {
-            text: None,
-            code: None,
-            code2: None,
-        }
-    }
-    pub fn from_code(code: u32) -> Self {
-        EventContext {
-            text: None,
-            code: Some(code),
-            code2: None,
-        }
-    }
-    pub fn from_code2(code2: u32) -> Self {
-        EventContext {
-            text: None,
-            code: None,
-            code2: Some(code2),
-        }
-    }
-    pub fn code(mut self, code: u32) -> Self {
-        self.code = Some(code);
-        self
-    }
-    pub fn code2(mut self, code2: u32) -> Self {
-        self.code2 = Some(code2);
-        self
-    }
-}
-
-pub trait EventHandler {
-    type UserApplication;
-    #[allow(unused_variables)]
-    fn dispatch(
-        &self,
-        app: &mut Self::UserApplication,
-        context: Option<EventContext>,
-        api: &mut API,
-    ) {
-    }
 }
 
 #[allow(unused_variables)]
@@ -133,20 +64,22 @@ pub trait App {
     ///
     /// This will be called at the beginning of each render loop
     fn update(&mut self, api: &mut API) {}
+
+    fn layout(&mut self, page: &str, api: &mut API, mt: &mut UIRenderer);
 }
 
 pub struct API {
     staged_windows: Vec<(String, String, WindowAttributes)>,
 
-    #[warn(dead_code)]
+    #[allow(dead_code)]
     instance: wgpu::Instance,
-    #[warn(dead_code)]
+    #[allow(dead_code)]
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     pub scene_renderer: SceneRenderer,
-    ui_renderer: Option<UIRenderer>,
-    pub ui_layout: LayoutEngine<UIRenderer, UIImageDescriptor, CustomElement, CustomLayoutSettings>,
+    pub ui_renderer: Option<UIRenderer>,
+    pub l: LayoutEngine<UIImageDescriptor, CustomElement, CustomLayoutSettings>,
     model_ids: HashMap<String, usize>,
     models: Vec<Model>,
 
@@ -155,10 +88,11 @@ pub struct API {
 
     pub event_string: String,
 
-    left_mouse_pressed: bool,
-    left_mouse_down: bool,
-    left_mouse_released: bool,
-    left_mouse_clicked: bool,
+    pub left_mouse_pressed: bool,
+    pub left_mouse_down: bool,
+    pub left_mouse_released: bool,
+    pub left_mouse_clicked: bool,
+    #[allow(dead_code)]
     left_mouse_double_clicked: bool,
     left_mouse_clicked_timer: Option<Instant>,
     _left_mouse_dbl_clicked_timer: Option<Instant>,
@@ -176,6 +110,7 @@ pub struct API {
     pub dpi_scale: f32,
     pub mouse_poistion: (f32, f32),
     pub mouse_delta: (f32, f32),
+    #[allow(dead_code)]
     scroll_delta_time: Instant,
     scroll_delta_distance: (f32, f32),
 }
@@ -240,24 +175,11 @@ impl API {
         }
         self.staged_windows.clear();
     }
-    fn redraw_viewport<UserEvents, UserApp>(
-        &mut self,
-        window_id: WindowId,
-        layout_binder: &mut Binder<UserEvents, UserApp>,
-        user_application: &mut UserApp,
-    ) where
-        UserApp: ParserDataAccess<UserEvents>,
-        UserEvents:
-            FromStr + Debug + Default + Clone + PartialEq + EventHandler<UserApplication = UserApp>,
-        <UserEvents as FromStr>::Err: Debug + Default,
+    fn redraw_viewport<UserApp>(&mut self, window_id: WindowId, user_application: &mut UserApp)
+    where
+        UserApp: App,
     {
-        //println!("attempting viewport redraw");
-        //let x = self.viewports.keys();
-        //println!(
-        //    "available viewports: {:?}, requested viewport: {:?}",
-        //    x, window_id
-        //);
-        let ui_renderer = if let Some(viewport) = self.viewports.get_mut(&window_id) {
+        let mut ui_renderer = if let Some(viewport) = self.viewports.get_mut(&window_id) {
             //println!("UI renderer good");
             let size: (f32, f32) = viewport.window.inner_size().into();
             self.dpi_scale = viewport.window.scale_factor() as f32;
@@ -266,20 +188,6 @@ impl API {
             ui_renderer.dpi_scale = self.dpi_scale;
             ui_renderer.resize((size.0 as i32, size.1 as i32), &self.queue);
 
-            self.ui_layout
-                .set_layout_dimensions(size.0 / self.dpi_scale, size.1 / self.dpi_scale);
-
-            self.ui_layout.pointer_state(
-                self.mouse_poistion.0 / self.dpi_scale,
-                self.mouse_poistion.1 / self.dpi_scale,
-                self.left_mouse_down,
-            );
-            self.ui_layout.update_scroll_containers(
-                false,
-                self.scroll_delta_distance.0,
-                self.scroll_delta_distance.1,
-                self.scroll_delta_time.elapsed().as_secs_f32(),
-            );
             self.scroll_delta_distance = (0.0, 0.0);
             self.scroll_delta_time = Instant::now();
 
@@ -288,18 +196,35 @@ impl API {
             None
         };
 
-        if let Some(ui_renderer) = ui_renderer {
-            self.ui_layout.begin_layout(ui_renderer);
-            //println!("beginning UI layout");
-            if let Ok(events) = layout_binder.set_page(window_id, self, user_application) {
-                for (event, event_context) in events.iter() {
-                    event.dispatch(user_application, event_context.clone(), self);
-                }
-                //println!("UI layout successful");
-            }
+        let page = self
+            .viewports
+            .get(&window_id)
+            .map(|viewport| viewport.page.clone());
+        let mut render_commands = Vec::new();
+        if let Some(page) = page
+            && let Some(mt) = ui_renderer.as_mut()
+        {
+            self.l.set_layout_dimensions(
+                mt.viewport_size.0 / mt.dpi_scale,
+                mt.viewport_size.1 / mt.dpi_scale,
+            );
+            self.l.pointer_state(
+                self.mouse_poistion.0 / mt.dpi_scale,
+                self.mouse_poistion.1 / mt.dpi_scale,
+                self.left_mouse_down,
+            );
+            self.l.update_scroll_containers(
+                false,
+                self.scroll_delta_distance.0,
+                self.scroll_delta_distance.1,
+                0.016,
+            );
+            self.l.begin_layout();
+            user_application.layout(&page, self, mt);
+            render_commands = self.l.end_layout(mt);
+        }
 
-            let (render_commands, mut ui_renderer) = self.ui_layout.end_layout();
-
+        if let Some(mut ui_renderer) = ui_renderer {
             if let Some(viewport) = self.viewports.get_mut(&window_id) {
                 let drawable = viewport.get_current_texture();
                 //println!("render surface acquired");
@@ -353,6 +278,7 @@ impl API {
                         &self.queue,
                         &viewport.surface_config,
                     );
+
                     //println!("frame rendreed");
                 } else {
                     let mut render_pass: wgpu::RenderPass =
@@ -391,14 +317,6 @@ impl API {
 
                     self.scene_renderer
                         .render(&mut self.models, &mut render_pass, &self.queue);
-
-                    ui_renderer.render_layout(
-                        render_commands,
-                        &mut render_pass,
-                        &self.device,
-                        &self.queue,
-                        &viewport.surface_config,
-                    );
                 }
 
                 self.queue.submit(std::iter::once(command_encoder.finish()));
@@ -523,82 +441,33 @@ impl API {
     }
 }
 
-struct Application<UserApp, UserEvents>
+struct Application<UserApp>
 where
-    UserEvents:
-        FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <UserEvents as FromStr>::Err: Debug,
-    UserApp: App + ParserDataAccess<UserEvents>,
+    UserApp: App,
 {
-    layout_binder: Binder<UserEvents, UserApp>,
     core: Option<API>,
     user_application: UserApp,
 
     #[allow(dead_code)]
     app_events: EventLoopProxy<InternalEvents>,
-    #[allow(dead_code)]
-    watcher: Option<DirectoryWatcher>,
 }
 
-impl<UserEvents, UserApp> Application<UserApp, UserEvents>
+impl<UserApp> Application<UserApp>
 where
-    UserEvents:
-        FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <UserEvents as FromStr>::Err: Debug + Default,
-    UserApp: App + ParserDataAccess<UserEvents>,
+    UserApp: App,
 {
-    pub fn new(
-        app_events: EventLoopProxy<InternalEvents>,
-        user_application: UserApp,
-        watcher: Option<DirectoryWatcher>,
-    ) -> Self {
-        let layout_binder = Binder::new();
-
-        let mut application = Application {
-            layout_binder,
+    pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp) -> Self {
+        Application {
             core: None,
             app_events,
             user_application,
-            watcher,
-        };
-
-        application.load_layouts("src/layouts".to_string());
-
-        application
-    }
-
-    fn load_layouts(&mut self, dir: String) {
-        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
-            eprintln!("Error reading directory: {}", e);
-            std::process::exit(1);
-        });
-
-        for dir in entries {
-            #[allow(for_loops_over_fallibles)]
-            for dir in dir {
-                let entry = dir.path();
-                if entry.is_file()
-                    && let Ok(file) = read_to_string(entry)
-                    && let Ok((page_name, page_layout, reusables)) =
-                        process_layout::<UserEvents>(file)
-                {
-                    self.layout_binder.add_page(&page_name, page_layout);
-                    for (name, reusable) in reusables {
-                        self.layout_binder.add_reusable(&name, reusable);
-                    }
-                }
-            }
         }
     }
 }
 
-impl<UserEvents, UserApp> ApplicationHandler<InternalEvents> for Application<UserApp, UserEvents>
+impl<UserApp> ApplicationHandler<InternalEvents> for Application<UserApp>
 where
-    UserEvents:
-        FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    UserEvents: EventHandler<UserApplication = UserApp>,
-    <UserEvents as FromStr>::Err: Debug + Default,
-    UserApp: App + ParserDataAccess<UserEvents>,
+    UserApp: App,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         //println!("building context");
@@ -686,15 +555,10 @@ where
                                     multi_sample_texture,
                                 };
 
+                                let l = LayoutEngine::new((0.0, 0.0));
+
                                 let mut viewports = HashMap::new();
                                 viewports.insert(window_id, initial_viewport);
-                                //println!("viewport configured");
-                                let ui_layout = LayoutEngine::<
-                                    UIRenderer,
-                                    UIImageDescriptor,
-                                    CustomElement,
-                                    CustomLayoutSettings,
-                                >::new(size.into());
                                 println!("API initialized");
                                 let mut api = API {
                                     staged_windows: Vec::new(),
@@ -704,7 +568,7 @@ where
                                     queue,
                                     scene_renderer,
                                     ui_renderer,
-                                    ui_layout,
+                                    l,
                                     model_ids: HashMap::new(),
                                     models: Vec::<Model>::new(),
                                     viewport_lookup,
@@ -733,11 +597,7 @@ where
                                     scroll_delta_distance: (0.0, 0.0),
                                 };
 
-                                api.redraw_viewport(
-                                    window_id,
-                                    &mut self.layout_binder,
-                                    &mut self.user_application,
-                                );
+                                //api.redraw_viewport(window_id, &mut self.user_application);
 
                                 self.user_application.initialize(&mut api);
                                 self.core = Some(api);
@@ -779,11 +639,7 @@ where
                 }
                 WindowEvent::RedrawRequested => {
                     //println!("redraw requested");
-                    api.redraw_viewport(
-                        window_id,
-                        &mut self.layout_binder,
-                        &mut self.user_application,
-                    );
+                    api.redraw_viewport::<UserApp>(window_id, &mut self.user_application);
                 }
                 WindowEvent::MouseInput {
                     device_id: _,
@@ -872,73 +728,16 @@ where
             api.request_redraw_viewport(window_id);
         }
     }
-
-    fn user_event(
-        &mut self,
-        _event_loop: &winit::event_loop::ActiveEventLoop,
-        event: InternalEvents,
-    ) {
-        //println!("file changed");
-        if let InternalEvents::RebuildLayout(path) = event {
-            //println!("{:?}", &path);
-            self.load_layouts(path);
-        }
-    }
 }
 
-fn watch_file(file: &str, sender: EventLoopProxy<InternalEvents>) -> Result<DirectoryWatcher, ()> {
-    if let Ok(mut watcher) =
-        notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            //println!("file event result: {:?}", &event);
-            if let Ok(event) = event {
-                let path = event.paths.first();
-                //println!("file path: {:?}", path);
-                if let Some(path) = path {
-                    let event_kind = event.kind;
-                    //println!("file event kind: {:?}", event_kind);
-                    if let notify::EventKind::Modify(_kind) = event_kind {
-                        let path = path
-                            .parent()
-                            .unwrap()
-                            .to_owned()
-                            .to_str()
-                            .unwrap()
-                            .to_owned();
-                        //println!(
-                        //    "sending {:?}, to main thread {:?}",
-                        //    kind,
-                        let _ = sender.send_event(InternalEvents::RebuildLayout(path));
-                        //);
-                    }
-                }
-            }
-        })
-        && let Ok(()) = watcher.watch(Path::new(file), RecursiveMode::NonRecursive)
-    {
-        return Ok(watcher);
-    }
-
-    Err(())
-}
-
-pub fn run<UserEvents, UserApp>(user_application: UserApp)
+pub fn run<UserApp>(user_application: UserApp)
 where
-    UserEvents:
-        FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <UserEvents as FromStr>::Err: Debug + Default,
-    UserApp: App + ParserDataAccess<UserEvents>,
+    UserApp: App,
 {
     if let Ok(event_loop) = EventLoop::<InternalEvents>::with_user_event().build() {
         event_loop.set_control_flow(ControlFlow::Wait);
-        let file_watcher_proxy = event_loop.create_proxy();
-
-        if let Ok(watcher) = watch_file("src/layouts", file_watcher_proxy) {
-            let mut app =
-                Application::new(event_loop.create_proxy(), user_application, Some(watcher));
-            event_loop.run_app(&mut app).unwrap();
-        } else {
-            panic!("Can't find layout files.");
-        }
+        let mut app = Application::new(event_loop.create_proxy(), user_application);
+        event_loop.run_app(&mut app).unwrap();
     } else {
         panic!("Event loop creation failed.");
     }

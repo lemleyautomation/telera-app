@@ -1,59 +1,7 @@
-//#![windows_subsystem = "windows"]
+#![cfg_attr(rustfmt, rustfmt_skip)]
 
-use std::str::FromStr;
-
-use symbol_table::GlobalSymbol;
 use telera_app::*;
-
-#[derive(Debug, Default, Clone, PartialEq)]
-enum BasicEvents {
-    #[default]
-    None,
-    SquirrelClicked,
-    LoremClicked,
-    FileButtonClicked,
-}
-
-impl FromStr for BasicEvents {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "FileButtonClicked" => Ok(BasicEvents::FileButtonClicked),
-            "SquirrelClicked" => Ok(BasicEvents::SquirrelClicked),
-            "LoremClicked" => Ok(BasicEvents::LoremClicked),
-            _ => Err(()),
-        }
-    }
-}
-
-impl EventHandler for BasicEvents {
-    type UserApplication = BasicApp;
-    fn dispatch(
-        &self,
-        app: &mut Self::UserApplication,
-        context: Option<EventContext>,
-        api: &mut API,
-    ) {
-        match self {
-            BasicEvents::FileButtonClicked => file_button_clicked_handler(app, context, api),
-            BasicEvents::LoremClicked => lorem_clicked_handler(app, context, api),
-            BasicEvents::SquirrelClicked => squirrel_clicked_handler(app, context, api),
-            BasicEvents::None => {}
-        }
-    }
-}
-
-fn squirrel_clicked_handler(app: &mut BasicApp, _context: Option<EventContext>, _api: &mut API) {
-    app.selected_document = 0;
-}
-
-fn lorem_clicked_handler(app: &mut BasicApp, _context: Option<EventContext>, _api: &mut API) {
-    app.selected_document = 1;
-}
-
-fn file_button_clicked_handler(app: &mut BasicApp, _context: Option<EventContext>, _api: &mut API) {
-    app.file_menu_open = !app.file_menu_open;
-}
+use telera_layout::{ElementConfiguration, TextConfig};
 
 #[derive(Default)]
 pub struct Document {
@@ -87,106 +35,212 @@ impl App for BasicApp {
             v2: 1.0,
         }
     }
-}
 
-impl ParserDataAccess<BasicEvents> for BasicApp {
-    fn get_image<'render_pass, 'application>(
-        &'application self,
-        name: &GlobalSymbol,
-        _list_data: &Option<(GlobalSymbol, usize)>,
-    ) -> Option<&'render_pass UIImageDescriptor>
-    where
-        'application: 'render_pass,
-    {
-        if name.as_str() == "pic" {
-            return Some(&self.pic);
+    fn layout(&mut  self, page: &str, api: &mut API, mt: &mut MT) {
+        macro_rules! e {
+            ($v:expr $(, $c:stmt)* $(,)? ) => {
+                api.l.open_element();
+                api.l.configure_element(&$v);
+                $(
+                    $c
+                )*
+                api.l.close_element();
+            };
         }
-        None
-    }
-    fn get_bool(&self, name: &GlobalSymbol, list: &Option<(GlobalSymbol, usize)>) -> Option<bool> {
-        match list {
-            None => {
-                if name.as_str() == "file-menu-opened" {
-                    return Some(self.file_menu_open);
-                }
-                None
-            }
-            Some(list) => {
-                if list.0.as_str() == "Documents"
-                    && name.as_str() == "selected"
-                    && self.selected_document == list.1
-                {
-                    Some(true)
-                } else {
-                    Some(false)
-                }
-            }
+
+        macro_rules! t {
+            ($v:expr, $c:expr) => {
+                api.l.add_text_element($c, &$v, true, mt);
+            };
         }
-    }
-    fn get_text<'render_pass, 'application>(
-        &'application self,
-        name: &GlobalSymbol,
-        list: &Option<(GlobalSymbol, usize)>,
-    ) -> Option<&'render_pass String>
-    where
-        'application: 'render_pass,
-    {
-        //println!("{:?}, {:?}", name, list);
-        match list {
-            None => {
-                if name.as_str() == "title" {
-                    return Some(&self.documents.get(self.selected_document).unwrap().title);
-                } else if name.as_str() == "contents" {
-                    return Some(&self.documents.get(self.selected_document).unwrap().contents);
-                } else if name.as_str() == "search_bar" {
-                    return Some(&self.search_bar);
-                }
-                None
-            }
-            Some(list) => {
-                if list.0.as_str() == "Documents" {
-                    if name.as_str() == "title" {
-                        //println!("asking for list element {:?} title", list.index);
-                        return Some(&self.documents.get(list.1).unwrap().title);
-                    }
-                    if name.as_str() == "contents" {
-                        return Some(&self.documents.get(list.1).unwrap().contents);
-                    }
-                }
-                None
-            }
-        }
-    }
-    fn get_list_length(
-        &self,
-        name: &GlobalSymbol,
-        _list: &Option<(GlobalSymbol, usize)>,
-    ) -> Option<usize> {
-        if name.as_str() == "Documents" {
-            return Some(self.documents.len());
-        }
-        None
-    }
-    fn get_event<'render_pass, 'application>(
-        &'application self,
-        name: &GlobalSymbol,
-        list: &Option<(GlobalSymbol, usize)>,
-    ) -> Option<BasicEvents>
-    where
-        'application: 'render_pass,
-    {
-        match list {
-            None => None,
-            Some(list) => {
-                if name.as_str() == "Clicked" && list.0.as_str() == "Documents" {
-                    match list.1 as u32 {
-                        0 => return Some(BasicEvents::SquirrelClicked),
-                        1 => return Some(BasicEvents::LoremClicked),
-                        _ => return None,
-                    }
-                }
-                None
-            }
+
+        if page == "testing" {
+            let main = ElementConfiguration::default()
+                .grow_all()
+                .color([43, 41, 51, 255].into())
+                .direction(true)
+                .padding_all(16)
+                .child_gap(16)
+                .end();
+            let header = ElementConfiguration::default()
+                .color([90, 90, 90, 255].into())
+                .radius_all(8.0)
+                .x_grow()
+                .y_fixed(60.0)
+                .padding_top(8)
+                .padding_bottom(8)
+                .padding_left(16)
+                .padding_right(16)
+                .child_gap(16)
+                .align_children_y_center()
+                .end();
+            let lower_content = ElementConfiguration::default()
+                .child_gap(16)
+                .grow_all()
+                .end();
+            let side_bar = ElementConfiguration::default()
+                .color([90, 90, 90, 255].into())
+                .direction(true)
+                .padding_all(16)
+                .child_gap(8)
+                .x_fixed(250.0)
+                .y_grow()
+                .radius_all(8.0)
+                .end();
+            let mut main_content = ElementConfiguration::default()
+                .color([90,90,90,255].into())
+                .direction(true)
+                .child_gap(16)
+                .padding_all(16)
+                .grow_all()
+                .radius_all(8.0)
+                .end();
+            let side_bar_button = ElementConfiguration::default()
+                .x_grow()
+                .padding_all(16)
+                .end();
+            let selected_side_bar_button = ElementConfiguration::default()
+                .x_grow()
+                .padding_all(16)
+                .color([120,120,120,255].into())
+                .radius_all(8.0)
+                .end();
+            let clicked_side_bar_button = ElementConfiguration::default()
+                .x_grow()
+                .padding_all(16)
+                .color([120,120,120,255].into())
+                .border_all(2)
+                .border_color([255,255,255,255].into())
+                .radius_all(8.0)
+                .end();
+            let hovered_side_bar_button = ElementConfiguration::default()
+                .x_grow()
+                .padding_all(16)
+                .color([120,120,120,255].into())
+                .radius_all(8.0)
+                .end();
+            let file_button = ElementConfiguration::default()
+                .padding_top(8)
+                .padding_bottom(8)
+                .padding_left(16)
+                .padding_right(16)
+                .color([140, 140, 140, 255].into())
+                .radius_all(5.0)
+                .end();
+            let hovered_file_button = ElementConfiguration::default()
+                .padding_top(8)
+                .padding_bottom(8)
+                .padding_left(16)
+                .padding_right(16)
+                .color([140, 140, 140, 255].into())
+                .radius_all(5.0)
+                .border_all(2)
+                .border_color([255, 255, 255, 255].into())
+                .end();
+            let context_menu = ElementConfiguration::default()
+                .padding_bottom(8)
+                .padding_right(8)
+                .floating()
+                .floating_offset(0.0, 40.0)
+                .end();
+            let context_pane = ElementConfiguration::default()
+                .direction(true)
+                .x_fixed(200.0)
+                .color([40,40,40,255].into())
+                .radius_all(8.0)
+                .end();
+            let context_menu_item = ElementConfiguration::default()
+                .padding_all(16)
+                .x_grow()
+                .end();
+            let hovered_context_menu_item = ElementConfiguration::default()
+                .padding_all(16)
+                .x_grow()
+                .end();
+            let text_config = TextConfig::new()
+                .font_id(0)
+                .color([0, 0, 0, 255].into())
+                .font_size(12)
+                .line_height(14)
+                .end();
+            let main_text_config = TextConfig::new()
+                .font_id(0)
+                .color([0,0,0,255].into())
+                .font_size(24)
+                .line_height(28)
+                .end();
+            e!(
+                main,
+                e!(
+                    header,
+                    e!(
+                        if api.l.hovered() {
+                            if api.left_mouse_clicked {
+                                self.file_menu_open = !self.file_menu_open;
+                            }
+                            hovered_file_button
+                        } else {
+                            file_button
+                        },
+                        t!(text_config, "File"),
+                        if self.file_menu_open {
+                            e!(
+                                context_menu,
+                                e!(
+                                    context_pane,
+
+                                )
+                            );
+                        }
+                    ),
+                    e!(ElementConfiguration::default().x_grow().end()),
+                    e!(
+                        if api.l.hovered() {
+                            hovered_file_button
+                        } else {
+                            file_button
+                        },
+                        t!(text_config, "Media")
+                    ),
+                    e!(
+                        if api.l.hovered() {
+                            hovered_file_button
+                        } else {
+                            file_button
+                        },
+                        t!(text_config, "Support")
+                    ),
+                ),
+                e!(
+                    lower_content, 
+                    e!(
+                        side_bar,
+                        for i in 0..self.documents.len() {
+                            api.l.open_element();
+                            if api.l.hovered() && api.left_mouse_clicked {
+                                api.l.configure_element(&clicked_side_bar_button);
+                                self.selected_document = i;
+                            }
+                            else if api.l.hovered() {
+                                api.l.configure_element(&hovered_side_bar_button);
+                            }
+                            else if self.documents[self.selected_document].title == self.documents[i].title {
+                                api.l.configure_element(&selected_side_bar_button);
+                            }
+                            else {
+                                api.l.configure_element(&side_bar_button);
+                            }
+                            api.l.add_text_element(&self.documents[i].title, &text_config, true, mt);
+                            api.l.close_element();
+                        }
+                    ),
+                    e!(
+                        main_content.scroll(true, false, api.l.get_scroll_offset()).end(),
+                        t!(main_text_config, &self.documents[self.selected_document].title),
+                        t!(main_text_config, &self.documents[self.selected_document].contents)
+                    )
+                )
+            );
         }
     }
 }
@@ -211,5 +265,5 @@ fn main() {
         pic: UIImageDescriptor::default(),
     };
 
-    run::<BasicEvents, BasicApp>(app);
+    run::<BasicApp>(app);
 }
