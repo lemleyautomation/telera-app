@@ -7,7 +7,7 @@ pub use telera_macros::*;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop, EventLoopProxy},
 };
 pub use winit::{
@@ -26,6 +26,7 @@ use graphics::{
 const MULTI_SAMPLE_COUNT: u32 = 1;
 
 mod ui_toolkit;
+pub use ui_toolkit::telera_layout::{Color, ElementConfiguration, TextConfig};
 pub use ui_toolkit::ui_renderer::{UIImageDescriptor, UIRenderer as MT};
 use ui_toolkit::{
     telera_layout::LayoutEngine, ui_renderer::CustomLayoutSettings, ui_renderer::UIRenderer,
@@ -87,6 +88,8 @@ pub struct API {
     viewports: HashMap<WindowId, Viewport>,
 
     pub event_string: String,
+
+    pub keyboard_buffer: Vec<KeyEvent>,
 
     pub left_mouse_pressed: bool,
     pub left_mouse_down: bool,
@@ -179,7 +182,14 @@ impl API {
     where
         UserApp: App,
     {
-        let mut ui_renderer = if let Some(viewport) = self.viewports.get_mut(&window_id) {
+        let page = self
+            .viewports
+            .get(&window_id)
+            .map(|viewport| viewport.page.clone());
+        let mut render_commands = Vec::new();
+        let ui_renderer = if let Some(viewport) = self.viewports.get_mut(&window_id)
+            && let Some(page) = page
+        {
             //println!("UI renderer good");
             let size: (f32, f32) = viewport.window.inner_size().into();
             self.dpi_scale = viewport.window.scale_factor() as f32;
@@ -188,6 +198,25 @@ impl API {
             ui_renderer.dpi_scale = self.dpi_scale;
             ui_renderer.resize((size.0 as i32, size.1 as i32), &self.queue);
 
+            self.l.set_layout_dimensions(
+                ui_renderer.viewport_size.0 / ui_renderer.dpi_scale,
+                ui_renderer.viewport_size.1 / ui_renderer.dpi_scale,
+            );
+            self.l.pointer_state(
+                self.mouse_poistion.0 / ui_renderer.dpi_scale,
+                self.mouse_poistion.1 / ui_renderer.dpi_scale,
+                self.left_mouse_down,
+            );
+            self.l.update_scroll_containers(
+                false,
+                (self.scroll_delta_distance.0 / ui_renderer.dpi_scale) * 3.0,
+                (self.scroll_delta_distance.1 / ui_renderer.dpi_scale) * 3.0,
+                0.016,
+            );
+            self.l.begin_layout();
+            user_application.layout(&page, self, &mut ui_renderer);
+            render_commands = self.l.end_layout(&mut ui_renderer);
+            //            println!("{:#?}", render_commands);
             self.scroll_delta_distance = (0.0, 0.0);
             self.scroll_delta_time = Instant::now();
 
@@ -195,34 +224,6 @@ impl API {
         } else {
             None
         };
-
-        let page = self
-            .viewports
-            .get(&window_id)
-            .map(|viewport| viewport.page.clone());
-        let mut render_commands = Vec::new();
-        if let Some(page) = page
-            && let Some(mt) = ui_renderer.as_mut()
-        {
-            self.l.set_layout_dimensions(
-                mt.viewport_size.0 / mt.dpi_scale,
-                mt.viewport_size.1 / mt.dpi_scale,
-            );
-            self.l.pointer_state(
-                self.mouse_poistion.0 / mt.dpi_scale,
-                self.mouse_poistion.1 / mt.dpi_scale,
-                self.left_mouse_down,
-            );
-            self.l.update_scroll_containers(
-                false,
-                self.scroll_delta_distance.0,
-                self.scroll_delta_distance.1,
-                0.016,
-            );
-            self.l.begin_layout();
-            user_application.layout(&page, self, mt);
-            render_commands = self.l.end_layout(mt);
-        }
 
         if let Some(mut ui_renderer) = ui_renderer {
             if let Some(viewport) = self.viewports.get_mut(&window_id) {
@@ -574,6 +575,7 @@ where
                                     viewport_lookup,
                                     viewports,
                                     event_string: "".to_string(),
+                                    keyboard_buffer: Vec::new(),
                                     left_mouse_pressed: false,
                                     left_mouse_down: false,
                                     left_mouse_released: false,
@@ -626,7 +628,6 @@ where
                         event_loop.exit();
                     }
                     api.remove_viewport(window_id);
-                    return;
                 }
                 WindowEvent::Resized(size) => {
                     api.resize_viewport(window_id, size);
@@ -713,19 +714,27 @@ where
                         MouseScrollDelta::LineDelta(x, y) => (x, y),
                         MouseScrollDelta::PixelDelta(position) => position.into(),
                     };
-                    //viewport.window.request_redraw();
+                    api.request_redraw_viewport(window_id);
                 }
                 WindowEvent::CursorMoved {
                     device_id: _,
                     position,
                 } => {
+                    api.request_redraw_viewport(window_id);
                     api.mouse_delta.0 = position.x as f32 - api.mouse_poistion.0;
                     api.mouse_delta.1 = position.y as f32 - api.mouse_poistion.1;
                     api.mouse_poistion = position.into();
                 }
+                WindowEvent::KeyboardInput {
+                    device_id: _,
+                    event,
+                    is_synthetic: _,
+                } => {
+                    api.keyboard_buffer.push(event);
+                }
                 _ => {}
             }
-            api.request_redraw_viewport(window_id);
+            //api.request_redraw_viewport(window_id);
         }
     }
 }

@@ -2,6 +2,7 @@
 
 use telera_app::*;
 use telera_layout::{ElementConfiguration, TextConfig};
+use winit::event::KeyEvent;
 
 #[derive(Default)]
 pub struct Document {
@@ -16,6 +17,16 @@ struct BasicApp {
     file_menu_open: bool,
     search_bar: String,
     pic: UIImageDescriptor,
+}
+
+fn process_keyboard_input(feild: &String, input: KeyEvent) -> String {
+    if let Some(input) = input.text {
+        println!("{:?}", &input);
+        format!("{:?}{:?}", feild, input)
+    }
+    else {
+        "".to_string()
+    }
 }
 
 impl App for BasicApp {
@@ -52,6 +63,10 @@ impl App for BasicApp {
             ($v:expr, $c:expr) => {
                 api.l.add_text_element($c, &$v, true, mt);
             };
+        }
+
+        for input in api.keyboard_buffer.drain(..) {
+            process_keyboard_input(&mut self.search_bar, input);
         }
 
         if page == "testing" {
@@ -127,6 +142,16 @@ impl App for BasicApp {
                 .color([140, 140, 140, 255].into())
                 .radius_all(5.0)
                 .end();
+            let search_bar = ElementConfiguration::default()
+                .padding_top(8)
+                .padding_bottom(8)
+                .padding_left(15)
+                .padding_right(16)
+                .color([255,255,255,255].into())
+                .radius_all(5.0)
+                .y_grow()
+                .x_fixed(200.)
+                .end();
             let hovered_file_button = ElementConfiguration::default()
                 .padding_top(8)
                 .padding_bottom(8)
@@ -141,7 +166,7 @@ impl App for BasicApp {
                 .padding_bottom(8)
                 .padding_right(8)
                 .floating()
-                .floating_offset(0.0, 40.0)
+                .floating_attach_to_parent_at_bottom_left()
                 .end();
             let context_pane = ElementConfiguration::default()
                 .direction(true)
@@ -155,6 +180,7 @@ impl App for BasicApp {
                 .end();
             let hovered_context_menu_item = ElementConfiguration::default()
                 .padding_all(16)
+                .color([120,120,120,255].into())
                 .x_grow()
                 .end();
             let text_config = TextConfig::new()
@@ -188,11 +214,38 @@ impl App for BasicApp {
                                 context_menu,
                                 e!(
                                     context_pane,
-
+                                    e!(
+                                        if api.l.hovered() {
+                                            hovered_context_menu_item
+                                        }
+                                        else {
+                                            context_menu_item
+                                        },
+                                        t!(text_config, "New")
+                                    ),
+                                    e!(
+                                        if api.l.hovered() {
+                                            hovered_context_menu_item
+                                        }
+                                        else {
+                                            context_menu_item
+                                        },
+                                        t!(text_config, "Open")
+                                    ),
+                                    e!(
+                                        if api.l.hovered() {
+                                            hovered_context_menu_item
+                                        }
+                                        else {
+                                            context_menu_item
+                                        },
+                                        t!(text_config, "Save")
+                                    ),
                                 )
                             );
                         }
                     ),
+                    e!(search_bar,t!(text_config,&self.search_bar)),
                     e!(ElementConfiguration::default().x_grow().end()),
                     e!(
                         if api.l.hovered() {

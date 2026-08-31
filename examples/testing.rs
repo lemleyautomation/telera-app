@@ -1,51 +1,69 @@
 //#![windows_subsystem = "windows"]
 
+#![cfg_attr(rustfmt, rustfmt_skip)]
+
 use telera_app::*;
+use telera_layout::{ElementConfiguration, TextConfig};
+use winit::event::KeyEvent;
 
-#[derive(Debug, Default, Clone, PartialEq)]
-enum BasicEvents {
-    #[default]
-    None,
-}
-
-impl std::str::FromStr for BasicEvents {
-    type Err = ();
-    fn from_str(_s: &str) -> Result<Self, Self::Err> {
-        Ok(BasicEvents::None)
-    }
-}
-
-impl EventHandler for BasicEvents {
-    type UserApplication = BasicApp;
-    fn dispatch(
-        &self,
-        _app: &mut Self::UserApplication,
-        _context: Option<EventContext>,
-        _api: &mut API,
-    ) {
-    }
-}
 
 #[derive(Default)]
-struct BasicApp {}
+struct BasicApp {
+    radii: f32
+}
 
 impl App for BasicApp {
-    fn initialize(&mut self, _core: &mut API) {
-        // let pic = include_bytes!("../pic.jpg");
-        // let pic = pic.as_slice();
-        // let pic = image::load_from_memory(pic).unwrap();
-        // core.add_image("pic", pic);
-        // self.pic = UIImageDescriptor {
-        //     atlas: "pic".to_string(),
-        //     u1: 0.0, v1: 0.0, u2: 1.0, v2: 1.0
-        // }
+    fn initialize(&mut self, core: &mut API) {
+        let new_window =
+            winit::window::Window::default_attributes().with_inner_size(LogicalSize::new(800, 600));
+        core.create_viewport("Main", "Main", new_window);
+    }
+
+    fn layout(&mut  self, page: &str, api: &mut API, mt: &mut MT) {
+        macro_rules! e {
+            ($v:expr $(, $c:stmt)* $(,)? ) => {
+                api.l.open_element();
+                api.l.configure_element(&$v);
+                $(
+                    $c
+                )*
+                api.l.close_element();
+            };
+        }
+
+        macro_rules! t {
+            ($v:expr, $c:expr) => {
+                api.l.add_text_element($c, &$v, true, mt);
+            };
+        }
+
+
+        let root = ElementConfiguration::new()
+            .direction(true)
+            .color(Color::rgb(0,0,0))
+            .padding_all(20)
+            .child_gap(20)
+            .end();
+
+        let square1 = ElementConfiguration::new()
+            .color(Color::rgb(100,100, 100))
+            .x_fixed(200.0)
+            .y_fixed(200.0)
+            .border_top(10)
+            .radius_all(self.radii+10.0)
+            .border_color(Color::rgb(0,208,0))
+            .end();
+
+        e!(root, e!(square1), e!(square1), e!(square1), e!(square1));
+        self.radii += 0.01;
     }
 }
 
-impl ParserDataAccess<BasicEvents> for BasicApp {}
-
 fn main() {
-    let app = BasicApp {};
 
-    run::<BasicEvents, BasicApp>(app);
+    let app = BasicApp {
+        radii: 0.0
+    };
+
+    run::<BasicApp>(app);
 }
