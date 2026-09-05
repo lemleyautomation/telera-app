@@ -5,4 +5,3 @@ pub mod multi_sample_texture;
 pub mod scene_renderer;
 pub mod texture;
 pub mod viewport;
-

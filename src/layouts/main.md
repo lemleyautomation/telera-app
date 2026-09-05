@@ -130,11 +130,7 @@
                 - `height-grow`
                 - `radius-all` 8
             - `list` Documents
-                - `declarations`
-                    - `get-event` *Clicked* Clicked
-                    - `get-bool` *selected* selected_document
-                    - `get-text` *title* title
-                - `if` selected
+                - `if-index` selected_document
                     - `element`
                         - `config`
                             - `use` sidebar button
@@ -148,7 +144,7 @@
                                 - `font-size` 20
                                 - `color` black
                             - *title*
-                - `if-not` selected
+                - `if-index-not` selected_document
                     - `element`
                         - `config`
                             - `use` sidebar button
@@ -172,15 +168,16 @@
                 - `padding-all` 16
                 - `use` layout expand
                 - `radius-all` 8
-            - `text`
-                - `config`
-                    - `font-size` 24
-                    - `line-height` 28
-                    - `color` white
-                - *title*
-            - `text`
-                - `config`
-                    - `font-size` 24
-                    - `line-height` 28
-                    - `color` white
-                - *contents*
+            - `item` Documents selected_document
+                - `text`
+                    - `config`
+                        - `font-size` 24
+                        - `line-height` 28
+                        - `color` white
+                    - *title*
+                - `text`
+                    - `config`
+                        - `font-size` 24
+                        - `line-height` 28
+                        - `color` white
+                    - *contents*

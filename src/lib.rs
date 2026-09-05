@@ -1,7 +1,15 @@
 pub use image::DynamicImage;
+use notify::Watcher as _;
 pub use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 pub use rkyv;
-use std::{collections::HashMap, fmt::Debug, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::{Arc, mpsc},
+    time::Instant,
+};
 pub use symbol_table;
 pub use telera_macros::*;
 use winit::{
@@ -26,55 +34,121 @@ use graphics::{
 const MULTI_SAMPLE_COUNT: u32 = 1;
 
 mod ui_toolkit;
+pub use ui_toolkit::layout_runner::{
+    Binder, Config, DataSrc, Declaration, Element, EventContext, EventHandler, FieldAccess, Layout,
+    LayoutRunnerCustomElements, LayoutRunnerReflection, ParsedLayout, normalize_field_symbol,
+    process_layout,
+};
 pub use ui_toolkit::telera_layout::{Color, ElementConfiguration, TextConfig};
+pub use ui_toolkit::treeview::{TreeViewEvents, TreeViewItem};
 pub use ui_toolkit::ui_renderer::{UIImageDescriptor, UIRenderer as MT};
+pub use ui_toolkit::ui_shapes::*;
 use ui_toolkit::{
     telera_layout::LayoutEngine, ui_renderer::CustomLayoutSettings, ui_renderer::UIRenderer,
 };
-
-use crate::ui_toolkit::ui_shapes::CustomElement;
 
 pub enum APIError {
     ModelNotFound,
 }
 
-#[allow(dead_code)]
+/// Sent through the winit event loop's user-event channel by the
+/// background thread `spawn_layout_watcher` starts for `RunType::Watch` -
+/// `notify`'s watcher callback runs off the event-loop thread and can't
+/// touch `API`/`Binder` directly, so it just names the file that changed
+/// and lets `Application::user_event` do the actual reload.
 #[derive(Debug)]
 enum InternalEvents {
-    Hi,
-    RebuildLayout(String),
+    RebuildLayout(PathBuf),
+}
+
+/// How an `App` wants its markdown layout file(s) loaded, per
+/// [`Startup::watch_path`]. In every non-`None` case the string names a
+/// *directory* - `API` recursively loads every `.md` file it finds there
+/// into the `Binder`, not a single file.
+#[derive(Clone)]
+pub enum RunType {
+    /// Load every layout file under this directory once, at startup, and
+    /// never look at it again.
+    Once(String),
+    /// Load every layout file under this directory at startup, then keep
+    /// watching it (recursively) in a background thread, reloading
+    /// whichever file changed whenever it does.
+    Watch(String),
+    /// Don't touch the `Binder` at all - this app builds its layout by
+    /// hand with `api.l` (see `examples/basic.rs`).
+    None,
+}
+
+pub struct Startup {
+    pub initial_window: WindowAttributes,
+    pub window_name: String,
+    pub watch_path: RunType,
 }
 
 #[allow(unused_variables)]
-pub trait App {
-    /// called before Graphics card is initiallized.
-    /// if the user doesn't implement this function,
-    /// a default window of 800x600 will be created
-    fn initial_window(&self) -> (WindowAttributes, String) {
-        (
-            winit::window::Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)),
-            "testing".to_string(),
-        )
-    }
-    /// called once before start
-    fn initialize(&mut self, api: &mut API) {
-        api.create_default_viewport();
-    }
+pub trait App: LayoutRunnerReflection<Self::Event>
+where
+    <Self::Event as FromStr>::Err: Debug,
+{
+    /// The event enum this app's markdown-driven layout(s), if any,
+    /// dispatch through. `API` is generic over `(Event, UserApp)` (so it
+    /// can own a concretely-typed `Binder` instead of a type-erased one),
+    /// which means every `App` has to name one here, even an app that
+    /// never touches the layout-file/`Binder` machinery at all: declare a
+    /// trivial single-variant enum (`#[derive(EventHandler)]` still applies
+    /// - see `examples/basic.rs`) and an empty `impl ParserDataAccess<...>
+    /// for YourApp {}` to go with it.
+    type Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = Self>;
+
+    /// Called once, before the graphics context (and so `API` itself)
+    /// exists, to create the application's first window: the returned
+    /// [`Startup::window_name`] is that window's name, and - until
+    /// something (e.g. `API::set_viewport_page`) says otherwise - its page
+    /// too. [`Startup::watch_path`], if set, names a markdown layout file
+    /// for `API` to load itself before the first frame - the app never
+    /// reads or parses it.
+    ///
+    /// Required, not defaulted: there's no generic "right" window to hand
+    /// back, so every `App` supplies its own attributes and name here.
+    /// Anything else one-time setup needs `&mut API` for (staging an
+    /// image, ...) - `API` doesn't exist yet at this point - belongs in
+    /// `update`, guarded by a flag on the app so it only runs once.
+    fn initialize(&mut self) -> Startup;
 
     /// All application update logic
     ///
     /// This will be called at the beginning of each render loop
-    fn update(&mut self, api: &mut API) {}
+    fn update(&mut self, api: &mut API<Self::Event, Self>)
+    where
+        Self: Sized,
+    {
+    }
 
-    fn layout(&mut self, page: &str, api: &mut API, mt: &mut UIRenderer);
+    fn layout(&mut self, page: &str, api: &mut API<Self::Event, Self>, mt: &mut UIRenderer)
+    where
+        Self: Sized;
 }
 
-pub struct API {
+pub struct API<Event, UserApp>
+where
+    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug,
+    UserApp: LayoutRunnerReflection<Event>,
+{
     staged_windows: Vec<(String, String, WindowAttributes)>,
 
-    #[allow(dead_code)]
+    /// Backs `run_layout` - loaded, if `Startup::watch_path` names a
+    /// directory, before the first frame (see `Application::resumed`).
+    /// Using the markdown-driven layout pipeline at all is opt-in: an
+    /// `App` that leaves `watch_path` as `RunType::None` and just drives
+    /// `api.l` directly (as `basic.rs` does) never touches this.
+    binder: Binder<Event, UserApp>,
+    /// Consulted once, in `Application::resumed`, to load the initial
+    /// directory of layout files and (for `RunType::Watch`) to know which
+    /// directory the background watcher thread should watch.
+    watch_path: RunType,
+
     instance: wgpu::Instance,
-    #[allow(dead_code)]
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -91,6 +165,7 @@ pub struct API {
 
     pub keyboard_buffer: Vec<KeyEvent>,
 
+    pub window_size: (f32, f32),
     pub left_mouse_pressed: bool,
     pub left_mouse_down: bool,
     pub left_mouse_released: bool,
@@ -119,7 +194,12 @@ pub struct API {
 }
 
 // private api functions
-impl API {
+impl<Event, UserApp> API<Event, UserApp>
+where
+    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug,
+    UserApp: LayoutRunnerReflection<Event>,
+{
     fn request_redraw_viewport(&mut self, window_id: WindowId) {
         if let Some(viewport) = self.viewports.get_mut(&window_id) {
             viewport.window.request_redraw();
@@ -136,51 +216,92 @@ impl API {
         self.viewports.remove(&window_id);
     }
     fn resize_viewport(&mut self, window_id: WindowId, size: PhysicalSize<u32>) {
+        self.window_size = (size.width as f32, size.height as f32);
         if let Some(viewport) = self.viewports.get_mut(&window_id) {
             viewport.resize(&self.device, size, MULTI_SAMPLE_COUNT);
         }
     }
-    fn create_staged_viewports(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
-        for _ in 0..self.staged_windows.len() {
-            //let (name, page, attr) = self.staged_windows.pop().unwrap();
+    /// Turns every `API::create_viewport`/`create_default_viewport` call
+    /// since the last time this ran into a real window, reusing the
+    /// `wgpu::Instance`/`Adapter`/`Device`/`Queue` the bootstrap window in
+    /// `Application::resumed` already set up - a `Device` can back any
+    /// number of surfaces, so there's no need (and, since only the very
+    /// first window brings `API` itself into existence, no way) to request
+    /// a fresh one per window.
+    fn create_staged_viewports(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        for (name, page, attributes) in std::mem::take(&mut self.staged_windows) {
+            if self.viewport_lookup.get_by_left(&name).is_some() {
+                continue;
+            }
 
-            //if self.viewport_lookup.get_by_left(&name).is_some() {
-            //    continue;
-            //}
+            let Ok(window) = event_loop.create_window(attributes) else {
+                continue;
+            };
+            window.set_title(&name);
+            let window_id = window.id();
+            let window = Arc::new(window);
 
-            //let viewport = attr.build_viewport(event_loop, page, &self.ctx, MULTI_SAMPLE_COUNT);
+            let Ok(surface) = self.instance.create_surface(window.clone()) else {
+                continue;
+            };
 
-            //viewport.window.set_title(&name);
-            //let window_id = viewport.window.id();
+            let size = window.inner_size();
+            let surface_capabilities = surface.get_capabilities(&self.adapter);
+            let Some(surface_format) = surface_capabilities.formats.iter().find(|f| f.is_srgb())
+            else {
+                continue;
+            };
+            let surface_config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: *surface_format,
+                width: size.width,
+                height: size.height,
+                present_mode: surface_capabilities.present_modes[0],
+                desired_maximum_frame_latency: 2,
+                alpha_mode: surface_capabilities.alpha_modes[0],
+                view_formats: vec![],
+            };
+            surface.configure(&self.device, &surface_config);
 
-            //let ui_renderer = self.ui_renderer.as_mut().unwrap();
-            //match ui_renderer.render_pipeline {
-            //    Some(_) => {}
-            //    None => ui_renderer.build_shaders(
-            //        &self.ctx.device,
-            //        &self.ctx.queue,
-            //        &viewport.config,
-            //        MULTI_SAMPLE_COUNT,
-            //    ),
-            //}
+            let depth_texture =
+                DepthTexture::new(&self.device, &surface_config, MULTI_SAMPLE_COUNT);
+            let multi_sample_texture =
+                MultiSampleTexture::new(&self.device, &surface_config, MULTI_SAMPLE_COUNT);
 
-            //match self.scene_renderer.render_pipeline {
-            //    Some(_) => {}
-            //    None => self.scene_renderer.build_shaders(
-            //        &self.device,
-            //        &viewport.config,
-            //        MULTI_SAMPLE_COUNT,
-            //    ),
-            //}
+            if let Some(ui_renderer) = self.ui_renderer.as_mut()
+                && ui_renderer.render_pipeline.is_none()
+            {
+                ui_renderer.build_shaders(
+                    &self.device,
+                    &self.queue,
+                    &surface_config,
+                    MULTI_SAMPLE_COUNT,
+                );
+            }
+            if self.scene_renderer.render_pipeline.is_none() {
+                self.scene_renderer.build_shaders(
+                    &self.device,
+                    &surface_config,
+                    MULTI_SAMPLE_COUNT,
+                );
+            }
 
-            //self.viewport_lookup.insert(name.clone(), window_id);
-            //self.viewports.insert(window_id, viewport);
+            let viewport = Viewport {
+                window,
+                page,
+                surface,
+                surface_config,
+                depth_texture,
+                multi_sample_texture,
+            };
+
+            self.viewport_lookup.insert(name, window_id);
+            self.viewports.insert(window_id, viewport);
         }
-        self.staged_windows.clear();
     }
-    fn redraw_viewport<UserApp>(&mut self, window_id: WindowId, user_application: &mut UserApp)
+    fn redraw_viewport(&mut self, window_id: WindowId, user_application: &mut UserApp)
     where
-        UserApp: App,
+        UserApp: App<Event = Event>,
     {
         let page = self
             .viewports
@@ -352,7 +473,12 @@ impl API {
 }
 
 /// public api functions
-impl API {
+impl<Event, UserApp> API<Event, UserApp>
+where
+    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
+    <Event as FromStr>::Err: Debug,
+    UserApp: LayoutRunnerReflection<Event>,
+{
     pub fn create_viewport(&mut self, name: &str, page: &str, attributes: WindowAttributes) {
         self.staged_windows
             .push((name.to_string(), page.to_string(), attributes));
@@ -386,6 +512,77 @@ impl API {
             window.window.request_redraw();
         }
     }
+
+    /// Reads and parses a single markdown layout file (see
+    /// `process_layout`) and registers the page and any reusable snippets
+    /// it defines, returning the page's name. Called both for the initial
+    /// directory scan (`load_layout_directory`) and, one file at a time,
+    /// whenever `Application::user_event` reloads a file the watcher
+    /// thread reported as changed - an `App` never calls this itself, let
+    /// alone touches the `Binder` it feeds.
+    fn load_layout_file(&mut self, path: &Path) -> Result<String, String> {
+        let markdown = std::fs::read_to_string(path)
+            .map_err(|error| format!("failed to read layout file {path:?}: {error}"))?;
+        self.binder.load_layout(&markdown)
+    }
+
+    /// Recursively loads every `.md` file under `dir` into the `Binder`
+    /// (see `load_layout_file`), skipping (and logging) any individual
+    /// file that fails to read or parse rather than aborting the whole
+    /// scan. Returns the page name of the first file (in sorted order)
+    /// that loaded successfully, so `Application::resumed` has something
+    /// to point the bootstrap viewport at; errors only if `dir` contains
+    /// no `.md` files at all, or none of them parsed.
+    fn load_layout_directory(&mut self, dir: &str) -> Result<String, String> {
+        let files = find_layout_files(Path::new(dir));
+        if files.is_empty() {
+            return Err(format!("no .md layout files found under {dir:?}"));
+        }
+
+        let mut first_page = None;
+        for file in files {
+            match self.load_layout_file(&file) {
+                Ok(page_name) => {
+                    if first_page.is_none() {
+                        first_page = Some(page_name);
+                    }
+                }
+                Err(error) => eprintln!("failed to load layout file {file:?}: {error}"),
+            }
+        }
+
+        first_page.ok_or_else(|| format!("no layout files under {dir:?} parsed successfully"))
+    }
+
+    /// Runs `page` (as loaded from `Startup::watch_path`) for this frame
+    /// and dispatches whatever events fired straight back into `user_app`
+    /// via `EventHandler::dispatch`. Typically the entire body of
+    /// `App::layout` for an app driven by a markdown layout:
+    ///
+    /// ```ignore
+    /// fn layout(&mut self, page: &str, api: &mut API<Self::Event, Self>, mt: &mut MT) {
+    ///     api.run_layout(page, mt, self);
+    /// }
+    /// ```
+    pub fn run_layout(&mut self, page: &str, mt: &mut MT, user_app: &mut UserApp)
+    where
+        UserApp: LayoutRunnerCustomElements<Event, UserApp>,
+    {
+        // `self.binder` and `user_app` are already two separate places (a
+        // field of `API`, and the caller's own, unrelated `&mut UserApp`),
+        // so unlike a `Binder` stored *on* `UserApp` itself, there's no
+        // self-borrow to fight here - just take it out for the duration of
+        // the call so `set_page` and `dispatch` can each reborrow
+        // `user_app` in turn instead of fighting over one long-lived borrow.
+        let mut binder = std::mem::take(&mut self.binder);
+        if let Some(events) = binder.set_page(page, self, mt, user_app) {
+            for (event, context) in events {
+                event.dispatch(user_app, context, self);
+            }
+        }
+        self.binder = binder;
+    }
+
     pub fn load_gltf_model(
         &mut self,
         model_name: &str,
@@ -445,17 +642,21 @@ impl API {
 struct Application<UserApp>
 where
     UserApp: App,
+    <UserApp::Event as FromStr>::Err: Debug,
 {
-    core: Option<API>,
+    core: Option<API<UserApp::Event, UserApp>>,
     user_application: UserApp,
 
-    #[allow(dead_code)]
+    /// Cloned into `spawn_layout_watcher` for `RunType::Watch` so its
+    /// background thread can send `InternalEvents::RebuildLayout` back to
+    /// `Application::user_event` on the winit event-loop thread.
     app_events: EventLoopProxy<InternalEvents>,
 }
 
 impl<UserApp> Application<UserApp>
 where
     UserApp: App,
+    <UserApp::Event as FromStr>::Err: Debug,
 {
     pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp) -> Self {
         Application {
@@ -469,13 +670,14 @@ where
 impl<UserApp> ApplicationHandler<InternalEvents> for Application<UserApp>
 where
     UserApp: App,
+    <UserApp::Event as FromStr>::Err: Debug,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         //println!("building context");
         if self.core.is_none() {
-            let (new_window, window_name) = self.user_application.initial_window();
+            let startup = self.user_application.initialize();
 
-            if let Ok(window) = event_loop.create_window(new_window) {
+            if let Ok(window) = event_loop.create_window(startup.initial_window) {
                 //println!("window created");
                 let window_id = window.id();
                 let window = Arc::new(window);
@@ -545,11 +747,11 @@ where
                                 let ui_renderer = Some(ui_renderer);
                                 //println!("2d shader compiled");
                                 let mut viewport_lookup = bimap::BiMap::new();
-                                viewport_lookup.insert(window_name.clone(), window_id);
+                                viewport_lookup.insert(startup.window_name.clone(), window_id);
 
                                 let initial_viewport = Viewport {
                                     window,
-                                    page: window_name.clone(),
+                                    page: startup.window_name.clone(),
                                     surface,
                                     surface_config,
                                     depth_texture,
@@ -560,9 +762,11 @@ where
 
                                 let mut viewports = HashMap::new();
                                 viewports.insert(window_id, initial_viewport);
-                                println!("API initialized");
+                                //println!("API initialized");
                                 let mut api = API {
                                     staged_windows: Vec::new(),
+                                    binder: Binder::new(),
+                                    watch_path: startup.watch_path,
                                     instance,
                                     adapter,
                                     device,
@@ -576,6 +780,7 @@ where
                                     viewports,
                                     event_string: "".to_string(),
                                     keyboard_buffer: Vec::new(),
+                                    window_size: (0.0, 0.0),
                                     left_mouse_pressed: false,
                                     left_mouse_down: false,
                                     left_mouse_released: false,
@@ -599,9 +804,36 @@ where
                                     scroll_delta_distance: (0.0, 0.0),
                                 };
 
+                                // `API` reads and parses the layout file itself - the app
+                                // never sees the path, the markdown, or the `Binder` it
+                                // produces. Point the bootstrap window/page at whatever
+                                // page that file actually defines, so a plain
+                                // `watch_path` is enough on its own; no follow-up
+                                // `set_viewport_page` call needed.
+                                match api.watch_path.clone() {
+                                    RunType::Once(dir) | RunType::Watch(dir) => {
+                                        match api.load_layout_directory(&dir) {
+                                            Ok(page_name) => {
+                                                if let Some(viewport) =
+                                                    api.viewports.get_mut(&window_id)
+                                                {
+                                                    viewport.page = page_name;
+                                                }
+                                            }
+                                            Err(error) => {
+                                                eprintln!(
+                                                    "failed to load layout directory {dir:?}: {error}"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    RunType::None => {}
+                                }
+                                if let RunType::Watch(dir) = &api.watch_path {
+                                    spawn_layout_watcher(dir.clone(), self.app_events.clone());
+                                }
                                 //api.redraw_viewport(window_id, &mut self.user_application);
 
-                                self.user_application.initialize(&mut api);
                                 self.core = Some(api);
                             }
                         }
@@ -640,7 +872,7 @@ where
                 }
                 WindowEvent::RedrawRequested => {
                     //println!("redraw requested");
-                    api.redraw_viewport::<UserApp>(window_id, &mut self.user_application);
+                    api.redraw_viewport(window_id, &mut self.user_application);
                 }
                 WindowEvent::MouseInput {
                     device_id: _,
@@ -737,11 +969,38 @@ where
             //api.request_redraw_viewport(window_id);
         }
     }
+
+    fn user_event(
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        event: InternalEvents,
+    ) {
+        let InternalEvents::RebuildLayout(path) = event;
+        let Some(api) = &mut self.core else {
+            return;
+        };
+        match api.load_layout_file(&path) {
+            Ok(_) => {
+                // The file may or may not be the page a viewport is
+                // currently showing (`load_layout_file` just re-registers
+                // it in the `Binder` under whatever page name it
+                // defines), so redraw every viewport rather than trying
+                // to work out which one(s) are affected.
+                for viewport in api.viewports.values() {
+                    viewport.window.request_redraw();
+                }
+            }
+            Err(error) => {
+                eprintln!("failed to reload layout file {path:?}: {error}");
+            }
+        }
+    }
 }
 
 pub fn run<UserApp>(user_application: UserApp)
 where
     UserApp: App,
+    <UserApp::Event as FromStr>::Err: Debug,
 {
     if let Ok(event_loop) = EventLoop::<InternalEvents>::with_user_event().build() {
         event_loop.set_control_flow(ControlFlow::Wait);
@@ -750,4 +1009,86 @@ where
     } else {
         panic!("Event loop creation failed.");
     }
+}
+
+/// Recursively collects every `.md` file under `dir`, sorted for
+/// deterministic load order. Unreadable directories (missing, permission
+/// denied, ...) just yield no files rather than erroring - the caller
+/// (`API::load_layout_directory`) turns "found nothing" into its own
+/// error with more context.
+fn find_layout_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(find_layout_files(&path));
+        } else if path.extension().is_some_and(|extension| extension == "md") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Spawns the background thread backing `RunType::Watch`: watches `dir`
+/// (recursively) for filesystem changes and, for every `.md` file that's
+/// modified or created, sends `InternalEvents::RebuildLayout(path)`
+/// through `app_events` so `Application::user_event` can reload it on the
+/// winit event-loop thread - `notify`'s callback runs on its own thread
+/// and can't safely touch `API`/`Binder` itself.
+///
+/// Mirrors the `notify` crate's own basic usage example: a
+/// `recommended_watcher` feeding an `mpsc::channel`, read in a blocking
+/// loop. The thread (and the watcher it owns) runs until either the
+/// channel's sender is dropped (the watcher failing internally) or
+/// `app_events.send_event` starts failing (the event loop, and so the
+/// whole application, has shut down).
+fn spawn_layout_watcher(dir: String, app_events: EventLoopProxy<InternalEvents>) {
+    std::thread::spawn(move || {
+        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+
+        let mut watcher = match notify::recommended_watcher(tx) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                eprintln!("failed to create layout watcher for {dir:?}: {error}");
+                return;
+            }
+        };
+        if let Err(error) = watcher.watch(Path::new(&dir), notify::RecursiveMode::Recursive) {
+            eprintln!("failed to watch layout directory {dir:?}: {error}");
+            return;
+        }
+
+        for res in rx {
+            let event = match res {
+                Ok(event) => event,
+                Err(error) => {
+                    eprintln!("layout watch error: {error}");
+                    continue;
+                }
+            };
+            if !matches!(
+                event.kind,
+                notify::EventKind::Modify(_) | notify::EventKind::Create(_)
+            ) {
+                continue;
+            }
+            for path in event.paths {
+                if path.extension().is_none_or(|extension| extension != "md") {
+                    continue;
+                }
+                if app_events
+                    .send_event(InternalEvents::RebuildLayout(path))
+                    .is_err()
+                {
+                    // The event loop (and so the whole application) is
+                    // gone - stop watching.
+                    return;
+                }
+            }
+        }
+    });
 }

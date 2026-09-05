@@ -3,23 +3,38 @@
 #![cfg_attr(rustfmt, rustfmt_skip)]
 
 use telera_app::*;
-use telera_layout::{ElementConfiguration, TextConfig};
-use winit::event::KeyEvent;
+use telera_layout::ElementConfiguration;
 
+
+/// `App::Event` is required because `API` is generic over `(Event,
+/// UserApp)` - this app doesn't drive a markdown layout, so it has nothing
+/// to actually dispatch.
+#[derive(Clone, Debug, Default, PartialEq, strum_macros::EnumString, EventHandler)]
+#[handler_for(BasicApp)]
+enum Event {
+    #[default]
+    None,
+}
 
 #[derive(Default)]
 struct BasicApp {
     radii: f32
 }
 
+impl LayoutRunnerReflection<Event> for BasicApp {}
+
 impl App for BasicApp {
-    fn initialize(&mut self, core: &mut API) {
-        let new_window =
-            winit::window::Window::default_attributes().with_inner_size(LogicalSize::new(800, 600));
-        core.create_viewport("Main", "Main", new_window);
+    type Event = Event;
+
+    fn initialize(&mut self) -> Startup {
+        Startup {
+            initial_window: Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)),
+            window_name: "Main".to_string(),
+            watch_path: RunType::None
+        }
     }
 
-    fn layout(&mut  self, page: &str, api: &mut API, mt: &mut MT) {
+    fn layout(&mut  self, _page: &str, api: &mut API<Event, BasicApp>, _mt: &mut MT) {
         macro_rules! e {
             ($v:expr $(, $c:stmt)* $(,)? ) => {
                 api.l.open_element();
@@ -31,11 +46,11 @@ impl App for BasicApp {
             };
         }
 
-        macro_rules! t {
-            ($v:expr, $c:expr) => {
-                api.l.add_text_element($c, &$v, true, mt);
-            };
-        }
+        // macro_rules! t {
+        //     ($v:expr, $c:expr) => {
+        //         api.l.add_text_element($c, &$v, true, mt);
+        //     };
+        // }
 
 
         let root = ElementConfiguration::new()

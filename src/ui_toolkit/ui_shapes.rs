@@ -3,9 +3,9 @@ use symbol_table::GlobalSymbol;
 //use crate::DataSrc;
 
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct LineConfig{
+pub struct LineConfig {
     pub width_source: Option<GlobalSymbol>,
-    pub width: f32
+    pub width: f32,
 }
 
 // impl LineConfig {
@@ -25,5 +25,6 @@ pub struct LineConfig{
 pub enum CustomElement {
     #[default]
     Circle,
-    Line(LineConfig)
+    Line(LineConfig),
+    RenderWindow,
 }

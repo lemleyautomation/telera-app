@@ -1,14 +1,12 @@
 #![cfg_attr(rustfmt, rustfmt_skip)]
 
 use core::f32;
-use env_logger::builder;
 use glyphon::cosmic_text::Align;
 use glyphon::{
     Attrs, Buffer, Cache, Color, Edit, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, cosmic_text,
 };
 
-use lyon::geom::LineSegment;
 use lyon::geom::euclid::{Box2D, Point2D, Size2D, UnknownUnit};
 use lyon::math::point;
 use lyon::path::Path;
@@ -59,9 +57,9 @@ pub struct UIPosition {
     pub z: f32,
 }
 
-impl Into<UIPosition> for Point2D<f32, UnknownUnit> {
-    fn into(self) -> UIPosition {
-        let p = self.to_tuple();
+impl From<Point2D<f32, UnknownUnit>> for UIPosition {
+    fn from(val: Point2D<f32, UnknownUnit>) -> Self {
+        let p = val.to_tuple();
         UIPosition {
             x: p.0,
             y: p.1,
@@ -86,7 +84,7 @@ impl UIPosition {
     pub fn rotate(&mut self, mut degrees: f32) -> UIPosition {
         degrees = -degrees;
 
-        degrees = degrees * (std::f32::consts::PI / 180.0);
+        degrees *= std::f32::consts::PI / 180.0;
 
         let (sn, cs) = degrees.sin_cos();
 
@@ -303,12 +301,12 @@ impl MeasureText for UIRenderer {
         self.measurement_buffer
             .shape_until_scroll(&mut self.font_system, false);
 
-        let measurement = Vec2 {
+        
+
+        Vec2 {
             x: self.measurement_buffer.layout_runs().next().unwrap().line_w / self.dpi_scale,
             y: self.measurement_buffer.metrics().line_height / self.dpi_scale,
-        };
-
-        measurement
+        }
     }
 }
 
@@ -336,8 +334,8 @@ impl UIRenderer {
             "default_atlas".to_string(),
             wgpu::BindGroup::create_atlas(
                 DynamicImage::ImageRgb8(RgbImage::new(10, 10)),
-                &device,
-                &queue,
+                device,
+                queue,
             ),
         );
         let active_atlas = "defualt_atlas".to_string();
@@ -461,7 +459,7 @@ impl UIRenderer {
         ui_pipeline_builder.add_buffer_layout(UIVertex::get_layout());
 
         self.render_pipeline = Some(ui_pipeline_builder.build_pipeline(
-            &device,
+            device,
             &self.size_bind_group_layout,
             wgpu::MultisampleState {
                 count: multi_sample_count,
@@ -470,11 +468,11 @@ impl UIRenderer {
             },
         ));
 
-        let cache = Cache::new(&device);
-        let mut atlas = TextAtlas::new(&device, &queue, &cache, config.format);
+        let cache = Cache::new(device);
+        let mut atlas = TextAtlas::new(device, queue, &cache, config.format);
         let text_renderer = TextRenderer::new(
             &mut atlas,
-            &device,
+            device,
             wgpu::MultisampleState {
                 count: multi_sample_count,
                 mask: 1,
@@ -489,7 +487,7 @@ impl UIRenderer {
             }),
         );
 
-        self.text_viewport = Some(Viewport::new(&device, &cache));
+        self.text_viewport = Some(Viewport::new(device, &cache));
         self.text_atlas = Some(atlas);
         self.text_renderer = Some(text_renderer);
     }
@@ -507,10 +505,10 @@ impl UIRenderer {
         );
 
         match self.text_viewport.as_mut() {
-            None => return,
+            None => (),
             Some(viewport) => {
                 viewport.update(
-                    &queue,
+                    queue,
                     Resolution {
                         width: size.0 as u32,
                         height: size.1 as u32,
@@ -526,7 +524,7 @@ impl UIRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        self.add_atlas(&device, &queue);
+        self.add_atlas(device, queue);
         self.vertices.clear();
         self.indices.clear();
 
@@ -535,14 +533,14 @@ impl UIRenderer {
         self.batch_index_end = 0;
 
         match self.render_pipeline.as_mut() {
-            None => return,
+            None => (),
             Some(render_pipeline) => {
                 render_pass.set_pipeline(render_pipeline);
                 match self.atlas_map.get(&self.active_atlas) {
                     None => {
                         render_pass.set_bind_group(
                             0,
-                            self.atlas_map.get(&"default_atlas".to_string()).unwrap(),
+                            self.atlas_map.get("default_atlas").unwrap(),
                             &[],
                         );
                     }
@@ -592,7 +590,7 @@ impl UIRenderer {
 
     pub fn end_scissor(&mut self) {
         match self.scissor_active {
-            false => return,
+            false => (),
             true => {
                 self.scissor_active = false;
                 if self.batch_index_end > self.batch_index_begin {
@@ -664,9 +662,9 @@ impl UIRenderer {
         }
 
         match self.render_pipeline {
-            None => return,
+            None => (),
             Some(_) => {
-                self.update_buffers(&device, &queue);
+                self.update_buffers(device, queue);
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 render_pass
                     .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -674,7 +672,7 @@ impl UIRenderer {
                 for render_batch in self.batches.iter() {
                     match render_batch {
                         RenderBatch::Basic { begin, end } => {
-                            render_pass.draw_indexed(*begin..*end as u32, 0, 0..1);
+                            render_pass.draw_indexed(*begin..*end, 0, 0..1);
                         }
                         RenderBatch::Scissor {
                             begin,
@@ -708,7 +706,7 @@ impl UIRenderer {
                     }
                 }
 
-                if self.lines.len() > 0 {
+                if !self.lines.is_empty() {
                     self.render_text(device, queue, render_pass, surface_config);
                 }
             }
@@ -922,7 +920,7 @@ impl UIRenderer {
                                 let w = b.bounding_box.width;
                                 let y = b.bounding_box.y;
                                 let r = b.corner_radii.top_right;
-                                let k_offset = r * K;  
+                                let k_offset = r * K;
                                 builder.begin(point(x+w-r, y));
                                 builder.cubic_bezier_to(point(x+w-r+k_offset, y), point(w+x, y+r-k_offset), point(x+w, y+r));
                                 builder.end(false);
@@ -1087,7 +1085,7 @@ impl UIRenderer {
                         z,
                     },
                     match self.scissor_active {
-                        true => Some((self.scissor_position.clone(), self.scissor_size.clone())),
+                        true => Some((self.scissor_position, self.scissor_size)),
                         false => None,
                     },
                     Color::rgb(t.color.r as u8, t.color.g as u8, t.color.b as u8),
@@ -1099,6 +1097,7 @@ impl UIRenderer {
                 ),
                 RenderCommand::ScissorEnd => self.end_scissor(),
                 RenderCommand::Image(image) => {
+                    let uv = image.data;
                     let ipx = image.bounding_box.x * self.dpi_scale;
                     let ipy = image.bounding_box.y * self.dpi_scale;
                     let isx = image.bounding_box.width * self.dpi_scale;
@@ -1146,7 +1145,9 @@ impl UIRenderer {
                                 let x = vertex.position().x;
                                 let y = vertex.position().y;
                                 let r = (x - ipx) / isx;
+                                let r = (r*(uv.u2-uv.u1))+uv.u1;
                                 let g = (y - ipy) / isy;
+                                let g = (g*(uv.v2-uv.v1))+uv.v1;
                                 UIVertex {
                                     position: UIPosition { x, y, z },
                                     texture: 1,
@@ -1156,7 +1157,7 @@ impl UIRenderer {
                         )
                         .is_ok()
                     {
-                        self.bind_atlas(&image.data.atlas);
+                        self.bind_atlas(image.data.atlas);
                         let mut offset_indices = geometry
                             .indices
                             .iter()
@@ -1242,7 +1243,7 @@ impl UIRenderer {
                         if tessellator
                             .tessellate_path(
                                 &path,
-                                &StrokeOptions::default().with_line_width(line_config.width as f32),
+                                &StrokeOptions::default().with_line_width(line_config.width),
                                 &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex| {
                                     UIVertex {
                                         position: vertex.position().into(),
@@ -1267,13 +1268,16 @@ impl UIRenderer {
                             self.batch_index_end = self.indices.len() as u32;
                         }
                     }
+                    CustomElement::RenderWindow => {
+
+                    }
                 },
                 RenderCommand::None => {}
             }
             z -= 0.0001;
         }
 
-        self.end(render_pass, &device, &queue, &surface_config);
+        self.end(render_pass, device, queue, surface_config);
     }
 
     fn render_text(
@@ -1323,7 +1327,7 @@ impl UIRenderer {
                 &mut self.font_system,
                 atlas,
                 viewport,
-                areas.into_iter(),
+                areas,
                 &mut self.swash_cache,
                 |metadata| (metadata as f32) / 10000.0,
             )
@@ -1371,7 +1375,7 @@ impl UIRenderer {
     }
 
     fn add_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        if self.staged_images.len() > 0 {
+        if !self.staged_images.is_empty() {
             let (name, staged_image) = self.staged_images.pop().unwrap();
             let new_atlas = wgpu::BindGroup::create_atlas(staged_image, device, queue);
             self.atlas_map.insert(name.clone(), new_atlas);
@@ -1436,7 +1440,7 @@ impl UIPipeline {
 
         let piplaydesc = wgpu::PipelineLayoutDescriptor {
             label: Some("UI Render Pipeline Layout"),
-            bind_group_layouts: &[&texture_bind_group_layout, &size_bind_group_layout],
+            bind_group_layouts: &[&texture_bind_group_layout, size_bind_group_layout],
             push_constant_ranges: &[],
         };
         let pipeline_layout = device.create_pipeline_layout(&piplaydesc);
@@ -1489,11 +1493,27 @@ impl UIPipeline {
 
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct UIImageDescriptor {
-    pub atlas: String,
+    pub atlas: &'static str,
     pub u1: f32,
     pub v1: f32,
     pub u2: f32,
     pub v2: f32,
+}
+
+impl UIImageDescriptor {
+    pub const fn new() -> Self {
+        UIImageDescriptor { atlas: "", u1: 0.0, v1: 0.0, u2: 1.0, v2: 1.0 }
+    }
+    pub const fn from_v_slice(atlas: &'static str, u1: f32, u2: f32) -> Self {
+        UIImageDescriptor { atlas, u1, v1: 0.0, u2, v2: 1.0 }
+    }
+    pub const fn from_atlas(atlas: &'static str) -> Self {
+        UIImageDescriptor { atlas, u1: 0.0, v1: 0.0, u2: 1.0, v2: 1.0 }
+    }
+    pub const fn v_slice(&mut self, u1: f32, u2: f32) {
+        self.u1 = u1;
+        self.u2 = u2;
+    }
 }
 
 pub trait UIAtlasCreation {
