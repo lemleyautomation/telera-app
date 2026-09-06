@@ -25,7 +25,7 @@ struct BasicApp {
 }
 
 impl LayoutRunnerReflection for BasicApp {}
-impl LayoutReflector<BasicApp> for BasicApp {}
+impl LayoutReflector for BasicApp {}
 
 fn process_keyboard_input(feild: &String, input: KeyEvent) -> String {
     if let Some(input) = input.text {
@@ -40,13 +40,14 @@ fn process_keyboard_input(feild: &String, input: KeyEvent) -> String {
 impl App for BasicApp {
     fn initialize(&mut self) -> Startup {
         Startup {
-            initial_window: Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)),
+            window_attributes: Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)),
             window_name: "Main".to_string(),
+            page: None,
             watch_path: RunType::None
         }
     }
 
-    fn update(&mut self, api: &mut API<BasicApp>) {
+    fn update(&mut self, api: &mut API) {
         if self.initialized {
             return;
         }
@@ -65,7 +66,7 @@ impl App for BasicApp {
         }
     }
 
-    fn layout(&mut  self, page: &str, api: &mut API<BasicApp>, mt: &mut MT) {
+    fn layout(&mut  self, page: &str, api: &mut API, mt: &mut MT) {
         macro_rules! e {
             ($v:expr $(, $c:stmt)* $(,)? ) => {
                 api.l.open_element();

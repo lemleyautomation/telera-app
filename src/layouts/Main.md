@@ -41,7 +41,7 @@
             - `color` white
         - *label*
 
-# -Main
+# root
 - `declarations`
     - `set-color` *content background color* rgb(90,90,90)
 - `element` outer container
@@ -105,7 +105,7 @@
                             - `set-text` *label* Open
                         - `use` drop down menu item
                             - `set-text` *label* Close
-                            - `set-event` *Clicked* FileButtonClicked
+                            - `set-event` *Clicked* file_button_clicked
         - `use` header button
             - `set-text` *label* Edit
         - `textbox` search_bar
@@ -136,7 +136,7 @@
                             - `use` sidebar button
                             - `color` rgb(120,120,120)
                             - `radius-all` 8
-                            - `left-clicked` *Clicked*
+                            - `left-clicked` document_clicked
                                 - `border-color` white
                                 - `border-all` 2
                         - `text`
@@ -151,7 +151,7 @@
                             - `radius-all` 8
                             - `hover`
                                 - `color` rgb(120,120,120)
-                            - `left-clicked` *Clicked*
+                            - `left-clicked` document_clicked
                                 - `border-color` white
                                 - `border-all` 2
                         - `text`

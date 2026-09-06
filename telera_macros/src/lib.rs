@@ -382,9 +382,9 @@ pub fn app(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// marker attribute into the right dispatcher:
 ///
 /// * `#[layout_event]` - `fn name(&mut self, context: Option<EventContext>,
-///   api: &mut API<Self>)` - reachable from a layout config like
+///   api: &mut API)` - reachable from a layout config like
 ///   `left-clicked name`, dispatched through `dispatch_event`.
-/// * `#[layout_element]` - `fn name(&mut self, api: &mut API<Self>, mt: &mut
+/// * `#[layout_element]` - `fn name(&mut self, api: &mut API, mt: &mut
 ///   MT)` - reachable from a `fn *name*` element, dispatched through
 ///   `dispatch_custom_element`.
 ///
@@ -445,13 +445,13 @@ pub fn telera_app(
     quote::quote! {
         #item_impl
 
-        impl telera_app::LayoutReflector<#self_ty> for #self_ty {
+        impl telera_app::LayoutReflector for #self_ty {
             #[allow(unused_variables)]
             fn dispatch_event(
                 &mut self,
                 name: &symbol_table::GlobalSymbol,
                 context: ::core::option::Option<telera_app::EventContext>,
-                api: &mut telera_app::API<#self_ty>,
+                api: &mut telera_app::API,
             ) {
                 match name.as_str() {
                     #(#event_arms)*
@@ -463,7 +463,7 @@ pub fn telera_app(
             fn dispatch_custom_element(
                 &mut self,
                 name: &symbol_table::GlobalSymbol,
-                api: &mut telera_app::API<#self_ty>,
+                api: &mut telera_app::API,
                 mt: &mut telera_app::MT,
             ) {
                 match name.as_str() {

@@ -12,8 +12,8 @@
 //!      of layout commands plus a table of reusable snippets.
 //!   3. **Runner** - [`Binder`] owns the parsed pages/reusables and
 //!      [`Binder::set_page`] walks the flattened command list each frame,
-//!      driving `api.l` (the Clay layout engine) and collecting the events
-//!      that fired this frame.
+//!      driving `api.l` (the Clay layout engine) and dispatching events
+//!      straight back into the app as they fire.
 //!
 //! # Event dispatch
 //!
@@ -29,11 +29,18 @@
 //! always receives a live `&mut MT`, `&mut ElementConfiguration` and
 //! `&mut TextConfig`, and callers that don't have an existing one to hand
 //! down (list items, the top level call) simply own a fresh local and pass a
-//! reborrow of it. `Config`/`ElementConfiguration` are still just reborrowed
-//! (never re-`&`'d) when threaded through recursive calls, which is what
-//! lets `Binder::set_page` build up the events for a frame and hand them back
-//! as an owned `Vec`, free of any borrow on `api`/`user_app`, for the caller
-//! to dispatch afterwards with `LayoutReflector::dispatch_event`.
+//! reborrow of it.
+//!
+//! `set_layout` also holds a live `&mut UserApp` (bounded `LayoutReflector`)
+//! and a `&mut API` as separate parameters, so when an event fires it calls
+//! [`LayoutReflector::dispatch_event`] right then, in tree order - the same
+//! way `fn *name*` elements already go straight to `dispatch_custom_element`.
+//! A handler therefore sees state changes made by handlers earlier in the
+//! same frame's tree. The one exception is `treeview`: the tree it walks is
+//! borrowed out of the app (`get_treeview` returns `TreeViewItem<'_>` with
+//! `&str` labels), so it can't hold `&mut UserApp` at the same time - it
+//! collects its handful of events into an owned `Vec` and `set_layout`
+//! drains that immediately, once the borrow on the tree is released.
 use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
 use markdown::mdast::{List, Node, Paragraph};
@@ -63,13 +70,15 @@ pub struct EventContext {
     pub text: Option<String>,
     pub code: Option<u32>,
     pub code2: Option<u32>,
+    pub list_index: Option<usize>,
 }
 
 fn build_event_context(list_data: &Option<(GlobalSymbol, usize)>) -> Option<EventContext> {
     list_data.as_ref().map(|(_, index)| EventContext {
         text: None,
-        code: Some(*index as u32),
+        code: None,
         code2: None,
+        list_index: Some(*index),
     })
 }
 
@@ -79,25 +88,18 @@ fn build_event_context(list_data: &Option<(GlobalSymbol, usize)>) -> Option<Even
 /// *name*` element that stands in for a hand-built subtree. Both names come
 /// straight from the markdown as interned [`GlobalSymbol`]s - there is no
 /// event enum anymore. Every method is defaulted to a no-op, so an app whose
-/// layouts use neither still just writes `impl LayoutReflector<Self> for
-/// Self {}`.
+/// layouts use neither still just writes `impl LayoutReflector for Self {}`.
 #[allow(unused_variables)]
-pub trait LayoutReflector<LayoutApp: LayoutRunnerReflection> {
+pub trait LayoutReflector {
     fn dispatch_event(
         &mut self,
         name: &GlobalSymbol,
         context: Option<EventContext>,
-        api: &mut API<LayoutApp>,
+        api: &mut API,
     ) {
     }
 
-    fn dispatch_custom_element(
-        &mut self,
-        name: &GlobalSymbol,
-        api: &mut API<LayoutApp>,
-        mt: &mut MT,
-    ) {
-    }
+    fn dispatch_custom_element(&mut self, name: &GlobalSymbol, api: &mut API, mt: &mut MT) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -561,21 +563,19 @@ enum ParsingMode {
     ReusableConfig,
 }
 
-/// A parsed page: its name, its flattened layout commands, and its table of
-/// reusable snippets (declared with `##`/`###` headings, referenced with `use`).
-pub type ParsedLayout = (
-    String,
-    Vec<Layout>,
-    HashMap<String, Vec<Layout>>,
-);
+/// A parsed page: its flattened layout commands, and its table of reusable
+/// snippets (declared with `##`/`###` headings, referenced with `use`).
+///
+/// The page has no name of its own - the `# ...` heading only marks where the
+/// body starts (its text is ignored, `# root` by convention). The caller names
+/// the page when it registers it (see [`Binder::load_layout`]); `API` uses the
+/// layout file's own name, minus the `.md`.
+pub type ParsedLayout = (Vec<Layout>, HashMap<String, Vec<Layout>>);
 
-/// Parses a markdown layout document (see `src/layouts/main.md`) into a
+/// Parses a markdown layout document (see `src/layouts/Main.md`) into a
 /// [`ParsedLayout`].
-pub fn process_layout(
-    file: String,
-) -> Result<ParsedLayout, String> {
+pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
     let mut parsing_mode = ParsingMode::None;
-    let mut page_name = "".to_string();
     let mut body = Vec::<Layout>::new();
     let mut open_reuseable_name = "".to_string();
     let mut reusables = HashMap::<String, Vec<Layout>>::new();
@@ -591,8 +591,10 @@ pub fn process_layout(
                     {
                         match h.depth {
                             1 => {
+                                // `# ...` just marks the start of the page body -
+                                // the heading text (`# root` by convention) is
+                                // ignored; the page is named by its caller.
                                 parsing_mode = ParsingMode::Body;
-                                page_name = declaration.value.trim().to_string();
                             }
                             2 => {
                                 parsing_mode = ParsingMode::ReusableConfig;
@@ -633,7 +635,7 @@ pub fn process_layout(
                 _ => {}
             }
         }
-        Ok((page_name, body, reusables))
+        Ok((body, reusables))
     } else {
         Err("failed to parse layout markdown".to_string())
     }
@@ -662,9 +664,7 @@ fn is_declarations_block(node: &Node) -> bool {
     }
 }
 
-fn process_element(
-    element: &Node,
-) -> Vec<Layout> {
+fn process_element(element: &Node) -> Vec<Layout> {
     let mut layout_commands: Vec<Layout> = Vec::new();
 
     if let Node::ListItem(element) = element
@@ -1204,9 +1204,7 @@ fn parameter_check<T: FromStr>(
     }
 }
 
-fn process_variable(
-    declaration: &Node,
-) -> Option<(String, DataSrc<Declaration>)> {
+fn process_variable(declaration: &Node) -> Option<(String, DataSrc<Declaration>)> {
     if let Node::ListItem(declaration) = declaration
         && let Some(declaration) = declaration.children.first()
         && let Node::Paragraph(declaration) = declaration
@@ -2330,9 +2328,7 @@ fn process_configs(
 /// Returns owned values (rather than references into `commands`) so the
 /// caller can hold this independently of the `&mut` borrow `set_layout`
 /// itself needs on `commands`.
-fn extract_page_locals(
-    commands: &[Layout],
-) -> HashMap<GlobalSymbol, DataSrc<Declaration>> {
+fn extract_page_locals(commands: &[Layout]) -> HashMap<GlobalSymbol, DataSrc<Declaration>> {
     let mut locals = HashMap::new();
     let mut depth: u32 = 0;
     for command in commands {
@@ -2377,33 +2373,22 @@ fn merge_locals<'a>(
 
 /// Owns every page and reusable snippet a `markdown` document was parsed
 /// into, and drives them against the layout engine each frame.
-pub struct Binder<UserApp>
-where
-    UserApp: LayoutRunnerReflection,
-{
+pub struct Binder {
     pages: HashMap<String, Vec<Layout>>,
     pub reusable: HashMap<GlobalSymbol, Vec<Layout>>,
-    _x: std::marker::PhantomData<UserApp>,
 }
 
-impl<UserApp> Default for Binder<UserApp>
-where
-    UserApp: LayoutRunnerReflection,
-{
+impl Default for Binder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<UserApp> Binder<UserApp>
-where
-    UserApp: LayoutRunnerReflection,
-{
+impl Binder {
     pub fn new() -> Self {
         Self {
             pages: HashMap::new(),
             reusable: HashMap::new(),
-            _x: std::marker::PhantomData,
         }
     }
 
@@ -2418,20 +2403,20 @@ where
     }
 
     /// Parses a markdown layout document (see [`process_layout`]) and
-    /// registers the page and any reusable snippets it defines, replacing
-    /// any existing ones of the same names. Returns the page's name so the
-    /// caller can hand it to [`API::create_viewport`].
+    /// registers it as the page `name`, along with any reusable snippets it
+    /// defines, replacing any existing ones of the same names. The document
+    /// itself carries no page name (its `# ...` heading is ignored) - the
+    /// caller chooses it; `API` passes the layout file's name minus `.md`.
     ///
     /// This only parses `markdown_source` - reading it from disk (or
     /// embedding it with `include_str!`) is left to the caller.
-    pub fn load_layout(&mut self, markdown_source: &str) -> Result<String, String>
-    {
-        let (page_name, body, reusables) = process_layout(markdown_source.to_string())?;
-        for (name, reusable) in reusables {
-            self.add_reusable(&name, reusable);
+    pub fn load_layout(&mut self, name: &str, markdown_source: &str) -> Result<(), String> {
+        let (body, reusables) = process_layout(markdown_source.to_string())?;
+        for (reusable_name, reusable) in reusables {
+            self.add_reusable(&reusable_name, reusable);
         }
-        self.add_page(&page_name, body);
-        Ok(page_name)
+        self.add_page(name, body);
+        Ok(())
     }
 
     /// Replaces an existing page, returning `false` (and leaving it
@@ -2455,26 +2440,19 @@ where
         true
     }
 
-    /// Runs `page`'s layout commands for this frame and returns the events
-    /// that fired, in an owned `Vec` free of any borrow on `api`/`user_app`
-    /// so the caller can dispatch them afterwards, e.g.:
-    ///
-    /// ```ignore
-    /// if let Some(events) = binder.set_page(page, api, mt, &mut self) {
-    ///     for (name, context) in events {
-    ///         self.dispatch_event(&name, context, api);
-    ///     }
-    /// }
-    /// ```
-    pub fn set_page(
+    /// Runs `page`'s layout commands for this frame, driving `api.l` and
+    /// dispatching every event that fires straight into `user_app` via
+    /// [`LayoutReflector::dispatch_event`]. Returns `None` (doing nothing)
+    /// if `page` isn't a known page.
+    pub fn set_page<UserApp>(
         &mut self,
         page: &str,
-        api: &mut API<UserApp>,
+        api: &mut API,
         mt: &mut MT,
         user_app: &mut UserApp,
-    ) -> Option<Vec<(GlobalSymbol, Option<EventContext>)>>
+    ) -> Option<()>
     where
-        UserApp: LayoutReflector<UserApp>,
+        UserApp: LayoutRunnerReflection + LayoutReflector,
     {
         let layout_commands = self.pages.get_mut(page)?;
 
@@ -2489,7 +2467,7 @@ where
         let mut config = ElementConfiguration::default();
         let mut text_config = TextConfig::default();
 
-        let (events, _pointer) = set_layout(
+        let _pointer = set_layout(
             api,
             mt,
             layout_commands,
@@ -2499,11 +2477,10 @@ where
             &mut config,
             &mut text_config,
             user_app,
-            Vec::new(),
             winit::window::CursorIcon::Default,
         );
 
-        Some(events)
+        Some(())
     }
 }
 
@@ -2527,7 +2504,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 fn set_layout<UserApp>(
-    api: &mut API<UserApp>,
+    api: &mut API,
     mt: &mut MT,
     commands: &mut [Layout],
     reusables: &mut HashMap<GlobalSymbol, Vec<Layout>>,
@@ -2536,14 +2513,10 @@ fn set_layout<UserApp>(
     config: &mut ElementConfiguration,
     text_config: &mut TextConfig,
     user_app: &mut UserApp,
-    mut events: Vec<(GlobalSymbol, Option<EventContext>)>,
     mut pointer: winit::window::CursorIcon,
-) -> (
-    Vec<(GlobalSymbol, Option<EventContext>)>,
-    winit::window::CursorIcon,
-)
+) -> winit::window::CursorIcon
 where
-    UserApp: LayoutRunnerReflection + LayoutReflector<UserApp>,
+    UserApp: LayoutRunnerReflection + LayoutReflector,
 {
     let mut nesting_level: u32 = 0;
     let mut skip: Option<u32> = None;
@@ -2565,10 +2538,13 @@ where
                 if $condition {
                     skip = None;
                     if let Some(event) = $event {
-                        events.push((
-                            GlobalSymbol::resolve_src(event, locals, user_app, &list_data),
-                            build_event_context(&list_data),
-                        ));
+                        // `resolve_src` only borrows `user_app` shared and
+                        // returns an owned `GlobalSymbol`, so the `&mut` for
+                        // `dispatch_event` is free by the time we need it.
+                        let handler =
+                            GlobalSymbol::resolve_src(event, locals, user_app, &list_data);
+                        let context = build_event_context(&list_data);
+                        user_app.dispatch_event(&handler, context, api);
                     }
                 }
             }
@@ -2734,7 +2710,7 @@ where
                             for index in 0..length {
                                 let mut item_config = ElementConfiguration::default();
                                 let mut item_text_config = TextConfig::default();
-                                (events, pointer) = set_layout(
+                                pointer = set_layout(
                                     api,
                                     mt,
                                     &mut recursive_commands,
@@ -2744,7 +2720,6 @@ where
                                     &mut item_config,
                                     &mut item_text_config,
                                     user_app,
-                                    events,
                                     pointer,
                                 );
                             }
@@ -2767,7 +2742,7 @@ where
                             let merged_locals = merge_locals(locals, &recursive_call_stack);
                             let mut item_config = ElementConfiguration::default();
                             let mut item_text_config = TextConfig::default();
-                            (events, pointer) = set_layout(
+                            pointer = set_layout(
                                 api,
                                 mt,
                                 &mut recursive_commands,
@@ -2777,7 +2752,6 @@ where
                                 &mut item_config,
                                 &mut item_text_config,
                                 user_app,
-                                events,
                                 pointer,
                             );
                         }
@@ -2872,7 +2846,7 @@ where
                                     recursive_commands.push(command.clone());
                                 }
                                 let merged_locals = merge_locals(locals, &recursive_call_stack);
-                                (events, pointer) = set_layout(
+                                pointer = set_layout(
                                     api,
                                     mt,
                                     &mut recursive_commands,
@@ -2882,7 +2856,6 @@ where
                                     config,
                                     text_config,
                                     user_app,
-                                    events,
                                     pointer,
                                 );
                             }
@@ -2901,7 +2874,13 @@ where
                         nesting_level -= 1;
                         if skip.is_none() {
                             collect_declarations = false;
-                            events = treeview(src, &list_data, api, mt, user_app, events);
+                            // `treeview` walks a tree borrowed out of `user_app`
+                            // (`get_treeview` -> `TreeViewItem<'_>`), so it can't
+                            // hold `&mut user_app` to dispatch - it returns its
+                            // events and we drain them here, borrow released.
+                            for (handler, context) in treeview(src, &list_data, api, mt, user_app) {
+                                user_app.dispatch_event(&handler, context, api);
+                            }
                         }
                     }
 
@@ -2961,7 +2940,7 @@ where
         }
     }
 
-    (events, pointer)
+    pointer
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2972,7 +2951,7 @@ fn execute_config<UserApp>(
     reusables: &HashMap<GlobalSymbol, Vec<Layout>>,
     locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
     list_data: &Option<(GlobalSymbol, usize)>,
-    api: &mut API<UserApp>,
+    api: &mut API,
     user_app: &UserApp,
 ) where
     UserApp: LayoutRunnerReflection,
@@ -3259,9 +3238,9 @@ fn execute_config<UserApp>(
             // This only handles flat `Config` entries. A reusable config
             // snippet that itself opens a `hover`/`left-clicked`/etc block
             // (an `Element` command, not a `Config` one) can't be replayed
-            // from here - doing that needs the `skip`/`nesting_level`/
-            // `events` bookkeeping `set_layout` owns, which this function
-            // doesn't have access to.
+            // from here - doing that needs the `skip`/`nesting_level`
+            // bookkeeping `set_layout` owns, which this function doesn't
+            // have access to.
             if let Some(reusable) = reusables.get(name) {
                 for command in reusable {
                     if let Layout::Config(nested_command) = command {
@@ -3367,8 +3346,7 @@ where
     }
 }
 
-impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
-    for Color
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp> for Color
 where
     'application: 'frame,
     UserApp: LayoutRunnerReflection,
@@ -3412,8 +3390,7 @@ where
     }
 }
 
-impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
-    for String
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp> for String
 where
     'application: 'frame,
     UserApp: LayoutRunnerReflection,
@@ -3457,8 +3434,7 @@ where
     }
 }
 
-impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
-    for f32
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp> for f32
 where
     'application: 'frame,
     UserApp: LayoutRunnerReflection,
@@ -3500,8 +3476,7 @@ where
     }
 }
 
-impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
-    for u16
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp> for u16
 where
     'application: 'frame,
     UserApp: LayoutRunnerReflection,
@@ -3545,8 +3520,7 @@ where
     }
 }
 
-impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
-    for i16
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp> for i16
 where
     'application: 'frame,
     UserApp: LayoutRunnerReflection,
@@ -3590,8 +3564,7 @@ where
     }
 }
 
-impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
-    for bool
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp> for bool
 where
     'application: 'frame,
     UserApp: LayoutRunnerReflection,
@@ -3633,8 +3606,7 @@ where
     }
 }
 
-impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
-    for GlobalSymbol
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp> for GlobalSymbol
 where
     'application: 'frame,
     UserApp: LayoutRunnerReflection,
@@ -3682,17 +3654,15 @@ where
 mod tests {
     use super::*;
 
-    /// The parser should turn `src/layouts/main.md` into a non-empty,
+    /// The parser should turn `src/layouts/Main.md` into a non-empty,
     /// flattened command stream without panicking or erroring.
     #[test]
     fn parses_main_md() {
         let file =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/layouts/main.md"))
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/layouts/Main.md"))
                 .unwrap();
-        let (page_name, body, reusables) =
-            process_layout(file).expect("main.md should parse");
+        let (body, reusables) = process_layout(file).expect("Main.md should parse");
 
-        assert_eq!(page_name, "-Main");
         assert!(!body.is_empty());
         assert!(reusables.contains_key("layout expand"));
         assert!(reusables.contains_key("header button"));

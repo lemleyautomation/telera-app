@@ -86,17 +86,23 @@ pub enum TreeViewItem<'frame> {
     },
 }
 
+/// Lays out the tree `name` resolves to and returns the handler events its
+/// rows fired this frame. The events come back as an owned `Vec` (rather than
+/// being dispatched here) because the tree is borrowed out of `user_app` -
+/// `get_treeview` hands back a `TreeViewItem<'_>` whose labels point into the
+/// app - so `&mut user_app` isn't available until this returns. The caller
+/// (`set_layout`) drains the `Vec` into `dispatch_event` right after.
 pub fn treeview<UserApp>(
     name: &GlobalSymbol,
     list_data: &Option<(GlobalSymbol, usize)>,
-    api: &mut API<UserApp>,
+    api: &mut API,
     mt: &mut MT,
     user_app: &UserApp,
-    mut events: Vec<(GlobalSymbol, Option<EventContext>)>,
 ) -> Vec<(GlobalSymbol, Option<EventContext>)>
 where
     UserApp: LayoutRunnerReflection,
 {
+    let mut events = Vec::new();
     if let Some(treeview) = user_app.get_treeview(name, list_data) {
         events = recursive_treeview_layout(api, mt, &treeview, events);
     }
@@ -104,15 +110,12 @@ where
     events
 }
 
-fn recursive_treeview_layout<UserApp>(
-    api: &mut API<UserApp>,
+fn recursive_treeview_layout(
+    api: &mut API,
     mt: &mut MT,
     treeview: &TreeViewItem,
     mut events: Vec<(GlobalSymbol, Option<EventContext>)>,
-) -> Vec<(GlobalSymbol, Option<EventContext>)>
-where
-    UserApp: LayoutRunnerReflection,
-{
+) -> Vec<(GlobalSymbol, Option<EventContext>)> {
     api.l.open_element();
     api.l
         .configure_element(ElementConfiguration::new().x_grow().direction(true));
@@ -173,15 +176,12 @@ where
     events
 }
 
-fn add_treeview_image_to_layout<UserApp>(
+fn add_treeview_image_to_layout(
     treeview_type: &TreeViewItem,
-    api: &mut API<UserApp>,
+    api: &mut API,
     mt: &mut MT,
     mut events: Vec<(GlobalSymbol, Option<EventContext>)>,
-) -> Vec<(GlobalSymbol, Option<EventContext>)>
-where
-    UserApp: LayoutRunnerReflection,
-{
+) -> Vec<(GlobalSymbol, Option<EventContext>)> {
     let green = Color {
         r: 0.0,
         g: 255.0,
@@ -272,11 +272,13 @@ where
                                 text: Some(label.to_string()),
                                 code: cc.code,
                                 code2: cc.code2,
+                                list_index: cc.list_index,
                             }),
                             None => Some(EventContext {
                                 text: Some(label.to_string()),
                                 code: None,
                                 code2: None,
+                                list_index: None,
                             }),
                         }
                     };
@@ -291,11 +293,13 @@ where
                                 text: Some(label.to_string()),
                                 code: cc.code,
                                 code2: cc.code2,
+                                list_index: cc.list_index,
                             }),
                             None => Some(EventContext {
                                 text: Some(label.to_string()),
                                 code: None,
                                 code2: None,
+                                list_index: None,
                             }),
                         }
                     };
@@ -345,11 +349,13 @@ where
                             text: Some(label.to_string()),
                             code: cc.code,
                             code2: cc.code2,
+                            list_index: cc.list_index,
                         }),
                         None => Some(EventContext {
                             text: Some(label.to_string()),
                             code: None,
                             code2: None,
+                            list_index: None,
                         }),
                     }
                 };
@@ -370,11 +376,13 @@ where
                                 text: Some(label.to_string()),
                                 code: cc.code,
                                 code2: cc.code2,
+                                list_index: cc.list_index,
                             }),
                             None => Some(EventContext {
                                 text: Some(label.to_string()),
                                 code: None,
                                 code2: None,
+                                list_index: None,
                             }),
                         }
                     };
@@ -389,11 +397,13 @@ where
                                 text: Some(label.to_string()),
                                 code: cc.code,
                                 code2: cc.code2,
+                                list_index: cc.list_index,
                             }),
                             None => Some(EventContext {
                                 text: Some(label.to_string()),
                                 code: None,
                                 code2: None,
+                                list_index: None,
                             }),
                         }
                     };
@@ -429,11 +439,13 @@ where
                             text: Some(label.to_string()),
                             code: cc.code,
                             code2: cc.code2,
+                            list_index: cc.list_index,
                         }),
                         None => Some(EventContext {
                             text: Some(label.to_string()),
                             code: None,
                             code2: None,
+                            list_index: None,
                         }),
                     }
                 };
@@ -454,11 +466,13 @@ where
                                 text: Some(label.to_string()),
                                 code: cc.code,
                                 code2: cc.code2,
+                                list_index: cc.list_index,
                             }),
                             None => Some(EventContext {
                                 text: Some(label.to_string()),
                                 code: None,
                                 code2: None,
+                                list_index: None,
                             }),
                         }
                     };
@@ -473,11 +487,13 @@ where
                                 text: Some(label.to_string()),
                                 code: cc.code,
                                 code2: cc.code2,
+                                list_index: cc.list_index,
                             }),
                             None => Some(EventContext {
                                 text: Some(label.to_string()),
                                 code: None,
                                 code2: None,
+                                list_index: None,
                             }),
                         }
                     };
@@ -505,11 +521,13 @@ where
                             text: Some(label.to_string()),
                             code: cc.code,
                             code2: cc.code2,
+                            list_index: cc.list_index,
                         }),
                         None => Some(EventContext {
                             text: Some(label.to_string()),
                             code: None,
                             code2: None,
+                            list_index: None,
                         }),
                     }
                 };
@@ -530,11 +548,13 @@ where
                                 text: Some(label.to_string()),
                                 code: cc.code,
                                 code2: cc.code2,
+                                list_index: cc.list_index,
                             }),
                             None => Some(EventContext {
                                 text: Some(label.to_string()),
                                 code: None,
                                 code2: None,
+                                list_index: None,
                             }),
                         }
                     };
@@ -549,11 +569,13 @@ where
                                 text: Some(label.to_string()),
                                 code: cc.code,
                                 code2: cc.code2,
+                                list_index: cc.list_index,
                             }),
                             None => Some(EventContext {
                                 text: Some(label.to_string()),
                                 code: None,
                                 code2: None,
+                                list_index: None,
                             }),
                         }
                     };

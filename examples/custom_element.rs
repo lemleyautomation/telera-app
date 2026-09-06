@@ -8,7 +8,7 @@ struct MyApp {
 #[telera_app]
 impl MyApp {
     #[layout_element]
-    fn custom_element(&mut self, api: &mut API<MyApp>, _mt: &mut MT) {
+    fn custom_element(&mut self, api: &mut API, _mt: &mut MT) {
         api.l.open_element();
         api.l.configure_element(
             &ElementConfiguration::new()
@@ -21,7 +21,7 @@ impl MyApp {
     }
 
     #[layout_event]
-    fn click_handler(&mut self, _context: Option<EventContext>, _api: &mut API<MyApp>) {
+    fn click_handler(&mut self, _context: Option<EventContext>, _api: &mut API) {
         self.click_counter += 1;
         println!("Sidebar clicked {:} times", self.click_counter);
     }
@@ -30,9 +30,10 @@ impl MyApp {
 impl App for MyApp {
     fn initialize(&mut self) -> Startup {
         Startup {
-            initial_window: Window::default_attributes()
+            window_attributes: Window::default_attributes()
                 .with_inner_size(LogicalSize::new(900, 600)),
             window_name: "Custom".to_string(),
+            page: None,
             watch_path: RunType::Watch("src/layouts".to_string()),
         }
     }

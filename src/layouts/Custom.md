@@ -1,5 +1,5 @@
 
-# -Custom
+# root
 - `element` outer container
   - `config`
     - `grow`

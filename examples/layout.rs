@@ -19,21 +19,16 @@ struct LayoutApp {
 #[telera_app]
 impl LayoutApp {
     #[layout_event]
-    fn file_button_clicked(&mut self, _context: Option<EventContext>, _api: &mut API<LayoutApp>) {
+    fn file_button_clicked(&mut self, _context: Option<EventContext>, _api: &mut API) {
         self.file_menu_opened = !self.file_menu_opened;
     }
 
     #[layout_event]
-    fn document_clicked(&mut self, context: Option<EventContext>, _api: &mut API<LayoutApp>) {
-        // `left-clicked *Clicked*` fires from inside `list Documents`, so
-        // `Binder`/`set_layout` stamps the item's index into
-        // `EventContext::code` for us - see the `#[list_click_event]` field
-        // attribute for the other half of this.
-        if let Some(EventContext {
-            code: Some(index), ..
-        }) = context
+    fn document_clicked(&mut self, context: Option<EventContext>, _api: &mut API) {
+        if let Some(event_context) = context
+            && let Some(index) = event_context.list_index
         {
-            self.selected_document = index as usize;
+            self.selected_document = index;
         }
     }
 }
@@ -41,9 +36,10 @@ impl LayoutApp {
 impl App for LayoutApp {
     fn initialize(&mut self) -> Startup {
         Startup {
-            initial_window: Window::default_attributes()
+            window_attributes: Window::default_attributes()
                 .with_inner_size(LogicalSize::new(900, 600)),
             window_name: "Main".to_string(),
+            page: None,
             watch_path: RunType::Watch("src/layouts".to_string()),
         }
     }

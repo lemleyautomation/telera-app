@@ -12,18 +12,19 @@ struct BasicApp {
 }
 
 impl LayoutRunnerReflection for BasicApp {}
-impl LayoutReflector<BasicApp> for BasicApp {}
+impl LayoutReflector for BasicApp {}
 
 impl App for BasicApp {
     fn initialize(&mut self) -> Startup {
         Startup {
-            initial_window: Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)),
+            window_attributes: Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)),
             window_name: "Main".to_string(),
+            page: None,
             watch_path: RunType::None
         }
     }
 
-    fn layout(&mut  self, _page: &str, api: &mut API<BasicApp>, _mt: &mut MT) {
+    fn layout(&mut  self, _page: &str, api: &mut API, _mt: &mut MT) {
         macro_rules! e {
             ($v:expr $(, $c:stmt)* $(,)? ) => {
                 api.l.open_element();
