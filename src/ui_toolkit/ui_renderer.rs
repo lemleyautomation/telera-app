@@ -1370,13 +1370,20 @@ impl UIRenderer {
         });
     }
 
+    /// Queues `atlas_data` to become the atlas `name` on the next frame. If an
+    /// atlas of that name is already pending upload this frame, its pixels are
+    /// replaced rather than a second copy queued; an already-uploaded atlas of
+    /// the same name is overwritten when the queue is drained (`add_atlas`).
     pub fn stage_atlas(&mut self, name: String, atlas_data: DynamicImage) {
-        self.staged_images.push((name, atlas_data));
+        if let Some((_, pending)) = self.staged_images.iter_mut().find(|(n, _)| *n == name) {
+            *pending = atlas_data;
+        } else {
+            self.staged_images.push((name, atlas_data));
+        }
     }
 
     fn add_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        if !self.staged_images.is_empty() {
-            let (name, staged_image) = self.staged_images.pop().unwrap();
+        for (name, staged_image) in self.staged_images.drain(..) {
             let new_atlas = wgpu::BindGroup::create_atlas(staged_image, device, queue);
             self.atlas_map.insert(name.clone(), new_atlas);
             self.active_atlas = name;

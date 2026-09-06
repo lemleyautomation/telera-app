@@ -1,3 +1,4 @@
+pub use image;
 pub use image::DynamicImage;
 use notify::Watcher as _;
 pub use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
@@ -34,13 +35,11 @@ const MULTI_SAMPLE_COUNT: u32 = 1;
 
 mod ui_toolkit;
 pub use ui_toolkit::layout_runner::{
-    Binder, Config, DataSrc, Declaration, Element, EventContext, FieldAccess, Layout,
+    Binder, Config, DataSrc, Declaration, Element, EventContext, FieldAccess, ImageLoad, Layout,
     LayoutReflector, LayoutRunnerReflection, ParsedLayout, normalize_field_symbol, process_layout,
 };
-pub use ui_toolkit::manual_layout;
 pub use ui_toolkit::telera_layout::{Color, ElementConfiguration, TextConfig};
-pub use ui_toolkit::treeview::{TreeViewEvents, TreeViewItem};
-pub use ui_toolkit::ui_renderer::{UIImageDescriptor, UIRenderer as MT};
+pub use ui_toolkit::ui_renderer::UIImageDescriptor;
 pub use ui_toolkit::ui_shapes::*;
 use ui_toolkit::{
     telera_layout::LayoutEngine, ui_renderer::CustomLayoutSettings, ui_renderer::UIRenderer,
@@ -107,12 +106,14 @@ pub trait App: LayoutRunnerReflection + LayoutReflector + Sized {
     /// `update`, guarded by a flag on the app so it only runs once.
     fn initialize(&mut self) -> Startup;
 
+    fn onload(&mut self, api: &mut API) {}
+
     /// All application update logic
     ///
     /// This will be called at the beginning of each render loop
     fn update(&mut self, api: &mut API) {}
 
-    fn layout(&mut self, page: &str, api: &mut API, mt: &mut UIRenderer) {}
+    fn layout(&mut self, page: &str, api: &mut API) {}
 }
 
 pub struct API {
@@ -135,7 +136,20 @@ pub struct API {
     queue: wgpu::Queue,
     pub scene_renderer: SceneRenderer,
     ui_renderer: Option<UIRenderer>,
-    pub l: LayoutEngine<UIImageDescriptor, CustomElement, CustomLayoutSettings>,
+    pub l: LayoutEngine<UIRenderer, UIImageDescriptor, CustomElement, CustomLayoutSettings>,
+    /// Per-frame storage for `UIImageDescriptor`s the markdown layout resolves
+    /// (from a `set-image` declaration or an `image` literal). The layout engine
+    /// keeps a raw pointer to each image descriptor a config sets until the
+    /// render pass consumes it, so the value has to outlive `run_layout` - the
+    /// declarations/reusables it might otherwise be borrowed from don't. Each
+    /// entry is boxed so pushing more never moves the ones already handed out;
+    /// cleared at the start of every layout pass.
+    #[allow(clippy::vec_box)] // stable element addresses are the whole point
+    image_frame_arena: Vec<Box<UIImageDescriptor>>,
+    /// Atlases loaded from `` `load` `` directives in layout files, keyed by
+    /// atlas name -> source path, so re-parsing a file (hot reload) can tell an
+    /// already-loaded image from a new one.
+    loaded_layout_images: HashMap<String, String>,
     model_ids: HashMap<String, usize>,
     models: Vec<Model>,
 
@@ -179,7 +193,7 @@ impl API {
     /// Runs `page` (as loaded from `Startup::watch_path`) for this frame
     /// and dispatches whatever events fired straight back into `user_app`
     /// via `LayoutReflector::dispatch_event`.
-    fn run_layout<UserApp>(&mut self, page: &str, mt: &mut MT, user_app: &mut UserApp)
+    fn run_layout<UserApp>(&mut self, page: &str, user_app: &mut UserApp)
     where
         UserApp: LayoutRunnerReflection + LayoutReflector,
     {
@@ -188,7 +202,7 @@ impl API {
         // holder (pages + reusables), nothing reaches back into `API`
         // through it. `set_page` dispatches events itself as it walks.
         let mut binder = std::mem::take(&mut self.binder);
-        binder.set_page(page, self, mt, user_app);
+        binder.set_page(page, self, user_app);
         self.binder = binder;
     }
 
@@ -328,14 +342,17 @@ impl API {
                 (self.scroll_delta_distance.1 / ui_renderer.dpi_scale) * 3.0,
                 0.016,
             );
-            self.l.begin_layout();
+            // Descriptors from the last frame's layout have been rendered; the
+            // engine holds no live pointers into the arena now, so it's safe to
+            // drop them before this frame fills it again.
+            self.image_frame_arena.clear();
+            self.l.begin_layout(ui_renderer);
             match self.watch_path {
-                RunType::None => user_application.layout(&page, self, &mut ui_renderer),
-                RunType::Once(_) | RunType::Watch(_) => {
-                    self.run_layout(&page, &mut ui_renderer, user_application)
-                }
+                RunType::None => user_application.layout(&page, self),
+                RunType::Once(_) | RunType::Watch(_) => self.run_layout(&page, user_application),
             }
-            render_commands = self.l.end_layout(&mut ui_renderer);
+            let (commands, ui_renderer) = self.l.end_layout();
+            render_commands = commands;
             //            println!("{:#?}", render_commands);
             self.scroll_delta_distance = (0.0, 0.0);
             self.scroll_delta_time = Instant::now();
@@ -389,8 +406,12 @@ impl API {
                             occlusion_query_set: None,
                         });
 
-                    self.scene_renderer
-                        .render(&mut self.models, &mut render_pass, &self.queue);
+                    self.scene_renderer.render(
+                        &mut self.models,
+                        &mut render_pass,
+                        &self.queue,
+                        viewport.aspect(),
+                    );
 
                     ui_renderer.render_layout(
                         render_commands,
@@ -436,8 +457,12 @@ impl API {
                             occlusion_query_set: None,
                         });
 
-                    self.scene_renderer
-                        .render(&mut self.models, &mut render_pass, &self.queue);
+                    self.scene_renderer.render(
+                        &mut self.models,
+                        &mut render_pass,
+                        &self.queue,
+                        viewport.aspect(),
+                    );
                 }
 
                 self.queue.submit(std::iter::once(command_encoder.finish()));
@@ -491,10 +516,25 @@ impl API {
         self.staged_windows
             .push(("Main".to_string(), None, new_window));
     }
+    /// Registers `image` under the atlas name `name`, to be uploaded on the next
+    /// frame. If `name` is already a known atlas (or already staged this frame),
+    /// the pixels are replaced; otherwise a new atlas is added. Safe to call
+    /// before the renderer exists - the call is dropped in that case.
     pub fn add_image(&mut self, name: &str, image: DynamicImage) {
         if let Some(ui_renderer) = &mut self.ui_renderer {
             ui_renderer.stage_atlas(name.to_string(), image);
         }
+    }
+
+    /// Boxes `descriptor` into the per-frame arena and hands back a reference
+    /// that stays valid for the rest of the layout + render pass (see
+    /// [`API::image_frame_arena`]).
+    pub(crate) fn stage_frame_image(
+        &mut self,
+        descriptor: UIImageDescriptor,
+    ) -> &UIImageDescriptor {
+        self.image_frame_arena.push(Box::new(descriptor));
+        self.image_frame_arena.last().unwrap()
     }
     pub fn set_viewport_title(&mut self, viewport: &str, title: &str) {
         if let Some(window_id) = self.viewport_lookup.get_by_left(viewport)
@@ -532,7 +572,29 @@ impl API {
             .to_string();
         let markdown = std::fs::read_to_string(path)
             .map_err(|error| format!("failed to read layout file {path:?}: {error}"))?;
-        self.binder.load_layout(&page_name, &markdown)?;
+        let image_loads = self.binder.load_layout(&page_name, &markdown)?;
+
+        // Fulfil the file's `` `load` `` directives: decode each image once and
+        // stage it under its atlas name. Re-parsing the same file (hot reload)
+        // re-stages, so a changed image picks up; an unrelated file naming an
+        // atlas that's already loaded from the same path is skipped.
+        for load in image_loads {
+            if self.loaded_layout_images.get(&load.atlas) == Some(&load.path) {
+                continue;
+            }
+            match image::open(&load.path) {
+                Ok(decoded) => {
+                    self.add_image(&load.atlas, decoded);
+                    self.loaded_layout_images
+                        .insert(load.atlas.clone(), load.path.clone());
+                }
+                Err(error) => eprintln!(
+                    "layout {page_name:?}: failed to load image {:?} ({}): {error}",
+                    load.path, load.atlas
+                ),
+            }
+        }
+
         Ok(page_name)
     }
 
@@ -757,6 +819,8 @@ where
                                     scene_renderer,
                                     ui_renderer,
                                     l,
+                                    image_frame_arena: Vec::new(),
+                                    loaded_layout_images: HashMap::new(),
                                     model_ids: HashMap::new(),
                                     models: Vec::<Model>::new(),
                                     viewport_lookup,
@@ -807,7 +871,9 @@ where
                                 if let RunType::Watch(dir) = &api.watch_path {
                                     spawn_layout_watcher(dir.clone(), self.app_events.clone());
                                 }
-                                //api.redraw_viewport(window_id, &mut self.user_application);
+                                api.redraw_viewport(window_id, &mut self.user_application);
+
+                                self.user_application.onload(&mut api);
 
                                 self.api = Some(api);
                             }
@@ -941,7 +1007,7 @@ where
                 }
                 _ => {}
             }
-            //api.request_redraw_viewport(window_id);
+            api.request_redraw_viewport(window_id);
         }
     }
 
@@ -977,7 +1043,7 @@ where
     UserApp: App,
 {
     if let Ok(event_loop) = EventLoop::<InternalEvents>::with_user_event().build() {
-        event_loop.set_control_flow(ControlFlow::Wait);
+        event_loop.set_control_flow(ControlFlow::Poll);
         let mut app = Application::new(event_loop.create_proxy(), user_application);
         event_loop.run_app(&mut app).unwrap();
     } else {

@@ -12,6 +12,7 @@ use syn::{GenericArgument, Ident, PathArguments, Type};
 //   u8/u16/../i8/../f32/f64/usize/isize -> get_numeric  / field_numeric
 //   String                              -> get_text     / field_text
 //   Color                               -> get_color    / field_color
+//   UIImageDescriptor                   -> get_image    / field_image
 //   Vec<T>                              -> get_list_length (ParserDataAccess only)
 //
 // A markdown name is matched against a field's Rust name after normalizing
@@ -45,6 +46,7 @@ enum FieldKind {
     Numeric,
     Text,
     Color,
+    Image,
     /// A `Vec<T>`; the element type's identifier (e.g. `Document`).
     List(Ident),
 }
@@ -63,6 +65,7 @@ fn classify_field_type(ty: &Type) -> Option<FieldKind> {
         | "isize" | "f32" | "f64" => Some(FieldKind::Numeric),
         "String" => Some(FieldKind::Text),
         "Color" => Some(FieldKind::Color),
+        "UIImageDescriptor" => Some(FieldKind::Image),
         "Vec" => {
             let PathArguments::AngleBracketed(args) = &segment.arguments else {
                 return None;
@@ -107,12 +110,14 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
     let mut plain_numeric = Vec::<proc_macro2::TokenStream>::new();
     let mut plain_text = Vec::<proc_macro2::TokenStream>::new();
     let mut plain_color = Vec::<proc_macro2::TokenStream>::new();
+    let mut plain_image = Vec::<proc_macro2::TokenStream>::new();
     let mut plain_list_length = Vec::<proc_macro2::TokenStream>::new();
 
     let mut list_bool = Vec::<proc_macro2::TokenStream>::new();
     let mut list_numeric = Vec::<proc_macro2::TokenStream>::new();
     let mut list_text = Vec::<proc_macro2::TokenStream>::new();
     let mut list_color = Vec::<proc_macro2::TokenStream>::new();
+    let mut list_image = Vec::<proc_macro2::TokenStream>::new();
     let mut list_event = Vec::<proc_macro2::TokenStream>::new();
 
     if let syn::Data::Struct(data) = &ast.data {
@@ -143,6 +148,11 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                 }
                 FieldKind::Color => {
                     plain_color.push(quote::quote! {
+                        #field_name => return Some(&self.#field_ident),
+                    });
+                }
+                FieldKind::Image => {
+                    plain_image.push(quote::quote! {
                         #field_name => return Some(&self.#field_ident),
                     });
                 }
@@ -189,6 +199,14 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                             if list_key == #field_name
                                 && let Some(item) = self.#field_ident.get(*index)
                                 && let Some(value) = telera_app::FieldAccess::field_color(item, name)
+                            {
+                                return Some(value);
+                            }
+                        });
+                        list_image.push(quote::quote! {
+                            if list_key == #field_name
+                                && let Some(item) = self.#field_ident.get(*index)
+                                && let Some(value) = telera_app::FieldAccess::field_image(item, name)
                             {
                                 return Some(value);
                             }
@@ -262,6 +280,22 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                 None
             }
             #[allow(unused_variables)]
+            fn get_image<'render_pass, 'application>(&'application self, name: &symbol_table::GlobalSymbol, list_data: &Option<(symbol_table::GlobalSymbol, usize)>) -> Option<&'render_pass telera_app::UIImageDescriptor>
+            where
+                'application: 'render_pass,
+            {
+                let key = telera_app::normalize_field_symbol(name.as_str());
+                match key.as_str() {
+                    #(#plain_image)*
+                    _ => {}
+                }
+                if let Some((list_symbol, index)) = list_data {
+                    let list_key = telera_app::normalize_field_symbol(list_symbol.as_str());
+                    #(#list_image)*
+                }
+                None
+            }
+            #[allow(unused_variables)]
             fn get_event<'render_pass, 'application>(&'application self, name: &symbol_table::GlobalSymbol, list_data: &Option<(symbol_table::GlobalSymbol, usize)>) -> Option<symbol_table::GlobalSymbol>
             where
                 'application: 'render_pass,
@@ -300,6 +334,7 @@ pub fn field_access(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut plain_numeric = Vec::<proc_macro2::TokenStream>::new();
     let mut plain_text = Vec::<proc_macro2::TokenStream>::new();
     let mut plain_color = Vec::<proc_macro2::TokenStream>::new();
+    let mut plain_image = Vec::<proc_macro2::TokenStream>::new();
 
     if let syn::Data::Struct(data) = &ast.data {
         for field in &data.fields {
@@ -318,6 +353,9 @@ pub fn field_access(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     #field_name => return Some(&self.#field_ident),
                 }),
                 Some(FieldKind::Color) => plain_color.push(quote::quote! {
+                    #field_name => return Some(&self.#field_ident),
+                }),
+                Some(FieldKind::Image) => plain_image.push(quote::quote! {
                     #field_name => return Some(&self.#field_ident),
                 }),
                 Some(FieldKind::List(_)) | None => {}
@@ -361,6 +399,14 @@ pub fn field_access(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     _ => None,
                 }
             }
+            #[allow(unused_variables)]
+            fn field_image(&self, name: &symbol_table::GlobalSymbol) -> Option<&telera_app::UIImageDescriptor> {
+                let key = telera_app::normalize_field_symbol(name.as_str());
+                match key.as_str() {
+                    #(#plain_image)*
+                    _ => None,
+                }
+            }
         }
     }
     .into()
@@ -384,8 +430,8 @@ pub fn app(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// * `#[layout_event]` - `fn name(&mut self, context: Option<EventContext>,
 ///   api: &mut API)` - reachable from a layout config like
 ///   `left-clicked name`, dispatched through `dispatch_event`.
-/// * `#[layout_element]` - `fn name(&mut self, api: &mut API, mt: &mut
-///   MT)` - reachable from a `fn *name*` element, dispatched through
+/// * `#[layout_element]` - `fn name(&mut self, api: &mut API)` - reachable
+///   from a `fn *name*` element, dispatched through
 ///   `dispatch_custom_element`.
 ///
 /// The markdown always refers to a method by its Rust name. Methods without
@@ -437,7 +483,7 @@ pub fn telera_app(
             });
         } else if is_element {
             element_arms.push(quote::quote! {
-                #name_str => self.#name(api, mt),
+                #name_str => self.#name(api),
             });
         }
     }
@@ -464,7 +510,6 @@ pub fn telera_app(
                 &mut self,
                 name: &symbol_table::GlobalSymbol,
                 api: &mut telera_app::API,
-                mt: &mut telera_app::MT,
             ) {
                 match name.as_str() {
                     #(#element_arms)*
@@ -474,4 +519,61 @@ pub fn telera_app(
         }
     }
     .into()
+}
+
+/// `#[layout_fn]` goes on a hand-written [`App::layout`] method and injects the
+/// two layout-building macros into its body, so an app using the imperative
+/// (non-markdown) layout path doesn't have to define them itself:
+///
+/// * `e!(config $(, child_stmt)* $(,)?)` - opens an element, configures it with
+///   `&config`, runs each `child_stmt` (nested `e!` / `t!` calls, `if`s, loops,
+///   ...) as its children, then closes it.
+/// * `t!(text_config, content)` - adds `content` to the current element as a
+///   text run styled by `text_config`.
+///
+/// Both expand to calls on a binding named `api` (the `api: &mut API`
+/// parameter), so the parameter must keep that name.
+///
+/// ```ignore
+/// impl App for MyApp {
+///     #[layout_fn]
+///     fn layout(&mut self, page: &str, api: &mut API) {
+///         let row = ElementConfiguration::default().grow_all().end();
+///         let label = TextConfig::new().font_size(16).end();
+///         e!(row, t!(label, "hello"));
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn layout_fn(
+    _attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let mut func = syn::parse_macro_input!(item as syn::ImplItemFn);
+    let stmts = &func.block.stmts;
+
+    func.block = syn::parse_quote!({
+        #[allow(unused_macros)]
+        macro_rules! e {
+            ($v:expr $(, $c:stmt)* $(,)? ) => {
+                api.l.open_element();
+                api.l.configure_element(&$v);
+                $(
+                    $c
+                )*
+                api.l.close_element();
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! t {
+            ($v:expr, $c:expr) => {
+                api.l.add_text_element($c, &$v, true);
+            };
+        }
+
+        #(#stmts)*
+    });
+
+    quote::quote! { #func }.into()
 }

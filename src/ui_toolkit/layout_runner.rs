@@ -17,30 +17,28 @@
 //!
 //! # Event dispatch
 //!
-//! Event handling used to fight the borrow checker because a mutable text
-//! renderer (`MT`) and mutable element/text config scratch space were passed
-//! around as `Option<&mut T>` with a "make a fresh default if None" fallback.
-//! That pattern doesn't work: the fallback default is a temporary that can't
-//! outlive the match arm that creates it, and reborrowing an already-`&mut`
-//! local as `&mut local` (instead of just passing `local`) produces a
-//! double reference. Both mistakes showed up throughout the old code.
+//! Event handling used to fight the borrow checker because mutable
+//! element/text config scratch space was passed around as `Option<&mut T>`
+//! with a "make a fresh default if None" fallback. That pattern doesn't
+//! work: the fallback default is a temporary that can't outlive the match
+//! arm that creates it, and reborrowing an already-`&mut` local as `&mut
+//! local` (instead of just passing `local`) produces a double reference.
+//! Both mistakes showed up throughout the old code.
 //!
 //! The fix used here is to never make those parameters optional: `set_layout`
-//! always receives a live `&mut MT`, `&mut ElementConfiguration` and
-//! `&mut TextConfig`, and callers that don't have an existing one to hand
-//! down (list items, the top level call) simply own a fresh local and pass a
-//! reborrow of it.
+//! always receives a live `&mut ElementConfiguration` and `&mut TextConfig`,
+//! and callers that don't have an existing one to hand down (list items, the
+//! top level call) simply own a fresh local and pass a reborrow of it.
+//! (Text measurement now lives inside `api.l` itself - the layout engine
+//! owns the renderer for the duration of a `begin_layout`/`end_layout` pass -
+//! so it is no longer threaded through here.)
 //!
 //! `set_layout` also holds a live `&mut UserApp` (bounded `LayoutReflector`)
 //! and a `&mut API` as separate parameters, so when an event fires it calls
 //! [`LayoutReflector::dispatch_event`] right then, in tree order - the same
 //! way `fn *name*` elements already go straight to `dispatch_custom_element`.
 //! A handler therefore sees state changes made by handlers earlier in the
-//! same frame's tree. The one exception is `treeview`: the tree it walks is
-//! borrowed out of the app (`get_treeview` returns `TreeViewItem<'_>` with
-//! `&str` labels), so it can't hold `&mut UserApp` at the same time - it
-//! collects its handful of events into an owned `Vec` and `set_layout`
-//! drains that immediately, once the borrow on the tree is released.
+//! same frame's tree.
 use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
 use markdown::mdast::{List, Node, Paragraph};
@@ -48,9 +46,7 @@ use strum_macros::Display;
 use symbol_table::GlobalSymbol;
 use telera_layout::{Color, ElementConfiguration, TextConfig};
 
-use crate::{
-    API, CustomElement, LineConfig, MT, UIImageDescriptor, ui_toolkit::treeview::treeview,
-};
+use crate::{API, CustomElement, LineConfig, UIImageDescriptor};
 
 const DEFAULT_TEXT: &str = ":(";
 
@@ -63,8 +59,6 @@ const DEFAULT_TEXT: &str = ":(";
 /// `code`/`code2` are a couple of general-purpose numeric slots; the layout
 /// runner fills `code` with the current list index when an event fires from
 /// inside a `list`, so a handler can tell which item was interacted with.
-/// `treeview` chains `code`/`code2` forward from the tree's own event
-/// definitions and additionally fills in `text` with the item's label.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EventContext {
     pub text: Option<String>,
@@ -99,7 +93,7 @@ pub trait LayoutReflector {
     ) {
     }
 
-    fn dispatch_custom_element(&mut self, name: &GlobalSymbol, api: &mut API, mt: &mut MT) {}
+    fn dispatch_custom_element(&mut self, name: &GlobalSymbol, api: &mut API) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -147,12 +141,6 @@ pub enum Element {
 
     UseOpened,
     UseClosed(GlobalSymbol),
-
-    TreeViewOpened,
-    TreeViewClosed(GlobalSymbol),
-
-    TextBoxOpened,
-    TextBoxClosed(DataSrc<String>),
 
     // `fn *name*` - calls back into the app's own
     // `LayoutReflector::dispatch_custom_element` with `name` right where it
@@ -278,8 +266,13 @@ pub enum Element {
 #[derive(Clone, Debug, Display, PartialEq)]
 pub enum Config {
     Id(DataSrc<String>),
+    /// `id_indexed` - like [`Config::Id`] but folds the current `list`/`item`
+    /// iteration index into the hash, so each row of a list gets a distinct id.
+    IdIndexed(DataSrc<String>),
 
     GrowAll,
+    FitAll,
+    AspectRatio(DataSrc<f32>),
     GrowX,
     GrowXmin(DataSrc<f32>),
     GrowXmax(DataSrc<f32>),
@@ -310,6 +303,7 @@ pub enum Config {
     },
     FixedX(DataSrc<f32>),
     FixedY(DataSrc<f32>),
+    FixedSquare(DataSrc<f32>),
     PercentX(DataSrc<f32>),
     PercentY(DataSrc<f32>),
 
@@ -322,6 +316,7 @@ pub enum Config {
     ChildGap(DataSrc<u16>),
 
     Vertical,
+    Horizontal,
 
     ChildAlignmentXLeft,
     ChildAlignmentXRight,
@@ -351,11 +346,20 @@ pub enum Config {
         horizontal: DataSrc<bool>,
     },
 
+    /// `` `image` *name* `` - resolve `name` to a [`UIImageDescriptor`], checking
+    /// `set-image` declarations first, then the application's `get_image`.
     Image {
         name: GlobalSymbol,
     },
+    /// `` `image` *atlas* [u1, v1, u2, v2] `` - a descriptor written inline, no
+    /// lookup. The atlas name is whatever a `load` directive (or the app) staged
+    /// it under.
+    ImageLiteral(UIImageDescriptor),
 
     Floating,
+    FloatingClipToParent,
+    FloatingNoClip,
+    FloatingPointerCapture,
     FloatingOffset {
         x: DataSrc<f32>,
         y: DataSrc<f32>,
@@ -404,6 +408,10 @@ pub enum Config {
     LineHeight(DataSrc<u16>),
     FontSize(DataSrc<u16>),
     FontColor(DataSrc<Color>),
+    LetterSpacing(DataSrc<u16>),
+    WrapWords,
+    WrapNewLines,
+    WrapNone,
     Editable(bool),
 }
 
@@ -414,7 +422,7 @@ pub enum Declaration {
     Text(String),
     Color(Color),
     Event(GlobalSymbol),
-    Image(GlobalSymbol),
+    Image(UIImageDescriptor),
 }
 
 impl Default for Declaration {
@@ -501,16 +509,6 @@ pub trait LayoutRunnerReflection {
     {
         None
     }
-    fn get_treeview<'render_pass, 'application>(
-        &'application self,
-        name: &GlobalSymbol,
-        list_data: &Option<(GlobalSymbol, usize)>,
-    ) -> Option<crate::TreeViewItem<'render_pass>>
-    where
-        'application: 'render_pass,
-    {
-        None
-    }
 }
 
 /// Implemented by an item type that shows up as the element of a `Vec<T>`
@@ -531,6 +529,9 @@ pub trait FieldAccess {
         None
     }
     fn field_color(&self, name: &GlobalSymbol) -> Option<&Color> {
+        None
+    }
+    fn field_image(&self, name: &GlobalSymbol) -> Option<&UIImageDescriptor> {
         None
     }
 }
@@ -558,27 +559,188 @@ pub fn normalize_field_symbol(name: &str) -> String {
 #[derive(Debug)]
 enum ParsingMode {
     None,
+    /// The `#### TML <version>` preamble block: a flat list of directives
+    /// (`load` today) that run once when the file is parsed / a page replaced,
+    /// before any layout.
+    Header,
     Body,
     ReusableElements,
     ReusableConfig,
 }
 
-/// A parsed page: its flattened layout commands, and its table of reusable
-/// snippets (declared with `##`/`###` headings, referenced with `use`).
+/// One image a layout file asked to be loaded, via a `` - `load` [atlas](path) ``
+/// directive in its `#### TML ...` header block. The parser only records the
+/// request; `API` reads the file and hands the pixels to the renderer (see
+/// [`Binder::load_layout`] / `API::load_layout_file`), so the layout can use
+/// `atlas` from an `image` config or a `set-image` declaration without the
+/// application staging it in Rust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageLoad {
+    /// Atlas name the image is registered under - what `image`/`set-image`
+    /// reference.
+    pub atlas: String,
+    /// Path to the image file, resolved relative to the process's working
+    /// directory (the same base the layout-watch directory is given relative
+    /// to).
+    pub path: String,
+}
+
+/// A parsed page: its flattened layout commands, its table of reusable snippets
+/// (declared with `##`/`###` headings, referenced with `use`), and the images
+/// its `#### TML ...` header asked to be loaded.
 ///
 /// The page has no name of its own - the `# ...` heading only marks where the
 /// body starts (its text is ignored, `# root` by convention). The caller names
 /// the page when it registers it (see [`Binder::load_layout`]); `API` uses the
 /// layout file's own name, minus the `.md`.
-pub type ParsedLayout = (Vec<Layout>, HashMap<String, Vec<Layout>>);
+#[derive(Debug, Default)]
+pub struct ParsedLayout {
+    pub body: Vec<Layout>,
+    pub reusables: HashMap<String, Vec<Layout>>,
+    pub image_loads: Vec<ImageLoad>,
+}
 
-/// Parses a markdown layout document (see `src/layouts/Main.md`) into a
+/// Every keyword the grammar looks for as the *first token* of a list item -
+/// element, config, declaration and header directives. **Sorted** (binary
+/// searched by [`add_missing_keyword_backticks`]).
+///
+/// Kept in sync by hand with the `match` arms of [`process_element`],
+/// [`process_configs`], [`process_variable`] and [`process_header_directive`];
+/// adding a keyword there means adding it here too. `config` is included even
+/// though the parser only recognises it positionally, so a backtick-free file
+/// still round-trips to the canonical `` `config` `` form. Argument words that
+/// are written as inline code but never lead an item (`min`, `max`, `x`, `y`,
+/// `height`, and the alignment/attach-point value words) are deliberately *not*
+/// in this list.
+const LEADING_KEYWORDS: &[&str] = &[
+    "align", "align-children-x", "align-children-y", "aspect-ratio", "attach-root", "attach-self",
+    "attatch-parent", "border-all", "border-bottom", "border-color", "border-in-between",
+    "border-left", "border-right", "border-top", "child-gap", "circle", "clip-to-parent", "color",
+    "config", "declarations", "element", "fit", "fixed", "fixed-square", "floating",
+    "floating-dimensions",
+    "fn", "focus", "focused", "font-color", "font-id", "font-size", "get-bool", "get-color",
+    "get-event", "get-image", "get-numeric", "get-text", "grow", "height-fit", "height-fixed",
+    "height-grow", "height-percent", "horizontal", "hover", "hovered", "id-indexed", "if",
+    "if-index", "if-index-not", "if-not", "image", "item", "left-clicked", "left-dbl-clicked",
+    "left-down", "left-pressed", "left-released", "left-tpl-clicked", "letter-spacing", "line",
+    "line-height", "list", "load", "no-clip", "offset", "padding-all", "padding-bottom",
+    "padding-left", "padding-right", "padding-top", "pointer", "pointer-capture",
+    "pointer-pass-through", "radius-all", "radius-bottom-left", "radius-bottom-right",
+    "radius-top-left", "radius-top-right", "right-clicked", "right-down", "right-pressed",
+    "right-released", "scroll", "set-bool", "set-color", "set-event", "set-image", "set-numeric",
+    "set-text", "text", "unfocused", "unhovered", "use", "vertical", "width",
+    "width-fit", "width-fixed", "width-grow", "width-percent", "wrap", "z-index",
+];
+
+/// Pre-parsing pass: lets a layout file be written without the `` ` `` inline-code
+/// spans around keywords. Walks the source line by line and, for any Markdown
+/// list item whose **first word** is one of [`LEADING_KEYWORDS`], wraps that word
+/// in backticks before the text is handed to the Markdown parser.
+///
+/// It is a no-op on a file that already uses backticks - an item whose content
+/// starts with `` ` `` is left untouched - so it's safe to run unconditionally
+/// and to mix both styles in one file.
+///
+/// Only the leading keyword is touched. Inline-code argument markers a few
+/// keywords still expect (`` `min` ``/`` `max` `` for the `*-grow`/`*-fit`
+/// clamps, `` `x` ``/`` `y` `` for `scroll`/`offset`, `` `width` ``/`` `height` ``
+/// for `floating-dimensions`) must still be written with backticks. And because
+/// this runs with no grammar context, a plain-text line - a `text` element's
+/// content, say - that happens to start with a keyword word (`color`, `image`,
+/// `if`, ...) *will* be turned into a config; write that line's backticks
+/// yourself (or reword it) to opt out.
+fn add_missing_keyword_backticks(source: &str) -> String {
+    debug_assert!(
+        LEADING_KEYWORDS.windows(2).all(|w| w[0] < w[1]),
+        "LEADING_KEYWORDS must stay sorted"
+    );
+
+    let mut out = String::with_capacity(source.len() + 64);
+    let mut in_code_fence = false;
+
+    for line in source.split_inclusive('\n') {
+        let (text, newline) = match line.strip_suffix('\n') {
+            Some(rest) => (rest.strip_suffix('\r').unwrap_or(rest), &line[rest.len()..]),
+            None => (line, ""),
+        };
+
+        // ``` / ~~~ fenced code blocks pass straight through.
+        let fence = text.trim_start();
+        if fence.starts_with("```") || fence.starts_with("~~~") {
+            in_code_fence = !in_code_fence;
+            out.push_str(line);
+            continue;
+        }
+        if in_code_fence {
+            out.push_str(line);
+            continue;
+        }
+
+        match backtick_leading_keyword(text) {
+            Some(rewritten) => {
+                out.push_str(&rewritten);
+                out.push_str(newline);
+            }
+            None => out.push_str(line),
+        }
+    }
+
+    out
+}
+
+/// The per-line worker for [`add_missing_keyword_backticks`]. Returns the
+/// rewritten line if `line` is a list item whose first word is a keyword and
+/// isn't already backticked, otherwise `None` (leave the line as-is).
+fn backtick_leading_keyword(line: &str) -> Option<String> {
+    let indent_len = line.len() - line.trim_start().len();
+    let after_indent = &line[indent_len..];
+    let bytes = after_indent.as_bytes();
+
+    // Bullet marker: `-`/`*`/`+`, or an ordered `12.` / `12)`.
+    let marker_len = match bytes.first()? {
+        b'-' | b'*' | b'+' => 1,
+        b'0'..=b'9' => {
+            let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+            match bytes.get(digits) {
+                Some(b'.') | Some(b')') => digits + 1,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+
+    // At least one space/tab between the marker and the content.
+    let after_marker = &after_indent[marker_len..];
+    if !after_marker.starts_with([' ', '\t']) {
+        return None;
+    }
+    let content = after_marker.trim_start_matches([' ', '\t']);
+    if content.is_empty() || content.starts_with('`') {
+        return None;
+    }
+
+    let word_end = content
+        .find([' ', '\t'])
+        .unwrap_or(content.len());
+    let word = &content[..word_end];
+    if LEADING_KEYWORDS.binary_search(&word).is_err() {
+        return None;
+    }
+
+    // Everything up to the first content character, verbatim, then `` `word` ``.
+    let prefix = &line[..line.len() - content.len()];
+    Some(format!("{prefix}`{word}`{}", &content[word_end..]))
+}
+
+/// Parses a markdown layout document (see `examples/layouts/Main.md`) into a
 /// [`ParsedLayout`].
 pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
+    let file = add_missing_keyword_backticks(&file);
     let mut parsing_mode = ParsingMode::None;
     let mut body = Vec::<Layout>::new();
     let mut open_reuseable_name = "".to_string();
     let mut reusables = HashMap::<String, Vec<Layout>>::new();
+    let mut image_loads = Vec::<ImageLoad>::new();
 
     if let Ok(m) = markdown::to_mdast(&file, &markdown::ParseOptions::default())
         && let Some(nodes) = m.children()
@@ -604,11 +766,22 @@ pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
                                 parsing_mode = ParsingMode::ReusableElements;
                                 open_reuseable_name = declaration.value.trim().to_string();
                             }
+                            4 if declaration.value.trim().starts_with("TML") => {
+                                // `#### TML <version>` opens the preamble block.
+                                parsing_mode = ParsingMode::Header;
+                            }
                             _ => parsing_mode = ParsingMode::None,
                         }
                     }
                 }
                 Node::List(list) => match parsing_mode {
+                    ParsingMode::Header => {
+                        for item in &list.children {
+                            if let Some(load) = process_header_directive(item) {
+                                image_loads.push(load);
+                            }
+                        }
+                    }
                     ParsingMode::ReusableConfig => {
                         let mut reusable_items = process_configs(list, &mut None);
                         let mut formatted_reusable_items = Vec::<Layout>::new();
@@ -635,10 +808,67 @@ pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
                 _ => {}
             }
         }
-        Ok((body, reusables))
+        Ok(ParsedLayout {
+            body,
+            reusables,
+            image_loads,
+        })
     } else {
         Err("failed to parse layout markdown".to_string())
     }
+}
+
+/// Parses one item of a `#### TML ...` header list. Today the only directive is
+/// `` - `load` [atlas](path) ``: an inline-code `load` keyword followed by a
+/// markdown link whose text is the atlas name and whose url is the file path.
+fn process_header_directive(item: &Node) -> Option<ImageLoad> {
+    let Node::ListItem(item) = item else {
+        return None;
+    };
+    let Some(Node::Paragraph(paragraph)) = item.children.first() else {
+        return None;
+    };
+    let Some(Node::InlineCode(keyword)) = paragraph.children.first() else {
+        return None;
+    };
+    if keyword.value != "load" {
+        return None;
+    }
+
+    let link = paragraph.children.iter().find_map(|node| match node {
+        Node::Link(link) => Some(link),
+        _ => None,
+    })?;
+    let atlas = link.children.iter().find_map(|node| match node {
+        Node::Text(text) => Some(text.value.trim().to_string()),
+        _ => None,
+    })?;
+    if atlas.is_empty() || link.url.trim().is_empty() {
+        return None;
+    }
+    Some(ImageLoad {
+        atlas,
+        path: link.url.trim().to_string(),
+    })
+}
+
+/// Parses a `[u1, v1, u2, v2]` bracketed list of four floats (the UV
+/// sub-rectangle for an `image` literal / `set-image` declaration). Whitespace
+/// around and inside the brackets is ignored. Returns `None` unless exactly four
+/// numbers parse.
+fn parse_uv_rect(raw: &str) -> Option<[f32; 4]> {
+    let inner = raw.trim().strip_prefix('[')?.strip_suffix(']')?;
+    let mut values = [0.0f32; 4];
+    let mut count = 0;
+    for part in inner.split(',') {
+        let value = part.trim().parse::<f32>().ok()?;
+        if count == 4 {
+            return None;
+        }
+        values[count] = value;
+        count += 1;
+    }
+    if count == 4 { Some(values) } else { None }
 }
 
 /// A single argument like `item`'s index or `if-index`'s comparand: a bare
@@ -1016,28 +1246,6 @@ fn process_element(element: &Node) -> Vec<Layout> {
                     layout_commands.push(Layout::Element(Element::FunctionCall(src)));
                 }
             }
-            "treeview" => {
-                if let Some(reusable_name) = element_declaration.children.get(1)
-                    && let Node::Text(reusable_name) = reusable_name
-                {
-                    layout_commands.push(Layout::Element(Element::TreeViewOpened));
-                    let src = GlobalSymbol::new(reusable_name.value.trim());
-                    layout_commands.push(Layout::Element(Element::TreeViewClosed(src)));
-                }
-            }
-            "textbox" => match parameter_check::<String>(element_declaration, "", "") {
-                AvailableParameters::SingleDynamic(a) => {
-                    layout_commands.push(Layout::Element(Element::TextBoxOpened));
-                    layout_commands
-                        .push(Layout::Element(Element::TextBoxClosed(DataSrc::Dynamic(a))));
-                }
-                AvailableParameters::SingleStatic(a) => {
-                    layout_commands.push(Layout::Element(Element::TextBoxOpened));
-                    layout_commands
-                        .push(Layout::Element(Element::TextBoxClosed(DataSrc::Static(a))));
-                }
-                _ => {}
-            },
             _ => {}
         }
     }
@@ -1261,6 +1469,40 @@ fn process_variable(declaration: &Node) -> Option<(String, DataSrc<Declaration>)
                         DataSrc::<Declaration>::Static(Declaration::Color(value)),
                     )
                 }),
+            // `` `set-image` *name* *atlas* [u1, v1, u2, v2] `` - the atlas name
+            // is a second emphasis span (children[4]); the UV rect is optional
+            // trailing text (children[5]) and defaults to the whole image.
+            "set-image" => {
+                let atlas = declaration
+                    .children
+                    .get(4)
+                    .and_then(|node| match node {
+                        Node::Emphasis(emphasis) => emphasis.children.first(),
+                        _ => None,
+                    })
+                    .and_then(|node| match node {
+                        Node::Text(text) => Some(text.value.trim()),
+                        _ => None,
+                    })?;
+                let [u1, v1, u2, v2] = declaration
+                    .children
+                    .get(5)
+                    .and_then(|node| match node {
+                        Node::Text(text) => parse_uv_rect(text.value.trim()),
+                        _ => None,
+                    })
+                    .unwrap_or([0.0, 0.0, 1.0, 1.0]);
+                Some((
+                    variable_name.value.trim().to_string(),
+                    DataSrc::<Declaration>::Static(Declaration::Image(UIImageDescriptor {
+                        atlas: GlobalSymbol::new(atlas).as_str(),
+                        u1,
+                        v1,
+                        u2,
+                        v2,
+                    })),
+                ))
+            }
             _ => None,
         }
     } else {
@@ -1283,6 +1525,25 @@ fn process_configs(
         {
             match config_type.value.as_str() {
                 "grow" => configs.push(Layout::Config(Config::GrowAll)),
+                "fit" => configs.push(Layout::Config(Config::FitAll)),
+                "id-indexed" => match parameter_check::<String>(config, "", "") {
+                    AvailableParameters::SingleDynamic(a) => {
+                        configs.push(Layout::Config(Config::IdIndexed(DataSrc::Dynamic(a))))
+                    }
+                    AvailableParameters::SingleStatic(a) => {
+                        configs.push(Layout::Config(Config::IdIndexed(DataSrc::Static(a))))
+                    }
+                    _ => {}
+                },
+                "aspect-ratio" => match parameter_check::<f32>(config, "", "") {
+                    AvailableParameters::SingleDynamic(a) => {
+                        configs.push(Layout::Config(Config::AspectRatio(DataSrc::Dynamic(a))))
+                    }
+                    AvailableParameters::SingleStatic(a) => {
+                        configs.push(Layout::Config(Config::AspectRatio(DataSrc::Static(a))))
+                    }
+                    _ => {}
+                },
                 "width-grow" => match parameter_check::<f32>(config, "min", "max") {
                     AvailableParameters::None => configs.push(Layout::Config(Config::GrowX)),
                     AvailableParameters::ADynamic(a) => {
@@ -1461,6 +1722,34 @@ fn process_configs(
                     }
                     _ => {}
                 },
+                "fixed" => match parameter_check::<f32>(config, "width", "height") {
+                    AvailableParameters::TwoStatic(w, h) => {
+                        configs.push(Layout::Config(Config::FixedX(DataSrc::Static(w))));
+                        configs.push(Layout::Config(Config::FixedY(DataSrc::Static(h))));
+                    }
+                    AvailableParameters::TwoDynamic(w, h) => {
+                        configs.push(Layout::Config(Config::FixedX(DataSrc::Dynamic(w))));
+                        configs.push(Layout::Config(Config::FixedY(DataSrc::Dynamic(h))));
+                    }
+                    AvailableParameters::ADynamicBStatic(w, h) => {
+                        configs.push(Layout::Config(Config::FixedX(DataSrc::Dynamic(w))));
+                        configs.push(Layout::Config(Config::FixedY(DataSrc::Static(h))));
+                    }
+                    AvailableParameters::AStaticBDynamic(w, h) => {
+                        configs.push(Layout::Config(Config::FixedX(DataSrc::Static(w))));
+                        configs.push(Layout::Config(Config::FixedY(DataSrc::Dynamic(h))));
+                    }
+                    _ => {}
+                },
+                "fixed-square" => match parameter_check::<f32>(config, "", "") {
+                    AvailableParameters::SingleDynamic(a) => {
+                        configs.push(Layout::Config(Config::FixedSquare(DataSrc::Dynamic(a))))
+                    }
+                    AvailableParameters::SingleStatic(a) => {
+                        configs.push(Layout::Config(Config::FixedSquare(DataSrc::Static(a))))
+                    }
+                    _ => {}
+                },
                 "width-percent" => match parameter_check::<f32>(config, "", "") {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::PercentX(DataSrc::Dynamic(a))))
@@ -1534,6 +1823,7 @@ fn process_configs(
                     _ => {}
                 },
                 "vertical" => configs.push(Layout::Config(Config::Vertical)),
+                "horizontal" => configs.push(Layout::Config(Config::Horizontal)),
                 "align-children-x" => {
                     if let Some(alignment) = config.children.get(1)
                         && let Node::Text(alignment) = alignment
@@ -1718,11 +2008,55 @@ fn process_configs(
                     }
                 }
                 "image" => {
-                    if let Some(src) = config.children.get(1)
-                        && let Node::Text(src) = src
-                    {
-                        let src = GlobalSymbol::new(src.value.trim());
-                        configs.push(Layout::Config(Config::Image { name: src }));
+                    // Three shapes:
+                    //   `image` *name*              -> resolve `name` (set-image / get_image)
+                    //   `image` name                -> same, name written bare
+                    //   `image` *atlas* [u,v,u,v]   -> literal descriptor, no lookup
+                    // The name sits in an `Emphasis` node (children[2]) or, when
+                    // written bare, in the trailing `Text` after the keyword;
+                    // an optional `[...]` UV rect follows in the next `Text`.
+                    let emphasis_name = config.children.get(2).and_then(|node| match node {
+                        Node::Emphasis(emphasis) => match emphasis.children.first() {
+                            Some(Node::Text(text)) => Some(text.value.trim().to_string()),
+                            _ => None,
+                        },
+                        _ => None,
+                    });
+                    let bare_name = config.children.get(1).and_then(|node| match node {
+                        Node::Text(text) if !text.value.trim().is_empty() => {
+                            Some(text.value.trim().to_string())
+                        }
+                        _ => None,
+                    });
+                    // A `[...]` rect can only follow an emphasis name (it lands
+                    // in the Text node right after the Emphasis).
+                    let uv = config
+                        .children
+                        .get(3)
+                        .and_then(|node| match node {
+                            Node::Text(text) => parse_uv_rect(text.value.trim()),
+                            _ => None,
+                        });
+
+                    if let Some(name) = emphasis_name.or(bare_name) {
+                        match uv {
+                            Some([u1, v1, u2, v2]) => {
+                                configs.push(Layout::Config(Config::ImageLiteral(
+                                    UIImageDescriptor {
+                                        atlas: GlobalSymbol::new(&name).as_str(),
+                                        u1,
+                                        v1,
+                                        u2,
+                                        v2,
+                                    },
+                                )));
+                            }
+                            None => {
+                                configs.push(Layout::Config(Config::Image {
+                                    name: GlobalSymbol::new(&name),
+                                }));
+                            }
+                        }
                     }
                 }
                 "floating" => {
@@ -1734,6 +2068,59 @@ fn process_configs(
                         configs.append(&mut floating);
                     }
                 }
+                "clip-to-parent" => {
+                    configs.push(Layout::Config(Config::FloatingClipToParent))
+                }
+                "no-clip" => configs.push(Layout::Config(Config::FloatingNoClip)),
+                "pointer-capture" => {
+                    configs.push(Layout::Config(Config::FloatingPointerCapture))
+                }
+                "pointer-pass-through" => {
+                    configs.push(Layout::Config(Config::FloatingPointerPassThrough))
+                }
+                "attach-root" => {
+                    configs.push(Layout::Config(Config::FloatingAttachElementToRoot))
+                }
+                "z-index" => match parameter_check::<i16>(config, "", "") {
+                    AvailableParameters::SingleDynamic(z) => {
+                        configs.push(Layout::Config(Config::FloatingZIndex {
+                            z: DataSrc::Dynamic(z),
+                        }))
+                    }
+                    AvailableParameters::SingleStatic(z) => {
+                        configs.push(Layout::Config(Config::FloatingZIndex {
+                            z: DataSrc::Static(z),
+                        }))
+                    }
+                    _ => {}
+                },
+                "floating-dimensions" => match parameter_check::<f32>(config, "width", "height") {
+                    AvailableParameters::TwoStatic(w, h) => {
+                        configs.push(Layout::Config(Config::FloatingDimensions {
+                            width: DataSrc::Static(w),
+                            height: DataSrc::Static(h),
+                        }))
+                    }
+                    AvailableParameters::TwoDynamic(w, h) => {
+                        configs.push(Layout::Config(Config::FloatingDimensions {
+                            width: DataSrc::Dynamic(w),
+                            height: DataSrc::Dynamic(h),
+                        }))
+                    }
+                    AvailableParameters::ADynamicBStatic(w, h) => {
+                        configs.push(Layout::Config(Config::FloatingDimensions {
+                            width: DataSrc::Dynamic(w),
+                            height: DataSrc::Static(h),
+                        }))
+                    }
+                    AvailableParameters::AStaticBDynamic(w, h) => {
+                        configs.push(Layout::Config(Config::FloatingDimensions {
+                            width: DataSrc::Static(w),
+                            height: DataSrc::Dynamic(h),
+                        }))
+                    }
+                    _ => {}
+                },
                 "use" => {
                     if let Some(reusable_name) = config.children.get(1)
                         && let Node::Text(reusable_name) = reusable_name
@@ -2185,8 +2572,27 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                // TODO: letter-spacing isn't exposed by telera-layout's TextConfig yet.
-                "letter-spacing" => {}
+                "letter-spacing" => match parameter_check::<u16>(config, "", "") {
+                    AvailableParameters::SingleDynamic(a) => {
+                        configs.push(Layout::Config(Config::LetterSpacing(DataSrc::Dynamic(a))))
+                    }
+                    AvailableParameters::SingleStatic(a) => {
+                        configs.push(Layout::Config(Config::LetterSpacing(DataSrc::Static(a))))
+                    }
+                    _ => {}
+                },
+                "wrap" => {
+                    if let Some(mode) = config.children.get(1)
+                        && let Node::Text(mode) = mode
+                    {
+                        match mode.value.trim() {
+                            "words" => configs.push(Layout::Config(Config::WrapWords)),
+                            "lines" => configs.push(Layout::Config(Config::WrapNewLines)),
+                            "none" => configs.push(Layout::Config(Config::WrapNone)),
+                            _ => {}
+                        }
+                    }
+                }
                 "font-color" => match parameter_check::<Color>(config, "", "") {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::FontColor(DataSrc::Dynamic(a))))
@@ -2304,7 +2710,6 @@ fn process_configs(
                         }
                     }
                 }
-                // TODO: z-index, pointer pass through
                 _ => {}
             }
         }
@@ -2318,7 +2723,7 @@ fn process_configs(
 // ---------------------------------------------------------------------------
 
 /// Scans a page's top-level `declarations` - the ones that sit directly in
-/// the page body, not inside a `list`/`use`/`item`/`treeview` (those scope
+/// the page body, not inside a `list`/`use`/`item` (those scope
 /// their own declarations to their own body, via `recursive_call_stack` in
 /// `set_layout`, and shouldn't leak into the rest of the page). These are
 /// the ones a whole page can reference anywhere, e.g. `*content background
@@ -2334,18 +2739,12 @@ fn extract_page_locals(commands: &[Layout]) -> HashMap<GlobalSymbol, DataSrc<Dec
     for command in commands {
         match command {
             Layout::Element(
-                Element::ListOpened
-                | Element::UseOpened
-                | Element::ItemOpened
-                | Element::TreeViewOpened,
+                Element::ListOpened | Element::UseOpened | Element::ItemOpened,
             ) => {
                 depth += 1;
             }
             Layout::Element(
-                Element::ListClosed(_)
-                | Element::UseClosed(_)
-                | Element::ItemClosed { .. }
-                | Element::TreeViewClosed(_),
+                Element::ListClosed(_) | Element::UseClosed(_) | Element::ItemClosed { .. },
             ) => {
                 depth = depth.saturating_sub(1);
             }
@@ -2410,13 +2809,22 @@ impl Binder {
     ///
     /// This only parses `markdown_source` - reading it from disk (or
     /// embedding it with `include_str!`) is left to the caller.
-    pub fn load_layout(&mut self, name: &str, markdown_source: &str) -> Result<(), String> {
-        let (body, reusables) = process_layout(markdown_source.to_string())?;
-        for (reusable_name, reusable) in reusables {
+    ///
+    /// Returns the images the document's `#### TML ...` header asked to be
+    /// loaded ([`ImageLoad`]); the caller (`API::load_layout_file`) reads those
+    /// files and stages them so the layout can reference their atlases. `Binder`
+    /// itself never touches the filesystem or the renderer.
+    pub fn load_layout(
+        &mut self,
+        name: &str,
+        markdown_source: &str,
+    ) -> Result<Vec<ImageLoad>, String> {
+        let parsed = process_layout(markdown_source.to_string())?;
+        for (reusable_name, reusable) in parsed.reusables {
             self.add_reusable(&reusable_name, reusable);
         }
-        self.add_page(name, body);
-        Ok(())
+        self.add_page(name, parsed.body);
+        Ok(parsed.image_loads)
     }
 
     /// Replaces an existing page, returning `false` (and leaving it
@@ -2448,7 +2856,6 @@ impl Binder {
         &mut self,
         page: &str,
         api: &mut API,
-        mt: &mut MT,
         user_app: &mut UserApp,
     ) -> Option<()>
     where
@@ -2469,7 +2876,6 @@ impl Binder {
 
         let _pointer = set_layout(
             api,
-            mt,
             layout_commands,
             &mut self.reusable,
             Some(&page_locals),
@@ -2505,7 +2911,6 @@ where
 #[allow(clippy::too_many_arguments)]
 fn set_layout<UserApp>(
     api: &mut API,
-    mt: &mut MT,
     commands: &mut [Layout],
     reusables: &mut HashMap<GlobalSymbol, Vec<Layout>>,
     locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
@@ -2712,7 +3117,6 @@ where
                                 let mut item_text_config = TextConfig::default();
                                 pointer = set_layout(
                                     api,
-                                    mt,
                                     &mut recursive_commands,
                                     reusables,
                                     Some(&merged_locals),
@@ -2744,7 +3148,6 @@ where
                             let mut item_text_config = TextConfig::default();
                             pointer = set_layout(
                                 api,
-                                mt,
                                 &mut recursive_commands,
                                 reusables,
                                 Some(&merged_locals),
@@ -2816,7 +3219,7 @@ where
                         if skip.is_none() {
                             let text_content =
                                 String::resolve_src(content, locals, user_app, &list_data);
-                            api.l.add_text_element(text_content, text_config, false, mt);
+                            api.l.add_text_element(text_content, text_config, false);
                         }
                     }
                     Element::TextConfigOpened => {
@@ -2848,7 +3251,6 @@ where
                                 let merged_locals = merge_locals(locals, &recursive_call_stack);
                                 pointer = set_layout(
                                     api,
-                                    mt,
                                     &mut recursive_commands,
                                     reusables,
                                     Some(&merged_locals),
@@ -2862,58 +3264,9 @@ where
                         }
                     }
 
-                    Element::TreeViewOpened => {
-                        nesting_level += 1;
-                        if skip.is_none() {
-                            recursive_commands.clear();
-                            recursive_call_stack.clear();
-                            collect_declarations = true;
-                        }
-                    }
-                    Element::TreeViewClosed(src) => {
-                        nesting_level -= 1;
-                        if skip.is_none() {
-                            collect_declarations = false;
-                            // `treeview` walks a tree borrowed out of `user_app`
-                            // (`get_treeview` -> `TreeViewItem<'_>`), so it can't
-                            // hold `&mut user_app` to dispatch - it returns its
-                            // events and we drain them here, borrow released.
-                            for (handler, context) in treeview(src, &list_data, api, mt, user_app) {
-                                user_app.dispatch_event(&handler, context, api);
-                            }
-                        }
-                    }
-
-                    Element::TextBoxOpened => {
-                        nesting_level += 1;
-                        if skip.is_none() {
-                            recursive_commands.clear();
-                            recursive_call_stack.clear();
-                            collect_declarations = true;
-                            // TODO: wire up ui_toolkit::textbox once it's finished; for now
-                            // a text box is laid out as an empty, focusable element. It still
-                            // has to be a real (opened) element, though - `TextBoxClosed`
-                            // always calls `close_element`, and skipping `open_element` here
-                            // would leave that close unmatched, corrupting Clay's internal
-                            // element stack for the rest of the frame.
-                            api.l.open_element();
-                            if api.l.hovered() {
-                                pointer = winit::window::CursorIcon::Text;
-                            }
-                            api.l.configure_element(&ElementConfiguration::default());
-                        }
-                    }
-                    Element::TextBoxClosed(_src) => {
-                        nesting_level -= 1;
-                        if skip.is_none() {
-                            collect_declarations = false;
-                            api.l.close_element();
-                        }
-                    }
-
                     Element::FunctionCall(name) => {
                         if skip.is_none() {
-                            user_app.dispatch_custom_element(name, api, mt);
+                            user_app.dispatch_custom_element(name, api);
                         }
                     }
                 }
@@ -2962,80 +3315,99 @@ fn execute_config<UserApp>(
                 config.id(id.as_str());
             }
         }
+        Config::IdIndexed(id) => {
+            if let DataSrc::Static(id) = id
+                && let Some((_, index)) = list_data
+            {
+                config.id_indexed(id.as_str(), *index as u32);
+            }
+        }
         Config::FitX => {
-            config.x_fit();
+            config.width_fit();
         }
         Config::FitXmin(min) => {
-            config.x_fit_min(f32::resolve_src(min, locals, user_app, list_data));
+            config.width_fit_min(f32::resolve_src(min, locals, user_app, list_data));
         }
         Config::FitXmax(max) => {
-            config.x_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
+            config.width_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
         }
         Config::FitXminmax { min, max } => {
-            config.x_fit_min_max(
+            config.width_fit_min_max(
                 f32::resolve_src(min, locals, user_app, list_data),
                 f32::resolve_src(max, locals, user_app, list_data),
             );
         }
         Config::FitY => {
-            config.y_fit();
+            config.height_fit();
         }
         Config::FitYmin(min) => {
-            config.y_fit_min(f32::resolve_src(min, locals, user_app, list_data));
+            config.height_fit_min(f32::resolve_src(min, locals, user_app, list_data));
         }
         Config::FitYmax(max) => {
-            config.y_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
+            config.height_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
         }
         Config::FitYminmax { min, max } => {
-            config.y_fit_min_max(
+            config.height_fit_min_max(
                 f32::resolve_src(min, locals, user_app, list_data),
                 f32::resolve_src(max, locals, user_app, list_data),
             );
         }
         Config::GrowX => {
-            config.x_grow();
+            config.width_grow();
         }
         Config::GrowXmin(min) => {
-            config.x_grow_min(f32::resolve_src(min, locals, user_app, list_data));
+            config.width_grow_min(f32::resolve_src(min, locals, user_app, list_data));
         }
         Config::GrowXmax(max) => {
-            config.x_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
+            config.width_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
         }
         Config::GrowXminmax { min, max } => {
-            config.x_grow_min_max(
+            config.width_grow_min_max(
                 f32::resolve_src(min, locals, user_app, list_data),
                 f32::resolve_src(max, locals, user_app, list_data),
             );
         }
         Config::GrowY => {
-            config.y_grow();
+            config.height_grow();
         }
         Config::GrowYmin(min) => {
-            config.y_grow_min(f32::resolve_src(min, locals, user_app, list_data));
+            config.height_grow_min(f32::resolve_src(min, locals, user_app, list_data));
         }
         Config::GrowYmax(max) => {
-            config.y_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
+            config.height_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
         }
         Config::GrowYminmax { min, max } => {
-            config.y_grow_min_max(
+            config.height_grow_min_max(
                 f32::resolve_src(min, locals, user_app, list_data),
                 f32::resolve_src(max, locals, user_app, list_data),
             );
         }
         Config::FixedX(size) => {
-            config.x_fixed(f32::resolve_src(size, locals, user_app, list_data));
+            config.width_fixed(f32::resolve_src(size, locals, user_app, list_data));
         }
         Config::FixedY(size) => {
-            config.y_fixed(f32::resolve_src(size, locals, user_app, list_data));
+            config.height_fixed(f32::resolve_src(size, locals, user_app, list_data));
         }
         Config::PercentX(size) => {
-            config.x_percent(f32::resolve_src(size, locals, user_app, list_data));
+            config.width_percent(f32::resolve_src(size, locals, user_app, list_data));
         }
         Config::PercentY(size) => {
-            config.y_percent(f32::resolve_src(size, locals, user_app, list_data));
+            config.height_percent(f32::resolve_src(size, locals, user_app, list_data));
         }
         Config::GrowAll => {
-            config.grow_all();
+            config.grow();
+        }
+        Config::FitAll => {
+            config.fit();
+        }
+        Config::AspectRatio(ratio) => {
+            config.aspect_ratio(f32::resolve_src(ratio, locals, user_app, list_data));
+        }
+        Config::FixedSquare(size) => {
+            config.fixed_square(f32::resolve_src(size, locals, user_app, list_data));
+        }
+        Config::Horizontal => {
+            config.horizontal();
         }
         Config::PaddingAll(padding) => {
             config.padding_all(u16::resolve_src(padding, locals, user_app, list_data));
@@ -3053,7 +3425,7 @@ fn execute_config<UserApp>(
             config.padding_right(u16::resolve_src(padding, locals, user_app, list_data));
         }
         Config::Vertical => {
-            config.direction(true);
+            config.vertical();
         }
         Config::ChildGap(gap) => {
             config.child_gap(u16::resolve_src(gap, locals, user_app, list_data));
@@ -3124,26 +3496,46 @@ fn execute_config<UserApp>(
             config.border_right(u16::resolve_src(border, locals, user_app, list_data));
         }
         Config::BorderBetweenChildren(border) => {
-            config.border_between_children(u16::resolve_src(border, locals, user_app, list_data));
+            config.border_in_between(u16::resolve_src(border, locals, user_app, list_data));
         }
         Config::Clip {
             vertical,
             horizontal,
         } => {
-            config.scroll(
-                bool::resolve_src(vertical, locals, user_app, list_data),
-                bool::resolve_src(horizontal, locals, user_app, list_data),
-                api.l.get_scroll_offset(),
-            );
+            let offset = api.l.get_scroll_offset();
+            config
+                .scroll(
+                    bool::resolve_src(vertical, locals, user_app, list_data),
+                    bool::resolve_src(horizontal, locals, user_app, list_data),
+                )
+                .scroll_child_offset(offset.x, offset.y);
         }
         Config::Image { name } => {
             if let Some(image) = UIImageDescriptor::resolve_name(name, locals, user_app, list_data)
             {
-                config.image(image);
+                // `image` is borrowed from either the app struct or a
+                // `set-image` local; copy it into `api`'s per-frame image arena
+                // so it stays put until the render pass reads it, no matter
+                // which of those (or a `use`-cloned reusable) it came from.
+                let image = image.clone();
+                config.image(api.stage_frame_image(image));
             }
+        }
+        Config::ImageLiteral(descriptor) => {
+            let descriptor = descriptor.clone();
+            config.image(api.stage_frame_image(descriptor));
         }
         Config::Floating => {
             config.floating();
+        }
+        Config::FloatingClipToParent => {
+            config.floating_clip_to_attached_parent();
+        }
+        Config::FloatingNoClip => {
+            config.floating_no_clip();
+        }
+        Config::FloatingPointerCapture => {
+            config.floating_pointer_capture();
         }
         Config::FloatingOffset { x, y } => {
             config.floating_offset(
@@ -3161,58 +3553,58 @@ fn execute_config<UserApp>(
             config.floating_z_index(i16::resolve_src(z, locals, user_app, list_data));
         }
         Config::FloatingAttatchToParentAtTopLeft => {
-            config.floating_attach_to_parent_at_top_left();
+            config.floating_attach_parent_top_left();
         }
         Config::FloatingAttatchToParentAtCenterLeft => {
-            config.floating_attach_to_parent_at_center_left();
+            config.floating_attach_parent_center_left();
         }
         Config::FloatingAttatchToParentAtBottomLeft => {
-            config.floating_attach_to_parent_at_bottom_left();
+            config.floating_attach_parent_bottom_left();
         }
         Config::FloatingAttatchToParentAtTopCenter => {
-            config.floating_attach_to_parent_at_top_center();
+            config.floating_attach_parent_top_center();
         }
         Config::FloatingAttatchToParentAtCenter => {
-            config.floating_attach_to_parent_at_center();
+            config.floating_attach_parent_center();
         }
         Config::FloatingAttatchToParentAtBottomCenter => {
-            config.floating_attach_to_parent_at_bottom_center();
+            config.floating_attach_parent_bottom_center();
         }
         Config::FloatingAttatchToParentAtTopRight => {
-            config.floating_attach_to_parent_at_top_right();
+            config.floating_attach_parent_top_right();
         }
         Config::FloatingAttatchToParentAtCenterRight => {
-            config.floating_attach_to_parent_at_center_right();
+            config.floating_attach_parent_center_right();
         }
         Config::FloatingAttatchToParentAtBottomRight => {
-            config.floating_attach_to_parent_at_bottom_right();
+            config.floating_attach_parent_bottom_right();
         }
         Config::FloatingAttatchElementAtTopLeft => {
-            config.floating_attach_element_at_top_left();
+            config.floating_attach_self_top_left();
         }
         Config::FloatingAttatchElementAtCenterLeft => {
-            config.floating_attach_element_at_center_left();
+            config.floating_attach_self_center_left();
         }
         Config::FloatingAttatchElementAtBottomLeft => {
-            config.floating_attach_element_at_bottom_left();
+            config.floating_attach_self_bottom_left();
         }
         Config::FloatingAttatchElementAtTopCenter => {
-            config.floating_attach_element_at_top_center();
+            config.floating_attach_self_top_center();
         }
         Config::FloatingAttatchElementAtCenter => {
-            config.floating_attach_element_at_center();
+            config.floating_attach_self_center();
         }
         Config::FloatingAttatchElementAtBottomCenter => {
-            config.floating_attach_element_at_bottom_center();
+            config.floating_attach_self_bottom_center();
         }
         Config::FloatingAttatchElementAtTopRight => {
-            config.floating_attach_element_at_top_right();
+            config.floating_attach_self_top_right();
         }
         Config::FloatingAttatchElementAtCenterRight => {
-            config.floating_attach_element_at_center_right();
+            config.floating_attach_self_center_right();
         }
         Config::FloatingAttatchElementAtBottomRight => {
-            config.floating_attach_element_at_bottom_right();
+            config.floating_attach_self_bottom_right();
         }
         Config::FloatingPointerPassThrough => {
             config.floating_pointer_pass_through();
@@ -3261,26 +3653,38 @@ fn execute_config<UserApp>(
         }
 
         Config::AlignCenter => {
-            text_config.alignment_center();
+            text_config.align_center();
         }
         Config::AlignLeft => {
-            text_config.alignment_left();
+            text_config.align_left();
         }
         Config::AlignRight => {
-            text_config.alignment_right();
+            text_config.align_right();
         }
         Config::Editable(_state) => {}
         Config::FontId(id) => {
             text_config.font_id(u16::resolve_src(id, locals, user_app, list_data));
         }
         Config::FontColor(color) => {
-            text_config.color(Color::resolve_src(color, locals, user_app, list_data));
+            text_config.font_color(Color::resolve_src(color, locals, user_app, list_data));
         }
         Config::FontSize(size) => {
             text_config.font_size(u16::resolve_src(size, locals, user_app, list_data));
         }
         Config::LineHeight(height) => {
             text_config.line_height(u16::resolve_src(height, locals, user_app, list_data));
+        }
+        Config::LetterSpacing(spacing) => {
+            text_config.letter_spacing(u16::resolve_src(spacing, locals, user_app, list_data));
+        }
+        Config::WrapWords => {
+            text_config.wrap_mode_words();
+        }
+        Config::WrapNewLines => {
+            text_config.wrap_mode_new_lines();
+        }
+        Config::WrapNone => {
+            text_config.wrap_mode_none();
         }
     }
 }
@@ -3324,17 +3728,23 @@ where
         user_app: &'application UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
+        // Local declarations win over the app struct (same order as every other
+        // resolver): a `get-image` local redirects to another app field, a
+        // `set-image` local carries the descriptor itself.
         if let Some(locals) = locals
             && let Some(local) = locals.get(name)
-            && let DataSrc::Dynamic(local) = local
-            && let Some(value) = user_app.get_image(local, list_data)
         {
-            Some(value)
-        } else if let Some(value) = user_app.get_image(name, list_data) {
-            Some(value)
-        } else {
-            None
+            match local {
+                DataSrc::Dynamic(local) => {
+                    if let Some(value) = user_app.get_image(local, list_data) {
+                        return Some(value);
+                    }
+                }
+                DataSrc::Static(Declaration::Image(descriptor)) => return Some(descriptor),
+                DataSrc::Static(_) => {}
+            }
         }
+        user_app.get_image(name, list_data)
     }
     fn resolve_src(
         _var: &'frame DataSrc<Self::DeclarationType>,
@@ -3654,14 +4064,18 @@ where
 mod tests {
     use super::*;
 
-    /// The parser should turn `src/layouts/Main.md` into a non-empty,
+    /// The parser should turn `examples/layouts/Main.md` into a non-empty,
     /// flattened command stream without panicking or erroring.
     #[test]
     fn parses_main_md() {
-        let file =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/layouts/Main.md"))
-                .unwrap();
-        let (body, reusables) = process_layout(file).expect("Main.md should parse");
+        let file = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/layouts/Main.md"
+        ))
+        .unwrap();
+        let ParsedLayout {
+            body, reusables, ..
+        } = process_layout(file).expect("Main.md should parse");
 
         assert!(!body.is_empty());
         assert!(reusables.contains_key("layout expand"));
@@ -3683,5 +4097,286 @@ mod tests {
             assert!(depth >= 0, "command stream closed more than it opened");
         }
         assert_eq!(depth, 0, "command stream left something unclosed");
+    }
+
+    /// Every config keyword added to expose an `ElementConfiguration` /
+    /// `TextConfig` builder should parse into its `Config` variant.
+    #[test]
+    fn newly_exposed_config_keywords_parse() {
+        let src = "\
+# root
+- `element`
+    - `config`
+        - `fit`
+        - `horizontal`
+        - `aspect-ratio` 1.5
+        - `fixed-square` 24
+        - `fixed` `width` 10 `height` 20
+        - `id-indexed` row
+        - `floating`
+            - `clip-to-parent`
+            - `no-clip`
+            - `pointer-capture`
+            - `pointer-pass-through`
+            - `attach-root`
+            - `z-index` 5
+            - `floating-dimensions` `width` 100 `height` 50
+    - `text`
+        - `config`
+            - `letter-spacing` 2
+            - `wrap` none
+        - hello
+";
+        let body = process_layout(src.to_string())
+            .expect("should parse")
+            .body;
+
+        let configs: Vec<&Config> = body
+            .iter()
+            .filter_map(|c| match c {
+                Layout::Config(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+
+        let has = |pred: &dyn Fn(&Config) -> bool| configs.iter().any(|c| pred(c));
+
+        assert!(has(&|c| matches!(c, Config::FitAll)));
+        assert!(has(&|c| matches!(c, Config::Horizontal)));
+        assert!(has(&|c| matches!(c, Config::AspectRatio(DataSrc::Static(r)) if *r == 1.5)));
+        assert!(has(&|c| matches!(c, Config::FixedSquare(DataSrc::Static(s)) if *s == 24.0)));
+        assert!(has(&|c| matches!(c, Config::FixedX(DataSrc::Static(w)) if *w == 10.0)));
+        assert!(has(&|c| matches!(c, Config::FixedY(DataSrc::Static(h)) if *h == 20.0)));
+        assert!(has(&|c| matches!(c, Config::IdIndexed(_))));
+        assert!(has(&|c| matches!(c, Config::FloatingClipToParent)));
+        assert!(has(&|c| matches!(c, Config::FloatingNoClip)));
+        assert!(has(&|c| matches!(c, Config::FloatingPointerCapture)));
+        assert!(has(&|c| matches!(c, Config::FloatingPointerPassThrough)));
+        assert!(has(&|c| matches!(c, Config::FloatingAttachElementToRoot)));
+        assert!(has(&|c| matches!(c, Config::FloatingZIndex { z: DataSrc::Static(5) })));
+        assert!(has(&|c| matches!(
+            c,
+            Config::FloatingDimensions {
+                width: DataSrc::Static(w),
+                height: DataSrc::Static(h),
+            } if *w == 100.0 && *h == 50.0
+        )));
+        assert!(has(&|c| matches!(c, Config::LetterSpacing(DataSrc::Static(2)))));
+        assert!(has(&|c| matches!(c, Config::WrapNone)));
+    }
+
+    /// `parse_uv_rect` accepts a bracketed 4-float list with arbitrary spacing
+    /// and rejects anything else.
+    #[test]
+    fn uv_rect_parsing() {
+        assert_eq!(parse_uv_rect("[0, 0, 1, 1]"), Some([0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(parse_uv_rect("[0,0,1,1]"), Some([0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(
+            parse_uv_rect("  [0.25, 0.5 , 0.75,1.0]  "),
+            Some([0.25, 0.5, 0.75, 1.0])
+        );
+        assert_eq!(parse_uv_rect("[0, 0, 1]"), None);
+        assert_eq!(parse_uv_rect("[0, 0, 1, 1, 1]"), None);
+        assert_eq!(parse_uv_rect("0, 0, 1, 1"), None);
+        assert_eq!(parse_uv_rect("[a, b, c, d]"), None);
+    }
+
+    /// The header `` `load` `` directive, the `set-image` declaration, and both
+    /// `image` config shapes should all parse the way `Image Viewer.md` uses
+    /// them.
+    #[test]
+    fn image_loading_syntax_parses() {
+        let src = "\
+#### TML 1.0
+- `load` [pic](examples/pic.jpg)
+
+# root
+- `declarations`
+  - `set-image` *family* *pic* [0, 0, 0.5, 1]
+- `element`
+  - `config`
+    - `image` *family*
+  - `element`
+    - `config`
+      - `image` *pic* [0, 0, 1, 1]
+  - `element`
+    - `config`
+      - `image` from_the_app
+";
+        let parsed = process_layout(src.to_string()).expect("should parse");
+
+        assert_eq!(
+            parsed.image_loads,
+            vec![ImageLoad {
+                atlas: "pic".to_string(),
+                path: "examples/pic.jpg".to_string(),
+            }]
+        );
+
+        // `set-image` -> a page-level declaration carrying the descriptor.
+        let declared = parsed.body.iter().find_map(|c| match c {
+            Layout::Declaration {
+                name,
+                value: DataSrc::Static(Declaration::Image(descriptor)),
+            } if name.as_str() == "family" => Some(descriptor),
+            _ => None,
+        });
+        assert_eq!(
+            declared,
+            Some(&UIImageDescriptor {
+                atlas: "pic",
+                u1: 0.0,
+                v1: 0.0,
+                u2: 0.5,
+                v2: 1.0,
+            })
+        );
+
+        let configs: Vec<&Config> = parsed
+            .body
+            .iter()
+            .filter_map(|c| match c {
+                Layout::Config(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+
+        // `image` *family* -> a name lookup.
+        assert!(
+            configs
+                .iter()
+                .any(|c| matches!(c, Config::Image { name } if name.as_str() == "family"))
+        );
+        // `image` from_the_app -> a bare name lookup (still hits get_image).
+        assert!(
+            configs
+                .iter()
+                .any(|c| matches!(c, Config::Image { name } if name.as_str() == "from_the_app"))
+        );
+        // `image` *pic* [..] -> an inline literal.
+        assert!(configs.iter().any(|c| matches!(
+            c,
+            Config::ImageLiteral(UIImageDescriptor { atlas, u2, .. })
+            if *atlas == "pic" && *u2 == 1.0
+        )));
+    }
+
+    /// The shipped `Image Viewer.md` example parses and exercises every image path.
+    #[test]
+    fn image_viewer_example_parses() {
+        let file = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/layouts/Image Viewer.md"
+        ))
+        .unwrap();
+        let parsed = process_layout(file).expect("Image Viewer.md should parse");
+
+        assert_eq!(
+            parsed.image_loads,
+            vec![ImageLoad {
+                atlas: "pic".to_string(),
+                path: "examples/pic.jpg".to_string(),
+            }]
+        );
+        assert!(parsed.body.iter().any(|c| matches!(
+            c,
+            Layout::Declaration { value: DataSrc::Static(Declaration::Image(_)), .. }
+        )));
+        assert!(
+            parsed
+                .body
+                .iter()
+                .any(|c| matches!(c, Layout::Config(Config::ImageLiteral(_))))
+        );
+        assert!(
+            parsed
+                .body
+                .iter()
+                .any(|c| matches!(c, Layout::Config(Config::Image { .. })))
+        );
+    }
+
+    #[test]
+    fn leading_keyword_list_stays_sorted() {
+        assert!(LEADING_KEYWORDS.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    /// The keyword-backtick pre-pass leaves an already-backticked line alone,
+    /// wraps a bare leading keyword, and ignores a keyword that isn't the first
+    /// word (or isn't a list item at all).
+    #[test]
+    fn keyword_backtick_prepass() {
+        let src = "\
+#### TML 1.0
+- load [pic](examples/pic.jpg)
+
+# root
+- element outer
+    - config
+        - grow
+        - color rgb(1,2,3)
+        - `padding-all` 8
+    - text
+        - color me impressed
+- if ready
+    - grow
+";
+        let out = add_missing_keyword_backticks(src);
+
+        // leading keywords picked up, arguments left as text
+        assert!(out.contains("- `load` [pic](examples/pic.jpg)"));
+        assert!(out.contains("- `element` outer"));
+        assert!(out.contains("- `config`"));
+        assert!(out.contains("- `grow`"));
+        assert!(out.contains("- `color` rgb(1,2,3)"));
+        assert!(out.contains("- `if` ready"));
+        // already-backticked line untouched (no double backticks)
+        assert!(out.contains("- `padding-all` 8"));
+        assert!(!out.contains("``"));
+        // headings are not list items
+        assert!(out.contains("#### TML 1.0"));
+        assert!(out.contains("# root"));
+        // the documented footgun: a text line starting with a keyword *is*
+        // rewritten - `- color me impressed` becomes a config
+        assert!(out.contains("- `color` me impressed"));
+
+        // a bare-keyword document parses into the same command stream as the
+        // hand-backticked equivalent
+        let bare = "\
+# root
+- element
+    - config
+        - width-fixed 40
+        - color grey
+    - text
+        - hello
+";
+        let backticked = "\
+# root
+- `element`
+    - `config`
+        - `width-fixed` 40
+        - `color` grey
+    - `text`
+        - hello
+";
+        assert_eq!(
+            process_layout(bare.to_string()).unwrap().body,
+            process_layout(backticked.to_string()).unwrap().body,
+        );
+    }
+
+    /// Running the pre-pass over a fully-backticked file is a no-op.
+    #[test]
+    fn keyword_backtick_prepass_is_idempotent_on_real_files() {
+        for name in ["Main.md", "Custom.md", "Image Viewer.md"] {
+            let path = format!("{}/examples/layouts/{name}", env!("CARGO_MANIFEST_DIR"));
+            let file = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                add_missing_keyword_backticks(&file),
+                file,
+                "{name} should be unchanged by the pre-pass"
+            );
+        }
     }
 }

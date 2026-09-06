@@ -8,12 +8,12 @@ struct MyApp {
 #[telera_app]
 impl MyApp {
     #[layout_element]
-    fn custom_element(&mut self, api: &mut API, _mt: &mut MT) {
+    fn custom_element(&mut self, api: &mut API) {
         api.l.open_element();
         api.l.configure_element(
             &ElementConfiguration::new()
-                .x_fixed(20.0)
-                .y_fixed(20.0)
+                .width_fixed(20.0)
+                .height_fixed(20.0)
                 .color(Color::rgb(255, 0, 0))
                 .end(),
         );
@@ -34,7 +34,7 @@ impl App for MyApp {
                 .with_inner_size(LogicalSize::new(900, 600)),
             window_name: "Custom".to_string(),
             page: None,
-            watch_path: RunType::Watch("src/layouts".to_string()),
+            watch_path: RunType::Watch("examples/layouts".to_string()),
         }
     }
 }

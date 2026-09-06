@@ -23,8 +23,8 @@ pub struct SceneRenderer {
 impl SceneRenderer {
     pub fn new(device: &wgpu::Device) -> Self {
         let camera = Camera {
-            eye: (0.0, 1.0, 4.0).into(),
-            target: (0.0, 0.0, 0.0).into(),
+            eye: (1000.0, 500.0, 1000.0).into(),
+            target: (0.0, 120.0, 0.0).into(),
             up: cgmath::Vector3::unit_y(),
             aspect: 1.0,
             fovy: 45.0,
@@ -88,12 +88,17 @@ impl SceneRenderer {
         models: &mut [Model],
         render_pass: &mut wgpu::RenderPass,
         queue: &wgpu::Queue,
+        aspect: f32,
     ) {
         match self.render_pipeline.as_mut() {
             None => {}
             Some(render_pipeline) => {
                 //render_pass.set_viewport(``x``, y, w, h, min_depth, max_depth);
 
+                // Keep the projection's aspect ratio matched to the render
+                // target every frame, so resizing the window doesn't warp the
+                // scene.
+                self.camera.aspect = aspect;
                 self.camera_controller.update_camera(&mut self.camera);
                 self.camera_uniform.update_view_proj(&self.camera);
                 queue.write_buffer(

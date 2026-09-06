@@ -37,4 +37,15 @@ impl Viewport {
             .get_current_texture()
             .expect("Failed to acquire next swap chain texture")
     }
+
+    /// Width / height of the current surface, for the 3D camera's projection.
+    /// Falls back to `1.0` when the window has zero height (e.g. minimized) so
+    /// the perspective matrix never sees a NaN.
+    pub fn aspect(&self) -> f32 {
+        if self.surface_config.height == 0 {
+            1.0
+        } else {
+            self.surface_config.width as f32 / self.surface_config.height as f32
+        }
+    }
 }

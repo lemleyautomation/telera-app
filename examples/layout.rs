@@ -40,7 +40,7 @@ impl App for LayoutApp {
                 .with_inner_size(LogicalSize::new(900, 600)),
             window_name: "Main".to_string(),
             page: None,
-            watch_path: RunType::Watch("src/layouts".to_string()),
+            watch_path: RunType::Watch("examples/layouts".to_string()),
         }
     }
 }

@@ -37,6 +37,5 @@ symbol_table = { version = "0.4.0", features = [ "global" ] }
 winresource = "0.1.19"
 
 [features]
-logging = ["telera-layout/parse_logger"]
 parse_logger = []
 drm = []

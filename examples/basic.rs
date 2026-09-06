@@ -16,12 +16,6 @@ struct BasicApp {
     selected_document: usize,
     file_menu_open: bool,
     search_bar: String,
-    pic: UIImageDescriptor,
-    /// `initialize` can't reach `API` (it doesn't exist yet, since it's
-    /// built *from* the window this returns) - so anything that needs it,
-    /// like staging `pic.jpg`, has to happen in `update` instead, guarded
-    /// by this so it only runs once.
-    initialized: bool,
 }
 
 impl LayoutRunnerReflection for BasicApp {}
@@ -47,60 +41,25 @@ impl App for BasicApp {
         }
     }
 
-    fn update(&mut self, api: &mut API) {
-        if self.initialized {
-            return;
-        }
-        self.initialized = true;
-
-        let pic = include_bytes!("../pic.jpg");
-        let pic = pic.as_slice();
-        let pic = image::load_from_memory(pic).unwrap();
-        api.add_image("pic", pic);
-        self.pic = UIImageDescriptor {
-            atlas: "pic",
-            u1: 0.0,
-            v1: 0.0,
-            u2: 1.0,
-            v2: 1.0,
-        }
-    }
-
-    fn layout(&mut  self, page: &str, api: &mut API, mt: &mut MT) {
-        macro_rules! e {
-            ($v:expr $(, $c:stmt)* $(,)? ) => {
-                api.l.open_element();
-                api.l.configure_element(&$v);
-                $(
-                    $c
-                )*
-                api.l.close_element();
-            };
-        }
-
-        macro_rules! t {
-            ($v:expr, $c:expr) => {
-                api.l.add_text_element($c, &$v, true, mt);
-            };
-        }
-
+    #[layout_fn]
+    fn layout(&mut  self, page: &str, api: &mut API) {
         for input in api.keyboard_buffer.drain(..) {
             process_keyboard_input(&self.search_bar, input);
         }
 
         if page == "Main" {
             let main = ElementConfiguration::default()
-                .grow_all()
+                .grow()
                 .color([43, 41, 51, 255].into())
-                .direction(true)
+                .vertical()
                 .padding_all(16)
                 .child_gap(16)
                 .end();
             let header = ElementConfiguration::default()
                 .color([90, 90, 90, 255].into())
                 .radius_all(8.0)
-                .x_grow()
-                .y_fixed(60.0)
+                .width_grow()
+                .height_fixed(60.0)
                 .padding_top(8)
                 .padding_bottom(8)
                 .padding_left(16)
@@ -110,37 +69,37 @@ impl App for BasicApp {
                 .end();
             let lower_content = ElementConfiguration::default()
                 .child_gap(16)
-                .grow_all()
+                .grow()
                 .end();
             let side_bar = ElementConfiguration::default()
                 .color([90, 90, 90, 255].into())
-                .direction(true)
+                .vertical()
                 .padding_all(16)
                 .child_gap(8)
-                .x_fixed(250.0)
-                .y_grow()
+                .width_fixed(250.0)
+                .height_grow()
                 .radius_all(8.0)
                 .end();
             let mut main_content = ElementConfiguration::default()
                 .color([90,90,90,255].into())
-                .direction(true)
+                .vertical()
                 .child_gap(16)
                 .padding_all(16)
-                .grow_all()
+                .grow()
                 .radius_all(8.0)
                 .end();
             let side_bar_button = ElementConfiguration::default()
-                .x_grow()
+                .width_grow()
                 .padding_all(16)
                 .end();
             let selected_side_bar_button = ElementConfiguration::default()
-                .x_grow()
+                .width_grow()
                 .padding_all(16)
                 .color([120,120,120,255].into())
                 .radius_all(8.0)
                 .end();
             let clicked_side_bar_button = ElementConfiguration::default()
-                .x_grow()
+                .width_grow()
                 .padding_all(16)
                 .color([120,120,120,255].into())
                 .border_all(2)
@@ -148,7 +107,7 @@ impl App for BasicApp {
                 .radius_all(8.0)
                 .end();
             let hovered_side_bar_button = ElementConfiguration::default()
-                .x_grow()
+                .width_grow()
                 .padding_all(16)
                 .color([120,120,120,255].into())
                 .radius_all(8.0)
@@ -168,8 +127,8 @@ impl App for BasicApp {
                 .padding_right(16)
                 .color([255,255,255,255].into())
                 .radius_all(5.0)
-                .y_grow()
-                .x_fixed(200.)
+                .height_grow()
+                .width_fixed(200.)
                 .end();
             let hovered_file_button = ElementConfiguration::default()
                 .padding_top(8)
@@ -185,32 +144,32 @@ impl App for BasicApp {
                 .padding_bottom(8)
                 .padding_right(8)
                 .floating()
-                .floating_attach_to_parent_at_bottom_left()
+                .floating_attach_parent_bottom_left()
                 .end();
             let context_pane = ElementConfiguration::default()
-                .direction(true)
-                .x_fixed(200.0)
+                .vertical()
+                .width_fixed(200.0)
                 .color([40,40,40,255].into())
                 .radius_all(8.0)
                 .end();
             let context_menu_item = ElementConfiguration::default()
                 .padding_all(16)
-                .x_grow()
+                .width_grow()
                 .end();
             let hovered_context_menu_item = ElementConfiguration::default()
                 .padding_all(16)
                 .color([120,120,120,255].into())
-                .x_grow()
+                .width_grow()
                 .end();
             let text_config = TextConfig::new()
                 .font_id(0)
-                .color([0, 0, 0, 255].into())
+                .font_color([0, 0, 0, 255].into())
                 .font_size(12)
                 .line_height(14)
                 .end();
             let main_text_config = TextConfig::new()
                 .font_id(0)
-                .color([0,0,0,255].into())
+                .font_color([0,0,0,255].into())
                 .font_size(24)
                 .line_height(28)
                 .end();
@@ -266,7 +225,7 @@ impl App for BasicApp {
                         }
                     ),
                     e!(search_bar,t!(text_config,&self.search_bar)),
-                    e!(ElementConfiguration::default().x_grow().end()),
+                    e!(ElementConfiguration::default().width_grow().end()),
                     e!(
                         if api.l.hovered() {
                             hovered_file_button
@@ -303,12 +262,15 @@ impl App for BasicApp {
                             else {
                                 api.l.configure_element(&side_bar_button);
                             }
-                            api.l.add_text_element(&self.documents[i].title, &text_config, true, mt);
+                            api.l.add_text_element(&self.documents[i].title, &text_config, true);
                             api.l.close_element();
                         }
                     ),
                     e!(
-                        main_content.scroll(true, false, api.l.get_scroll_offset()).end(),
+                        {
+                            let offset = api.l.get_scroll_offset();
+                            main_content.scroll(true, false).scroll_child_offset(offset.x, offset.y).end()
+                        },
                         t!(main_text_config, &self.documents[self.selected_document].title),
                         t!(main_text_config, &self.documents[self.selected_document].contents)
                     )
@@ -335,8 +297,6 @@ fn main() {
         selected_document: 1,
         file_menu_open: false,
         search_bar: "hello".to_string(),
-        pic: UIImageDescriptor::default(),
-        initialized: false,
     };
 
     run::<BasicApp>(app);
