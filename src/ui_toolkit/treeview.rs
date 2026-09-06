@@ -1,20 +1,16 @@
-use std::fmt::Debug;
-use std::str::FromStr;
-
 use symbol_table::GlobalSymbol;
 use telera_layout::ElementConfiguration;
 use telera_layout::{Color, TextConfig};
 
 use crate::LayoutRunnerReflection;
-use crate::{
-    API, CustomElement, EventContext, EventHandler, MT, ui_toolkit::ui_shapes::LineConfig,
-};
+use crate::{API, CustomElement, EventContext, MT, ui_toolkit::ui_shapes::LineConfig};
+
+/// An event a tree view row can fire, as an interned handler name - the same
+/// `GlobalSymbol` the layout runner hands to `LayoutReflector::dispatch_event`.
+type UserEvent = GlobalSymbol;
 
 #[derive(Clone)]
-pub struct TreeViewEvents<UserEvent: FromStr + Clone + PartialEq + Debug + EventHandler>
-where
-    <UserEvent as FromStr>::Err: Debug,
-{
+pub struct TreeViewEvents {
     pub bubble_left_clicked: Option<UserEvent>,
     pub bubble_right_clicked: Option<UserEvent>,
     pub label_left_clicked: Option<UserEvent>,
@@ -24,20 +20,13 @@ where
     pub user_context: Option<EventContext>,
 }
 
-impl<UserEvent: FromStr + Clone + PartialEq + Debug + EventHandler> Default
-    for TreeViewEvents<UserEvent>
-where
-    <UserEvent as FromStr>::Err: Debug,
-{
+impl Default for TreeViewEvents {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<UserEvent: FromStr + Clone + PartialEq + Debug + EventHandler> TreeViewEvents<UserEvent>
-where
-    <UserEvent as FromStr>::Err: Debug,
-{
+impl TreeViewEvents {
     pub fn new() -> Self {
         TreeViewEvents {
             bubble_left_clicked: None,
@@ -71,47 +60,42 @@ where
 }
 
 #[derive(Clone)]
-pub enum TreeViewItem<'frame, UserEvent: FromStr + Clone + PartialEq + Debug + EventHandler>
-where
-    <UserEvent as FromStr>::Err: Debug,
-{
+pub enum TreeViewItem<'frame> {
     EmptyRoot {
         label: &'frame str,
-        event_definitions: Option<TreeViewEvents<UserEvent>>,
+        event_definitions: Option<TreeViewEvents>,
     },
     Root {
         label: &'frame str,
-        event_definitions: Option<TreeViewEvents<UserEvent>>,
-        items: Vec<TreeViewItem<'frame, UserEvent>>,
+        event_definitions: Option<TreeViewEvents>,
+        items: Vec<TreeViewItem<'frame>>,
     },
 
     EmptyItem {
         label: &'frame str,
-        event_definitions: Option<TreeViewEvents<UserEvent>>,
+        event_definitions: Option<TreeViewEvents>,
     },
     CollapsedItem {
         label: &'frame str,
-        event_definitions: Option<TreeViewEvents<UserEvent>>,
+        event_definitions: Option<TreeViewEvents>,
     },
     ExpandedItem {
         label: &'frame str,
-        event_definitions: Option<TreeViewEvents<UserEvent>>,
-        items: Vec<TreeViewItem<'frame, UserEvent>>,
+        event_definitions: Option<TreeViewEvents>,
+        items: Vec<TreeViewItem<'frame>>,
     },
 }
 
-pub fn treeview<UserApp, Event>(
+pub fn treeview<UserApp>(
     name: &GlobalSymbol,
     list_data: &Option<(GlobalSymbol, usize)>,
-    api: &mut API<Event, UserApp>,
+    api: &mut API<UserApp>,
     mt: &mut MT,
     user_app: &UserApp,
-    mut events: Vec<(Event, Option<EventContext>)>,
-) -> Vec<(Event, Option<EventContext>)>
+    mut events: Vec<(GlobalSymbol, Option<EventContext>)>,
+) -> Vec<(GlobalSymbol, Option<EventContext>)>
 where
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     if let Some(treeview) = user_app.get_treeview(name, list_data) {
         events = recursive_treeview_layout(api, mt, &treeview, events);
@@ -120,16 +104,14 @@ where
     events
 }
 
-fn recursive_treeview_layout<Event, UserApp>(
-    api: &mut API<Event, UserApp>,
+fn recursive_treeview_layout<UserApp>(
+    api: &mut API<UserApp>,
     mt: &mut MT,
-    treeview: &TreeViewItem<Event>,
-    mut events: Vec<(Event, Option<EventContext>)>,
-) -> Vec<(Event, Option<EventContext>)>
+    treeview: &TreeViewItem,
+    mut events: Vec<(GlobalSymbol, Option<EventContext>)>,
+) -> Vec<(GlobalSymbol, Option<EventContext>)>
 where
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     api.l.open_element();
     api.l
@@ -191,16 +173,14 @@ where
     events
 }
 
-fn add_treeview_image_to_layout<Event, UserApp>(
-    treeview_type: &TreeViewItem<Event>,
-    api: &mut API<Event, UserApp>,
+fn add_treeview_image_to_layout<UserApp>(
+    treeview_type: &TreeViewItem,
+    api: &mut API<UserApp>,
     mt: &mut MT,
-    mut events: Vec<(Event, Option<EventContext>)>,
-) -> Vec<(Event, Option<EventContext>)>
+    mut events: Vec<(GlobalSymbol, Option<EventContext>)>,
+) -> Vec<(GlobalSymbol, Option<EventContext>)>
 where
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     let green = Color {
         r: 0.0,

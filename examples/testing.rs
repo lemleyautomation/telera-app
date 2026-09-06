@@ -6,26 +6,15 @@ use telera_app::*;
 use telera_layout::ElementConfiguration;
 
 
-/// `App::Event` is required because `API` is generic over `(Event,
-/// UserApp)` - this app doesn't drive a markdown layout, so it has nothing
-/// to actually dispatch.
-#[derive(Clone, Debug, Default, PartialEq, strum_macros::EnumString, EventHandler)]
-#[handler_for(BasicApp)]
-enum Event {
-    #[default]
-    None,
-}
-
 #[derive(Default)]
 struct BasicApp {
     radii: f32
 }
 
-impl LayoutRunnerReflection<Event> for BasicApp {}
+impl LayoutRunnerReflection for BasicApp {}
+impl LayoutReflector<BasicApp> for BasicApp {}
 
 impl App for BasicApp {
-    type Event = Event;
-
     fn initialize(&mut self) -> Startup {
         Startup {
             initial_window: Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)),
@@ -34,7 +23,7 @@ impl App for BasicApp {
         }
     }
 
-    fn layout(&mut  self, _page: &str, api: &mut API<Event, BasicApp>, _mt: &mut MT) {
+    fn layout(&mut  self, _page: &str, api: &mut API<BasicApp>, _mt: &mut MT) {
         macro_rules! e {
             ($v:expr $(, $c:stmt)* $(,)? ) => {
                 api.l.open_element();

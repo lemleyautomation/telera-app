@@ -6,41 +6,7 @@ pub struct Document {
     pub contents: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, strum_macros::EnumString, EventHandler)]
-#[handler_for(LayoutApp)]
-enum Event {
-    #[default]
-    None,
-    FileButtonClicked,
-    DocumentClicked,
-}
-
-fn file_button_clicked_handler(
-    app: &mut LayoutApp,
-    _context: Option<EventContext>,
-    _api: &mut API<Event, LayoutApp>,
-) {
-    app.file_menu_opened = !app.file_menu_opened;
-}
-
-fn document_clicked_handler(
-    app: &mut LayoutApp,
-    context: Option<EventContext>,
-    _api: &mut API<Event, LayoutApp>,
-) {
-    // `left-clicked *Clicked*` fires from inside `list Documents`, so
-    // `Binder`/`set_layout` stamps the item's index into `EventContext::code`
-    // for us - see `get_event` below for the other half of this.
-    if let Some(EventContext {
-        code: Some(index), ..
-    }) = context
-    {
-        app.selected_document = index as usize;
-    }
-}
-
 #[derive(LayoutRunnerReflection)]
-#[event_handler(Event)]
 struct LayoutApp {
     #[list_click_event(DocumentClicked)]
     documents: Vec<Document>,
@@ -50,15 +16,29 @@ struct LayoutApp {
     search_bar: String,
 }
 
-// `run_layout` requires this even though `src/layouts/main.md` has no `fn`
-// elements of its own - the default `dispatch` is a no-op, so there's
-// nothing to write here. See `examples/custom_element.rs` for an app that
-// actually uses `fn`.
-impl LayoutRunnerCustomElements<Event, LayoutApp> for LayoutApp {}
+#[telera_app]
+impl LayoutApp {
+    #[layout_event]
+    fn file_button_clicked(&mut self, _context: Option<EventContext>, _api: &mut API<LayoutApp>) {
+        self.file_menu_opened = !self.file_menu_opened;
+    }
+
+    #[layout_event]
+    fn document_clicked(&mut self, context: Option<EventContext>, _api: &mut API<LayoutApp>) {
+        // `left-clicked *Clicked*` fires from inside `list Documents`, so
+        // `Binder`/`set_layout` stamps the item's index into
+        // `EventContext::code` for us - see the `#[list_click_event]` field
+        // attribute for the other half of this.
+        if let Some(EventContext {
+            code: Some(index), ..
+        }) = context
+        {
+            self.selected_document = index as usize;
+        }
+    }
+}
 
 impl App for LayoutApp {
-    type Event = Event;
-
     fn initialize(&mut self) -> Startup {
         Startup {
             initial_window: Window::default_attributes()
@@ -66,10 +46,6 @@ impl App for LayoutApp {
             window_name: "Main".to_string(),
             watch_path: RunType::Watch("src/layouts".to_string()),
         }
-    }
-
-    fn layout(&mut self, page: &str, api: &mut API<Event, LayoutApp>, mt: &mut MT) {
-        api.run_layout(page, mt, self);
     }
 }
 

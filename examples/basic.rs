@@ -10,13 +10,6 @@ pub struct Document {
     pub contents: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, strum_macros::EnumString, EventHandler)]
-#[handler_for(BasicApp)]
-enum Event {
-    #[default]
-    None,
-}
-
 #[derive(Default)]
 struct BasicApp {
     documents: Vec<Document>,
@@ -31,7 +24,8 @@ struct BasicApp {
     initialized: bool,
 }
 
-impl LayoutRunnerReflection<Event> for BasicApp {}
+impl LayoutRunnerReflection for BasicApp {}
+impl LayoutReflector<BasicApp> for BasicApp {}
 
 fn process_keyboard_input(feild: &String, input: KeyEvent) -> String {
     if let Some(input) = input.text {
@@ -44,8 +38,6 @@ fn process_keyboard_input(feild: &String, input: KeyEvent) -> String {
 }
 
 impl App for BasicApp {
-    type Event = Event;
-
     fn initialize(&mut self) -> Startup {
         Startup {
             initial_window: Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)),
@@ -54,7 +46,7 @@ impl App for BasicApp {
         }
     }
 
-    fn update(&mut self, api: &mut API<Event, BasicApp>) {
+    fn update(&mut self, api: &mut API<BasicApp>) {
         if self.initialized {
             return;
         }
@@ -73,7 +65,7 @@ impl App for BasicApp {
         }
     }
 
-    fn layout(&mut  self, page: &str, api: &mut API<Event, BasicApp>, mt: &mut MT) {
+    fn layout(&mut  self, page: &str, api: &mut API<BasicApp>, mt: &mut MT) {
         macro_rules! e {
             ($v:expr $(, $c:stmt)* $(,)? ) => {
                 api.l.open_element();

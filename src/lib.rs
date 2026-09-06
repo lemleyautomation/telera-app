@@ -6,7 +6,6 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     path::{Path, PathBuf},
-    str::FromStr,
     sync::{Arc, mpsc},
     time::Instant,
 };
@@ -35,9 +34,8 @@ const MULTI_SAMPLE_COUNT: u32 = 1;
 
 mod ui_toolkit;
 pub use ui_toolkit::layout_runner::{
-    Binder, Config, DataSrc, Declaration, Element, EventContext, EventHandler, FieldAccess, Layout,
-    LayoutRunnerCustomElements, LayoutRunnerReflection, ParsedLayout, normalize_field_symbol,
-    process_layout,
+    Binder, Config, DataSrc, Declaration, Element, EventContext, FieldAccess, Layout, LayoutReflector,
+    LayoutRunnerReflection, ParsedLayout, normalize_field_symbol, process_layout,
 };
 pub use ui_toolkit::telera_layout::{Color, ElementConfiguration, TextConfig};
 pub use ui_toolkit::treeview::{TreeViewEvents, TreeViewItem};
@@ -86,20 +84,7 @@ pub struct Startup {
 }
 
 #[allow(unused_variables)]
-pub trait App: LayoutRunnerReflection<Self::Event>
-where
-    <Self::Event as FromStr>::Err: Debug,
-{
-    /// The event enum this app's markdown-driven layout(s), if any,
-    /// dispatch through. `API` is generic over `(Event, UserApp)` (so it
-    /// can own a concretely-typed `Binder` instead of a type-erased one),
-    /// which means every `App` has to name one here, even an app that
-    /// never touches the layout-file/`Binder` machinery at all: declare a
-    /// trivial single-variant enum (`#[derive(EventHandler)]` still applies
-    /// - see `examples/basic.rs`) and an empty `impl ParserDataAccess<...>
-    /// for YourApp {}` to go with it.
-    type Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = Self>;
-
+pub trait App: LayoutRunnerReflection + LayoutReflector<Self> + Sized {
     /// Called once, before the graphics context (and so `API` itself)
     /// exists, to create the application's first window: the returned
     /// [`Startup::window_name`] is that window's name, and - until
@@ -118,22 +103,16 @@ where
     /// All application update logic
     ///
     /// This will be called at the beginning of each render loop
-    fn update(&mut self, api: &mut API<Self::Event, Self>)
-    where
-        Self: Sized,
-    {
-    }
+    fn update(&mut self, api: &mut API<Self>) {}
 
-    fn layout(&mut self, page: &str, api: &mut API<Self::Event, Self>, mt: &mut UIRenderer)
-    where
-        Self: Sized;
+    fn layout(&mut self, page: &str, api: &mut API<Self>, mt: &mut UIRenderer) {
+        api.run_layout(page, mt, self);
+    }
 }
 
-pub struct API<Event, UserApp>
+pub struct API<UserApp>
 where
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     staged_windows: Vec<(String, String, WindowAttributes)>,
 
@@ -142,7 +121,7 @@ where
     /// Using the markdown-driven layout pipeline at all is opt-in: an
     /// `App` that leaves `watch_path` as `RunType::None` and just drives
     /// `api.l` directly (as `basic.rs` does) never touches this.
-    binder: Binder<Event, UserApp>,
+    binder: Binder<UserApp>,
     /// Consulted once, in `Application::resumed`, to load the initial
     /// directory of layout files and (for `RunType::Watch`) to know which
     /// directory the background watcher thread should watch.
@@ -194,11 +173,9 @@ where
 }
 
 // private api functions
-impl<Event, UserApp> API<Event, UserApp>
+impl<UserApp> API<UserApp>
 where
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     fn request_redraw_viewport(&mut self, window_id: WindowId) {
         if let Some(viewport) = self.viewports.get_mut(&window_id) {
@@ -301,7 +278,7 @@ where
     }
     fn redraw_viewport(&mut self, window_id: WindowId, user_application: &mut UserApp)
     where
-        UserApp: App<Event = Event>,
+        UserApp: App,
     {
         let page = self
             .viewports
@@ -473,11 +450,9 @@ where
 }
 
 /// public api functions
-impl<Event, UserApp> API<Event, UserApp>
+impl<UserApp> API<UserApp>
 where
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     pub fn create_viewport(&mut self, name: &str, page: &str, attributes: WindowAttributes) {
         self.staged_windows
@@ -556,17 +531,17 @@ where
 
     /// Runs `page` (as loaded from `Startup::watch_path`) for this frame
     /// and dispatches whatever events fired straight back into `user_app`
-    /// via `EventHandler::dispatch`. Typically the entire body of
+    /// via `LayoutReflector::dispatch_event`. Typically the entire body of
     /// `App::layout` for an app driven by a markdown layout:
     ///
     /// ```ignore
-    /// fn layout(&mut self, page: &str, api: &mut API<Self::Event, Self>, mt: &mut MT) {
+    /// fn layout(&mut self, page: &str, api: &mut API<Self>, mt: &mut MT) {
     ///     api.run_layout(page, mt, self);
     /// }
     /// ```
     pub fn run_layout(&mut self, page: &str, mt: &mut MT, user_app: &mut UserApp)
     where
-        UserApp: LayoutRunnerCustomElements<Event, UserApp>,
+        UserApp: LayoutReflector<UserApp>,
     {
         // `self.binder` and `user_app` are already two separate places (a
         // field of `API`, and the caller's own, unrelated `&mut UserApp`),
@@ -576,8 +551,8 @@ where
         // `user_app` in turn instead of fighting over one long-lived borrow.
         let mut binder = std::mem::take(&mut self.binder);
         if let Some(events) = binder.set_page(page, self, mt, user_app) {
-            for (event, context) in events {
-                event.dispatch(user_app, context, self);
+            for (name, context) in events {
+                user_app.dispatch_event(&name, context, self);
             }
         }
         self.binder = binder;
@@ -642,9 +617,8 @@ where
 struct Application<UserApp>
 where
     UserApp: App,
-    <UserApp::Event as FromStr>::Err: Debug,
 {
-    core: Option<API<UserApp::Event, UserApp>>,
+    core: Option<API<UserApp>>,
     user_application: UserApp,
 
     /// Cloned into `spawn_layout_watcher` for `RunType::Watch` so its
@@ -656,7 +630,6 @@ where
 impl<UserApp> Application<UserApp>
 where
     UserApp: App,
-    <UserApp::Event as FromStr>::Err: Debug,
 {
     pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp) -> Self {
         Application {
@@ -670,7 +643,6 @@ where
 impl<UserApp> ApplicationHandler<InternalEvents> for Application<UserApp>
 where
     UserApp: App,
-    <UserApp::Event as FromStr>::Err: Debug,
 {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         //println!("building context");
@@ -1000,7 +972,6 @@ where
 pub fn run<UserApp>(user_application: UserApp)
 where
     UserApp: App,
-    <UserApp::Event as FromStr>::Err: Debug,
 {
     if let Ok(event_loop) = EventLoop::<InternalEvents>::with_user_event().build() {
         event_loop.set_control_flow(ControlFlow::Wait);

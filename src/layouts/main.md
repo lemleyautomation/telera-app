@@ -74,7 +74,7 @@
                 - `hover`
                     - `border-color` black
                     - `border-all` 2
-                - `left-clicked` FileButtonClicked
+                - `left-clicked` file_button_clicked
                     - `border-color` rgb(43,41,51)
                     - `border-all` 2
             - `text`

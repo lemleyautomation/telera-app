@@ -1,71 +1,5 @@
 use syn::{GenericArgument, Ident, PathArguments, Type};
 
-fn impl_handler_trait(abstract_syntax_tree: syn::DeriveInput) -> proc_macro::TokenStream {
-    let enum_name = abstract_syntax_tree.ident.clone();
-    let enum_span = abstract_syntax_tree.ident.span();
-
-    let handler_for = abstract_syntax_tree
-        .attrs
-        .iter()
-        .find(|attribute| {
-            attribute.path().segments.len() == 1 && attribute.path().is_ident("handler_for")
-        })
-        .expect("no handler specified")
-        .clone();
-
-    let user_application = if let Ok(args) = handler_for.parse_args()
-        && let syn::Expr::Path(expression_path) = args
-        && let Some(user_application) = expression_path.path.get_ident()
-    {
-        user_application.clone()
-    } else {
-        panic!("input to \"handler_for\" must be struct type")
-    };
-
-    let variants = if let syn::Data::Enum(enum_data) = abstract_syntax_tree.data {
-        let mut variants = Vec::<proc_macro2::TokenStream>::new();
-        let re = regex::Regex::new(r"(\B)([A-Z])").expect("invalid regex");
-        for enum_variant in enum_data.variants {
-            let variant_name = enum_variant.ident.to_string();
-
-            let mut handler_function_name = re.replace_all(&variant_name, "_$2").to_lowercase();
-
-            handler_function_name.push_str("_handler");
-
-            let handler_function = proc_macro2::Ident::new(&handler_function_name, enum_span);
-
-            if variant_name.as_str() != "None" {
-                let variant_name = proc_macro2::Ident::new(&variant_name, enum_span);
-
-                variants.push(quote::quote! {
-                    #enum_name::#variant_name => #handler_function(app,context,api),
-                })
-            }
-        }
-        variants
-    } else {
-        panic!("#[derive(Handler)] can only be used on enums");
-    };
-
-    quote::quote! {
-        impl EventHandler for #enum_name {
-            type UserApplication = #user_application;
-            fn dispatch(&self, app: &mut Self::UserApplication, context: Option<EventContext>, api: &mut API<#enum_name, #user_application>) {
-                match self {
-                    #(#variants)*//#enum_name::Yes => yes_handler(app, api),
-                    _ => {}
-                }
-            }
-        }
-    }.into()
-}
-
-#[proc_macro_derive(EventHandler, attributes(handler_for))]
-pub fn handler_dispatch(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let ast: syn::DeriveInput = syn::parse(item).unwrap();
-    impl_handler_trait(ast)
-}
-
 // ---------------------------------------------------------------------------
 // ParserDataAccess / FieldAccess
 //
@@ -93,8 +27,9 @@ pub fn handler_dispatch(item: proc_macro::TokenStream) -> proc_macro::TokenStrea
 //                           looked up via `T: FieldAccess` - so `T` should
 //                           `#[derive(FieldAccess)]`, or this won't compile.
 //   #[no_field_access]      skip that - `get_list_length` only.
-//   #[list_click_event(V)]  `left-clicked *Clicked*` inside this list
-//                           resolves to `#event_handler::V`.
+//   #[list_click_event(name)]  `left-clicked *Clicked*` inside this list
+//                           resolves to the handler name `"name"`, dispatched
+//                           through `LayoutReflector::dispatch_event`.
 //
 // Anything index-shaped - "is this the selected row", "show me item N's
 // fields outside of any list" - is a *markdown* concern, not a Rust one: see
@@ -163,24 +98,10 @@ fn attr_ident_arg(attr: &syn::Attribute) -> Ident {
     })
 }
 
-#[proc_macro_derive(
-    LayoutRunnerReflection,
-    attributes(event_handler, list_click_event, no_field_access)
-)]
+#[proc_macro_derive(LayoutRunnerReflection, attributes(list_click_event, no_field_access))]
 pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast: syn::DeriveInput = syn::parse(item).unwrap();
     let struct_name = ast.ident.clone();
-
-    let event_handler_attr = find_attr(&ast.attrs, "event_handler")
-        .expect("no event handler specified: add #[event_handler(YourEventEnum)]");
-    let event_handler = if let Ok(args) = event_handler_attr.parse_args()
-        && let syn::Expr::Path(expression_path) = args
-        && let Some(event_type) = expression_path.path.get_ident()
-    {
-        event_type.clone()
-    } else {
-        panic!("input to \"event_handler\" must be an enum type")
-    };
 
     let mut plain_bool = Vec::<proc_macro2::TokenStream>::new();
     let mut plain_numeric = Vec::<proc_macro2::TokenStream>::new();
@@ -231,10 +152,10 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                     });
 
                     if let Some(attr) = find_attr(&field.attrs, "list_click_event") {
-                        let variant = attr_ident_arg(attr);
+                        let handler_name = attr_ident_arg(attr).to_string();
                         list_event.push(quote::quote! {
                             if list_key == #field_name && key == "clicked" {
-                                return Some(#event_handler::#variant);
+                                return Some(symbol_table::GlobalSymbol::new(#handler_name));
                             }
                         });
                     }
@@ -281,7 +202,7 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
     }
 
     quote::quote! {
-        impl LayoutRunnerReflection<#event_handler> for #struct_name {
+        impl LayoutRunnerReflection for #struct_name {
             #[allow(unused_variables)]
             fn get_bool(&self, name: &symbol_table::GlobalSymbol, list_data: &Option<(symbol_table::GlobalSymbol, usize)>) -> Option<bool> {
                 let key = telera_app::normalize_field_symbol(name.as_str());
@@ -341,7 +262,7 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                 None
             }
             #[allow(unused_variables)]
-            fn get_event<'render_pass, 'application>(&'application self, name: &symbol_table::GlobalSymbol, list_data: &Option<(symbol_table::GlobalSymbol, usize)>) -> Option<#event_handler>
+            fn get_event<'render_pass, 'application>(&'application self, name: &symbol_table::GlobalSymbol, list_data: &Option<(symbol_table::GlobalSymbol, usize)>) -> Option<symbol_table::GlobalSymbol>
             where
                 'application: 'render_pass,
             {
@@ -456,30 +377,101 @@ pub fn app(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     .into()
 }
 
+/// `#[telera_app]` goes on an application's inherent `impl` block and writes
+/// its [`LayoutReflector`] impl for it, wiring each method tagged with a
+/// marker attribute into the right dispatcher:
+///
+/// * `#[layout_event]` - `fn name(&mut self, context: Option<EventContext>,
+///   api: &mut API<Self>)` - reachable from a layout config like
+///   `left-clicked name`, dispatched through `dispatch_event`.
+/// * `#[layout_element]` - `fn name(&mut self, api: &mut API<Self>, mt: &mut
+///   MT)` - reachable from a `fn *name*` element, dispatched through
+///   `dispatch_custom_element`.
+///
+/// The markdown always refers to a method by its Rust name. Methods without
+/// either marker are left alone, and the marker attributes are stripped from
+/// the emitted `impl` so the untagged methods compile normally.
 #[proc_macro_attribute]
-pub fn inject_code(
+pub fn telera_app(
     _attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    // Parse the target module block
-    let mut item_mod = syn::parse_macro_input!(item as syn::ItemImpl);
+    let mut item_impl = syn::parse_macro_input!(item as syn::ItemImpl);
+    let self_ty = item_impl.self_ty.clone();
 
-    println!("{:#?}", item_mod.items);
+    let mut event_arms = Vec::<proc_macro2::TokenStream>::new();
+    let mut element_arms = Vec::<proc_macro2::TokenStream>::new();
 
-    // Define the extra code you want to inject into the module
-    // let injected_code: syn::Item = syn::parse_quote! {
-    //     pub fn injected_function() {
-    //         println!("This function was automatically added to the module!");
-    //     }
-    // };
+    for impl_item in &mut item_impl.items {
+        let syn::ImplItem::Fn(method) = impl_item else {
+            continue;
+        };
 
-    // If the module has content (a body with braces), push the new code into it
-    // if let Some((_, ref mut content)) = item_mod.content {
-    //     content.push(injected_code);
-    // }
+        let is_event = method.attrs.iter().any(|a| a.path().is_ident("layout_event"));
+        let is_element = method
+            .attrs
+            .iter()
+            .any(|a| a.path().is_ident("layout_element"));
 
-    // Hand the modified module back to the compiler
-    proc_macro::TokenStream::from(quote::quote! {
-        #item_mod
-    })
+        // Strip the markers - they're not real attributes, so the re-emitted
+        // method has to shed them to compile.
+        method
+            .attrs
+            .retain(|a| !a.path().is_ident("layout_event") && !a.path().is_ident("layout_element"));
+
+        if is_event && is_element {
+            return syn::Error::new_spanned(
+                &method.sig.ident,
+                "a method can be `#[layout_event]` or `#[layout_element]`, not both",
+            )
+            .to_compile_error()
+            .into();
+        }
+
+        let name = method.sig.ident.clone();
+        let name_str = name.to_string();
+
+        if is_event {
+            event_arms.push(quote::quote! {
+                #name_str => self.#name(context, api),
+            });
+        } else if is_element {
+            element_arms.push(quote::quote! {
+                #name_str => self.#name(api, mt),
+            });
+        }
+    }
+
+    quote::quote! {
+        #item_impl
+
+        impl telera_app::LayoutReflector<#self_ty> for #self_ty {
+            #[allow(unused_variables)]
+            fn dispatch_event(
+                &mut self,
+                name: &symbol_table::GlobalSymbol,
+                context: ::core::option::Option<telera_app::EventContext>,
+                api: &mut telera_app::API<#self_ty>,
+            ) {
+                match name.as_str() {
+                    #(#event_arms)*
+                    _ => {}
+                }
+            }
+
+            #[allow(unused_variables)]
+            fn dispatch_custom_element(
+                &mut self,
+                name: &symbol_table::GlobalSymbol,
+                api: &mut telera_app::API<#self_ty>,
+                mt: &mut telera_app::MT,
+            ) {
+                match name.as_str() {
+                    #(#element_arms)*
+                    _ => {}
+                }
+            }
+        }
+    }
+    .into()
 }

@@ -8,7 +8,7 @@
 //!      [`DataSrc`] and the [`ParserDataAccess`] trait an application
 //!      implements to feed dynamic data into a layout.
 //!   2. **Parser** - [`process_layout`] turns a markdown document (see
-//!      `src/layouts/main.md` for an example) into a flat `Vec<Layout<Event>>`
+//!      `src/layouts/main.md` for an example) into a flat `Vec<Layout>`
 //!      of layout commands plus a table of reusable snippets.
 //!   3. **Runner** - [`Binder`] owns the parsed pages/reusables and
 //!      [`Binder::set_page`] walks the flattened command list each frame,
@@ -33,7 +33,7 @@
 //! (never re-`&`'d) when threaded through recursive calls, which is what
 //! lets `Binder::set_page` build up the events for a frame and hand them back
 //! as an owned `Vec`, free of any borrow on `api`/`user_app`, for the caller
-//! to dispatch afterwards with `EventHandler::dispatch`.
+//! to dispatch afterwards with `LayoutReflector::dispatch_event`.
 use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
 use markdown::mdast::{List, Node, Paragraph};
@@ -65,23 +65,6 @@ pub struct EventContext {
     pub code2: Option<u32>,
 }
 
-/// Implemented by an application's event enum (normally via
-/// `#[derive(EventHandler)]`, see `telera_macros`) so the runner can turn a
-/// resolved [`Layout`] event straight into a call against the application.
-pub trait EventHandler
-where
-    Self: Sized + FromStr + Clone + PartialEq + Debug + Default,
-    <Self as FromStr>::Err: Debug,
-{
-    type UserApplication: LayoutRunnerReflection<Self>;
-    fn dispatch(
-        &self,
-        app: &mut Self::UserApplication,
-        context: Option<EventContext>,
-        api: &mut API<Self, Self::UserApplication>,
-    );
-}
-
 fn build_event_context(list_data: &Option<(GlobalSymbol, usize)>) -> Option<EventContext> {
     list_data.as_ref().map(|(_, index)| EventContext {
         text: None,
@@ -90,28 +73,49 @@ fn build_event_context(list_data: &Option<(GlobalSymbol, usize)>) -> Option<Even
     })
 }
 
+/// Implemented (by hand) on an application struct so the layout runner can
+/// call back into it by *name*: `dispatch_event` for an event a config like
+/// `left-clicked some_handler` fired, `dispatch_custom_element` for a `fn
+/// *name*` element that stands in for a hand-built subtree. Both names come
+/// straight from the markdown as interned [`GlobalSymbol`]s - there is no
+/// event enum anymore. Every method is defaulted to a no-op, so an app whose
+/// layouts use neither still just writes `impl LayoutReflector<Self> for
+/// Self {}`.
+#[allow(unused_variables)]
+pub trait LayoutReflector<LayoutApp: LayoutRunnerReflection> {
+    fn dispatch_event(
+        &mut self,
+        name: &GlobalSymbol,
+        context: Option<EventContext>,
+        api: &mut API<LayoutApp>,
+    ) {
+    }
+
+    fn dispatch_custom_element(
+        &mut self,
+        name: &GlobalSymbol,
+        api: &mut API<LayoutApp>,
+        mt: &mut MT,
+    ) {
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Layout command types
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Display, PartialEq)]
-pub enum Layout<Event>
-where
-    Event: Clone + Debug + PartialEq + Default,
-{
-    Element(Element<Event>),
+pub enum Layout {
+    Element(Element),
     Declaration {
         name: GlobalSymbol,
-        value: DataSrc<Declaration<Event>>,
+        value: DataSrc<Declaration>,
     },
     Config(Config),
 }
 
 #[derive(Clone, Debug, Display, PartialEq)]
-pub enum Element<Event>
-where
-    Event: Clone + Debug + PartialEq + Default,
-{
+pub enum Element {
     ElementOpened {
         id: Option<DataSrc<String>>,
     },
@@ -149,9 +153,9 @@ where
     TextBoxClosed(DataSrc<String>),
 
     // `fn *name*` - calls back into the app's own
-    // `LayoutRunnerCustomElements::dispatch` with `name` right where it sits
-    // in the tree, so the dispatched function can add whatever it wants via
-    // `api.l` at that spot. A single leaf command, unlike most other
+    // `LayoutReflector::dispatch_custom_element` with `name` right where it
+    // sits in the tree, so the dispatched function can add whatever it wants
+    // via `api.l` at that spot. A single leaf command, unlike most other
     // elements here, since there's no body of its own to open/close.
     FunctionCall(GlobalSymbol),
 
@@ -189,82 +193,82 @@ where
     Pointer(winit::window::CursorIcon),
 
     HoverOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     HoverClosed,
 
     HoveredOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     HoveredClosed,
 
     UnHoveredOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     UnHoveredClosed,
 
     FocusOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     FocusClosed,
 
     FocusedOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     FocusedClosed,
 
     UnFocusedOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     UnFocusedClosed,
 
     LeftPressedOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     LeftPressedClosed,
 
     LeftDownOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     LeftDownClosed,
 
     LeftReleasedOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     LeftReleasedClosed,
 
     LeftClickedOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     LeftClickedClosed,
 
     LeftDoubleClickedOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     LeftDoubleClickedClosed,
 
     LeftTripleClickedOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     LeftTripleClickedClosed,
 
     RightPressedOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     RightPressedClosed,
 
     RightDownOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     RightDownClosed,
 
     RightReleasedOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     RightReleasedClosed,
 
     RightClickedOpened {
-        event: Option<DataSrc<Event>>,
+        event: Option<DataSrc<GlobalSymbol>>,
     },
     RightClickedClosed,
 }
@@ -402,26 +406,23 @@ pub enum Config {
 }
 
 #[derive(Clone, Debug, Display, PartialEq)]
-pub enum Declaration<Event>
-where
-    Event: Clone + Debug + PartialEq + Default,
-{
+pub enum Declaration {
     Bool(bool),
     Numeric(f32),
     Text(String),
     Color(Color),
-    Event(Event),
+    Event(GlobalSymbol),
     Image(GlobalSymbol),
 }
 
-impl<Event: Clone + Debug + PartialEq + Default> Default for Declaration<Event> {
+impl Default for Declaration {
     fn default() -> Self {
         Declaration::Bool(false)
     }
 }
 
 #[derive(Clone, Debug, Display, PartialEq)]
-pub enum DataSrc<T: Default> {
+pub enum DataSrc<T> {
     Static(T),
     Dynamic(GlobalSymbol),
 }
@@ -432,41 +433,11 @@ impl<T: Default> Default for DataSrc<T> {
     }
 }
 
-/// Implemented by an application struct so a `fn` element in a markdown
-/// layout (see `src/layouts/zzzcustom.md`) can call back into it by name,
-/// e.g. `- \`fn\` *custom_element*` invokes whatever `dispatch` does when
-/// `name` is `custom_element` - typically matching on `name` and forwarding
-/// to a real inherent method, as `examples/custom_element.rs` does.
-///
-/// Unlike [`LayoutRunnerReflection`]'s `get-*` accessors, this runs from
-/// inside `Binder::set_page`/`set_layout` with a live `&mut LayoutApp` and
-/// `&mut API`, so a dispatched function can freely mutate the app and call
-/// `api.l.open_element()`/`configure_element()`/`close_element()` (or
-/// anything else `API` exposes) to add to the layout being built, exactly
-/// like the element it's standing in for.
-///
-/// Defaulted to a no-op so an app whose layouts never use `fn` doesn't have
-/// to write a body - `impl LayoutRunnerCustomElements<Event, YourApp> for
-/// YourApp {}` is enough, the same way an unused [`LayoutRunnerReflection`]
-/// is implemented trivially.
-#[allow(unused_variables)]
-pub trait LayoutRunnerCustomElements<
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = LayoutApp>,
-    LayoutApp: LayoutRunnerReflection<Event>,
-> where
-    <Event as FromStr>::Err: Debug,
-{
-    fn dispatch(&mut self, name: &GlobalSymbol, api: &mut API<Event, LayoutApp>, mt: &mut MT) {}
-}
-
 /// Implemented by an application struct (normally via
 /// `#[derive(ParserDataAccess)]`, see `telera_macros`) to answer the
 /// `get-*`/`set-*` declarations a layout can reference dynamically.
 #[allow(unused_variables)]
-pub trait LayoutRunnerReflection<Event: FromStr + Clone + PartialEq + Debug + EventHandler>
-where
-    <Event as FromStr>::Err: Debug,
-{
+pub trait LayoutRunnerReflection {
     fn get_list_length(
         &self,
         name: &GlobalSymbol,
@@ -522,7 +493,7 @@ where
         &'application self,
         name: &GlobalSymbol,
         list_data: &Option<(GlobalSymbol, usize)>,
-    ) -> Option<Event>
+    ) -> Option<GlobalSymbol>
     where
         'application: 'render_pass,
     {
@@ -532,7 +503,7 @@ where
         &'application self,
         name: &GlobalSymbol,
         list_data: &Option<(GlobalSymbol, usize)>,
-    ) -> Option<crate::TreeViewItem<'render_pass, Event>>
+    ) -> Option<crate::TreeViewItem<'render_pass>>
     where
         'application: 'render_pass,
     {
@@ -579,7 +550,7 @@ pub fn normalize_field_symbol(name: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Markdown parser: turns a document into a flat Vec<Layout<Event>>
+// Markdown parser: turns a document into a flat Vec<Layout>
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -592,25 +563,22 @@ enum ParsingMode {
 
 /// A parsed page: its name, its flattened layout commands, and its table of
 /// reusable snippets (declared with `##`/`###` headings, referenced with `use`).
-pub type ParsedLayout<Event> = (
+pub type ParsedLayout = (
     String,
-    Vec<Layout<Event>>,
-    HashMap<String, Vec<Layout<Event>>>,
+    Vec<Layout>,
+    HashMap<String, Vec<Layout>>,
 );
 
 /// Parses a markdown layout document (see `src/layouts/main.md`) into a
 /// [`ParsedLayout`].
-pub fn process_layout<Event: Clone + Debug + Default + PartialEq + FromStr>(
+pub fn process_layout(
     file: String,
-) -> Result<ParsedLayout<Event>, String>
-where
-    <Event as FromStr>::Err: Debug,
-{
+) -> Result<ParsedLayout, String> {
     let mut parsing_mode = ParsingMode::None;
     let mut page_name = "".to_string();
-    let mut body = Vec::<Layout<Event>>::new();
+    let mut body = Vec::<Layout>::new();
     let mut open_reuseable_name = "".to_string();
-    let mut reusables = HashMap::<String, Vec<Layout<Event>>>::new();
+    let mut reusables = HashMap::<String, Vec<Layout>>::new();
 
     if let Ok(m) = markdown::to_mdast(&file, &markdown::ParseOptions::default())
         && let Some(nodes) = m.children()
@@ -641,7 +609,7 @@ where
                 Node::List(list) => match parsing_mode {
                     ParsingMode::ReusableConfig => {
                         let mut reusable_items = process_configs(list, &mut None);
-                        let mut formatted_reusable_items = Vec::<Layout<Event>>::new();
+                        let mut formatted_reusable_items = Vec::<Layout>::new();
                         formatted_reusable_items.append(&mut reusable_items);
                         reusables.insert(open_reuseable_name.clone(), formatted_reusable_items);
                     }
@@ -694,13 +662,10 @@ fn is_declarations_block(node: &Node) -> bool {
     }
 }
 
-fn process_element<Event: Clone + Debug + Default + PartialEq + FromStr>(
+fn process_element(
     element: &Node,
-) -> Vec<Layout<Event>>
-where
-    <Event as FromStr>::Err: Debug,
-{
-    let mut layout_commands: Vec<Layout<Event>> = Vec::new();
+) -> Vec<Layout> {
+    let mut layout_commands: Vec<Layout> = Vec::new();
 
     if let Node::ListItem(element) = element
         && let Some(element_declaration) = element.children.first()
@@ -714,7 +679,7 @@ where
                     && let Node::List(declarations) = declarations
                 {
                     for declaration in declarations.children.iter() {
-                        if let Some((name, value)) = process_variable::<Event>(declaration) {
+                        if let Some((name, value)) = process_variable(declaration) {
                             let name = GlobalSymbol::new(name);
                             layout_commands.push(Layout::Declaration { name, value });
                         }
@@ -884,7 +849,7 @@ where
                     && let Some(list_content) = element.children.get(1)
                     && let Node::List(list_content) = list_content
                 {
-                    let mut formatted_list = Vec::<Layout<Event>>::new();
+                    let mut formatted_list = Vec::<Layout>::new();
                     formatted_list.push(Layout::Element(Element::ListOpened));
 
                     // A leading `declarations` block is optional - only skip
@@ -915,7 +880,7 @@ where
 
                     let skip_count = if has_declarations { 1 } else { 0 };
                     for li in list_content.children.iter().skip(skip_count) {
-                        let mut list_item = process_element::<Event>(li);
+                        let mut list_item = process_element(li);
                         formatted_list.append(&mut list_item);
                     }
 
@@ -942,7 +907,7 @@ where
                             && let Node::List(body) = body
                         {
                             for item in &body.children {
-                                let mut item = process_element::<Event>(item);
+                                let mut item = process_element(item);
                                 layout_commands.append(&mut item);
                             }
                         }
@@ -960,12 +925,12 @@ where
                     && let Some(conditional_elements) = element.children.get(1)
                     && let Node::List(conditional_elements) = conditional_elements
                 {
-                    let mut formatted_element = Vec::<Layout<Event>>::new();
+                    let mut formatted_element = Vec::<Layout>::new();
                     let src = GlobalSymbol::new(conditional.value.trim());
                     formatted_element.push(Layout::Element(Element::IfOpened { condition: src }));
 
                     for conditional_element in &conditional_elements.children {
-                        let mut conditional_element = process_element::<Event>(conditional_element);
+                        let mut conditional_element = process_element(conditional_element);
                         formatted_element.append(&mut conditional_element);
                     }
 
@@ -980,13 +945,13 @@ where
                     && let Some(conditional_elements) = element.children.get(1)
                     && let Node::List(conditional_elements) = conditional_elements
                 {
-                    let mut formatted_element = Vec::<Layout<Event>>::new();
+                    let mut formatted_element = Vec::<Layout>::new();
                     let src = GlobalSymbol::new(conditional.value.trim());
                     formatted_element
                         .push(Layout::Element(Element::IfNotOpened { condition: src }));
 
                     for conditional_element in &conditional_elements.children {
-                        let mut conditional_element = process_element::<Event>(conditional_element);
+                        let mut conditional_element = process_element(conditional_element);
                         formatted_element.append(&mut conditional_element);
                     }
 
@@ -1001,12 +966,12 @@ where
                     && let Some(conditional_elements) = element.children.get(1)
                     && let Node::List(conditional_elements) = conditional_elements
                 {
-                    let mut formatted_element = Vec::<Layout<Event>>::new();
+                    let mut formatted_element = Vec::<Layout>::new();
                     let index = parse_index_arg(index_arg.value.trim());
                     formatted_element.push(Layout::Element(Element::IfIndexOpened { index }));
 
                     for conditional_element in &conditional_elements.children {
-                        let mut conditional_element = process_element::<Event>(conditional_element);
+                        let mut conditional_element = process_element(conditional_element);
                         formatted_element.append(&mut conditional_element);
                     }
 
@@ -1021,12 +986,12 @@ where
                     && let Some(conditional_elements) = element.children.get(1)
                     && let Node::List(conditional_elements) = conditional_elements
                 {
-                    let mut formatted_element = Vec::<Layout<Event>>::new();
+                    let mut formatted_element = Vec::<Layout>::new();
                     let index = parse_index_arg(index_arg.value.trim());
                     formatted_element.push(Layout::Element(Element::IfIndexNotOpened { index }));
 
                     for conditional_element in &conditional_elements.children {
-                        let mut conditional_element = process_element::<Event>(conditional_element);
+                        let mut conditional_element = process_element(conditional_element);
                         formatted_element.append(&mut conditional_element);
                     }
 
@@ -1239,9 +1204,9 @@ fn parameter_check<T: FromStr>(
     }
 }
 
-fn process_variable<Event: Clone + Debug + Default + PartialEq + FromStr>(
+fn process_variable(
     declaration: &Node,
-) -> Option<(String, DataSrc<Declaration<Event>>)> {
+) -> Option<(String, DataSrc<Declaration>)> {
     if let Node::ListItem(declaration) = declaration
         && let Some(declaration) = declaration.children.first()
         && let Node::Paragraph(declaration) = declaration
@@ -1259,7 +1224,7 @@ fn process_variable<Event: Clone + Debug + Default + PartialEq + FromStr>(
                 let value = GlobalSymbol::new(variable_value.value.trim());
                 Some((
                     variable_name.value.trim().to_string(),
-                    DataSrc::<Declaration<Event>>::Dynamic(value),
+                    DataSrc::<Declaration>::Dynamic(value),
                 ))
             }
             "set-bool" => bool::from_str(variable_value.value.trim())
@@ -1267,7 +1232,7 @@ fn process_variable<Event: Clone + Debug + Default + PartialEq + FromStr>(
                 .map(|value| {
                     (
                         variable_name.value.trim().to_string(),
-                        DataSrc::<Declaration<Event>>::Static(Declaration::Bool(value)),
+                        DataSrc::<Declaration>::Static(Declaration::Bool(value)),
                     )
                 }),
             "set-numeric" => f32::from_str(variable_value.value.trim())
@@ -1275,29 +1240,27 @@ fn process_variable<Event: Clone + Debug + Default + PartialEq + FromStr>(
                 .map(|value| {
                     (
                         variable_name.value.trim().to_string(),
-                        DataSrc::<Declaration<Event>>::Static(Declaration::Numeric(value)),
+                        DataSrc::<Declaration>::Static(Declaration::Numeric(value)),
                     )
                 }),
             "set-text" => Some((
                 variable_name.value.trim().to_string(),
-                DataSrc::<Declaration<Event>>::Static(Declaration::Text(
+                DataSrc::<Declaration>::Static(Declaration::Text(
                     variable_value.value.trim().to_string(),
                 )),
             )),
-            "set-event" => Event::from_str(variable_value.value.trim())
-                .ok()
-                .map(|value| {
-                    (
-                        variable_name.value.trim().to_string(),
-                        DataSrc::<Declaration<Event>>::Static(Declaration::Event(value)),
-                    )
-                }),
+            "set-event" => Some((
+                variable_name.value.trim().to_string(),
+                DataSrc::<Declaration>::Static(Declaration::Event(GlobalSymbol::new(
+                    variable_value.value.trim(),
+                ))),
+            )),
             "set-color" => Color::from_str(variable_value.value.trim())
                 .ok()
                 .map(|value| {
                     (
                         variable_name.value.trim().to_string(),
-                        DataSrc::<Declaration<Event>>::Static(Declaration::Color(value)),
+                        DataSrc::<Declaration>::Static(Declaration::Color(value)),
                     )
                 }),
             _ => None,
@@ -1307,10 +1270,10 @@ fn process_variable<Event: Clone + Debug + Default + PartialEq + FromStr>(
     }
 }
 
-fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
+fn process_configs(
     configuration_set: &List,
     custom_element: &mut Option<&mut CustomElement>,
-) -> Vec<Layout<Event>> {
+) -> Vec<Layout> {
     let mut configs = Vec::new();
 
     for configuration_item in &configuration_set.children {
@@ -1785,7 +1748,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                 }
 
                 "hovered" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::HoveredOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -1809,7 +1772,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::HoveredClosed));
                 }
                 "unhovered" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::UnHoveredOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -1833,7 +1796,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::UnHoveredClosed));
                 }
                 "hover" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::HoverOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -1857,7 +1820,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::HoverClosed));
                 }
                 "focused" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::FocusedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -1881,7 +1844,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::FocusedClosed));
                 }
                 "unfocused" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::UnFocusedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -1905,7 +1868,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::UnFocusedClosed));
                 }
                 "focus" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::FocusOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -1929,7 +1892,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::FocusClosed));
                 }
                 "left-pressed" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftPressedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -1952,7 +1915,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::LeftPressedClosed));
                 }
                 "left-down" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftDownOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -1976,7 +1939,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::LeftDownClosed));
                 }
                 "left-released" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftReleasedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -1999,7 +1962,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::LeftReleasedClosed));
                 }
                 "left-clicked" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftClickedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2022,7 +1985,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::LeftClickedClosed));
                 }
                 "left-dbl-clicked" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftDoubleClickedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2048,7 +2011,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::LeftDoubleClickedClosed));
                 }
                 "left-tpl-clicked" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftTripleClickedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2074,7 +2037,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::LeftTripleClickedClosed));
                 }
                 "right-pressed" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::RightPressedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2097,7 +2060,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::RightPressedClosed));
                 }
                 "right-down" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::RightDownOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2121,7 +2084,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::RightDownClosed));
                 }
                 "right-released" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::RightReleasedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2147,7 +2110,7 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
                     configs.push(Layout::Element(Element::RightReleasedClosed));
                 }
                 "right-clicked" => {
-                    match parameter_check::<Event>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config, "", "") {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::RightClickedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2367,12 +2330,9 @@ fn process_configs<Event: Clone + Debug + Default + PartialEq + FromStr>(
 /// Returns owned values (rather than references into `commands`) so the
 /// caller can hold this independently of the `&mut` borrow `set_layout`
 /// itself needs on `commands`.
-fn extract_page_locals<Event>(
-    commands: &[Layout<Event>],
-) -> HashMap<GlobalSymbol, DataSrc<Declaration<Event>>>
-where
-    Event: Clone + Debug + PartialEq + Default,
-{
+fn extract_page_locals(
+    commands: &[Layout],
+) -> HashMap<GlobalSymbol, DataSrc<Declaration>> {
     let mut locals = HashMap::new();
     let mut depth: u32 = 0;
     for command in commands {
@@ -2406,13 +2366,10 @@ where
 /// bindings) with whatever locals were already visible around it (`outer` -
 /// e.g. the page-level ones from [`extract_page_locals`]), so a nested
 /// scope doesn't lose access to them. `inner` wins on name collisions.
-fn merge_locals<'a, Event>(
-    outer: Option<&HashMap<GlobalSymbol, &'a DataSrc<Declaration<Event>>>>,
-    inner: &HashMap<GlobalSymbol, &'a DataSrc<Declaration<Event>>>,
-) -> HashMap<GlobalSymbol, &'a DataSrc<Declaration<Event>>>
-where
-    Event: Clone + Debug + PartialEq + Default,
-{
+fn merge_locals<'a>(
+    outer: Option<&HashMap<GlobalSymbol, &'a DataSrc<Declaration>>>,
+    inner: &HashMap<GlobalSymbol, &'a DataSrc<Declaration>>,
+) -> HashMap<GlobalSymbol, &'a DataSrc<Declaration>> {
     let mut merged = outer.cloned().unwrap_or_default();
     merged.extend(inner.iter().map(|(name, value)| (*name, *value)));
     merged
@@ -2420,33 +2377,27 @@ where
 
 /// Owns every page and reusable snippet a `markdown` document was parsed
 /// into, and drives them against the layout engine each frame.
-pub struct Binder<Event, UserApp>
+pub struct Binder<UserApp>
 where
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
-    pages: HashMap<String, Vec<Layout<Event>>>,
-    pub reusable: HashMap<GlobalSymbol, Vec<Layout<Event>>>,
+    pages: HashMap<String, Vec<Layout>>,
+    pub reusable: HashMap<GlobalSymbol, Vec<Layout>>,
     _x: std::marker::PhantomData<UserApp>,
 }
 
-impl<Event, UserApp> Default for Binder<Event, UserApp>
+impl<UserApp> Default for Binder<UserApp>
 where
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Event, UserApp> Binder<Event, UserApp>
+impl<UserApp> Binder<UserApp>
 where
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     pub fn new() -> Self {
         Self {
@@ -2457,12 +2408,12 @@ where
     }
 
     /// Adds a page, replacing any existing page of the same name.
-    pub fn add_page(&mut self, name: &str, page: Vec<Layout<Event>>) {
+    pub fn add_page(&mut self, name: &str, page: Vec<Layout>) {
         self.pages.insert(name.to_string(), page);
     }
 
     /// Adds a reusable snippet, replacing any existing one of the same name.
-    pub fn add_reusable(&mut self, name: &str, reusable: Vec<Layout<Event>>) {
+    pub fn add_reusable(&mut self, name: &str, reusable: Vec<Layout>) {
         self.reusable.insert(GlobalSymbol::new(name), reusable);
     }
 
@@ -2474,10 +2425,8 @@ where
     /// This only parses `markdown_source` - reading it from disk (or
     /// embedding it with `include_str!`) is left to the caller.
     pub fn load_layout(&mut self, markdown_source: &str) -> Result<String, String>
-    where
-        <Event as FromStr>::Err: Debug,
     {
-        let (page_name, body, reusables) = process_layout::<Event>(markdown_source.to_string())?;
+        let (page_name, body, reusables) = process_layout(markdown_source.to_string())?;
         for (name, reusable) in reusables {
             self.add_reusable(&name, reusable);
         }
@@ -2487,7 +2436,7 @@ where
 
     /// Replaces an existing page, returning `false` (and leaving it
     /// untouched) if `name` isn't a known page.
-    pub fn replace_page(&mut self, name: &str, page: Vec<Layout<Event>>) -> bool {
+    pub fn replace_page(&mut self, name: &str, page: Vec<Layout>) -> bool {
         if !self.pages.contains_key(name) {
             return false;
         }
@@ -2497,7 +2446,7 @@ where
 
     /// Replaces an existing reusable snippet, returning `false` (and
     /// leaving it untouched) if `name` isn't a known reusable.
-    pub fn replace_reusable(&mut self, name: &str, reusable: Vec<Layout<Event>>) -> bool {
+    pub fn replace_reusable(&mut self, name: &str, reusable: Vec<Layout>) -> bool {
         let name = GlobalSymbol::new(name);
         if !self.reusable.contains_key(&name) {
             return false;
@@ -2512,27 +2461,27 @@ where
     ///
     /// ```ignore
     /// if let Some(events) = binder.set_page(page, api, mt, &mut self) {
-    ///     for (event, context) in events {
-    ///         event.dispatch(&mut self, context, api);
+    ///     for (name, context) in events {
+    ///         self.dispatch_event(&name, context, api);
     ///     }
     /// }
     /// ```
     pub fn set_page(
         &mut self,
         page: &str,
-        api: &mut API<Event, UserApp>,
+        api: &mut API<UserApp>,
         mt: &mut MT,
         user_app: &mut UserApp,
-    ) -> Option<Vec<(Event, Option<EventContext>)>>
+    ) -> Option<Vec<(GlobalSymbol, Option<EventContext>)>>
     where
-        UserApp: LayoutRunnerCustomElements<Event, UserApp>,
+        UserApp: LayoutReflector<UserApp>,
     {
         let layout_commands = self.pages.get_mut(page)?;
 
         // Owned so it can outlive the `&mut layout_commands` borrow below -
         // see `extract_page_locals`.
         let page_locals_owned = extract_page_locals(layout_commands);
-        let page_locals: HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>> = page_locals_owned
+        let page_locals: HashMap<GlobalSymbol, &DataSrc<Declaration>> = page_locals_owned
             .iter()
             .map(|(name, value)| (*name, value))
             .collect();
@@ -2561,16 +2510,14 @@ where
 /// `if-index`/`if-index-not`'s condition: true when inside a `list` and the
 /// current iteration index equals `index`; always false outside any list
 /// (there's no iteration index to compare against).
-fn index_matches<Event, UserApp>(
+fn index_matches<UserApp>(
     index: &DataSrc<f32>,
-    locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+    locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
     user_app: &UserApp,
     list_data: &Option<(GlobalSymbol, usize)>,
 ) -> bool
 where
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     let Some((_, current_index)) = list_data else {
         return false;
@@ -2579,32 +2526,30 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn set_layout<Event, UserApp>(
-    api: &mut API<Event, UserApp>,
+fn set_layout<UserApp>(
+    api: &mut API<UserApp>,
     mt: &mut MT,
-    commands: &mut [Layout<Event>],
-    reusables: &mut HashMap<GlobalSymbol, Vec<Layout<Event>>>,
-    locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+    commands: &mut [Layout],
+    reusables: &mut HashMap<GlobalSymbol, Vec<Layout>>,
+    locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
     list_data: Option<(GlobalSymbol, usize)>,
     config: &mut ElementConfiguration,
     text_config: &mut TextConfig,
     user_app: &mut UserApp,
-    mut events: Vec<(Event, Option<EventContext>)>,
+    mut events: Vec<(GlobalSymbol, Option<EventContext>)>,
     mut pointer: winit::window::CursorIcon,
 ) -> (
-    Vec<(Event, Option<EventContext>)>,
+    Vec<(GlobalSymbol, Option<EventContext>)>,
     winit::window::CursorIcon,
 )
 where
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event> + LayoutRunnerCustomElements<Event, UserApp>,
+    UserApp: LayoutRunnerReflection + LayoutReflector<UserApp>,
 {
     let mut nesting_level: u32 = 0;
     let mut skip: Option<u32> = None;
 
-    let mut recursive_commands = Vec::<Layout<Event>>::new();
-    let mut recursive_call_stack = HashMap::<GlobalSymbol, &DataSrc<Declaration<Event>>>::new();
+    let mut recursive_commands = Vec::<Layout>::new();
+    let mut recursive_call_stack = HashMap::<GlobalSymbol, &DataSrc<Declaration>>::new();
     let mut collect_declarations = false;
     let mut collect_list_commands = false;
 
@@ -2621,7 +2566,7 @@ where
                     skip = None;
                     if let Some(event) = $event {
                         events.push((
-                            Event::resolve_src(event, locals, user_app, &list_data),
+                            GlobalSymbol::resolve_src(event, locals, user_app, &list_data),
                             build_event_context(&list_data),
                         ));
                     }
@@ -2989,7 +2934,7 @@ where
 
                     Element::FunctionCall(name) => {
                         if skip.is_none() {
-                            user_app.dispatch(name, api, mt);
+                            user_app.dispatch_custom_element(name, api, mt);
                         }
                     }
                 }
@@ -3020,19 +2965,17 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_config<Event, UserApp>(
+fn execute_config<UserApp>(
     config_command: &mut Config,
     config: &mut ElementConfiguration,
     text_config: &mut TextConfig,
-    reusables: &HashMap<GlobalSymbol, Vec<Layout<Event>>>,
-    locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+    reusables: &HashMap<GlobalSymbol, Vec<Layout>>,
+    locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
     list_data: &Option<(GlobalSymbol, usize)>,
-    api: &mut API<Event, UserApp>,
+    api: &mut API<UserApp>,
     user_app: &UserApp,
 ) where
-    Event: FromStr + Clone + PartialEq + Debug + Default + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     match config_command {
         Config::Id(id) => {
@@ -3367,42 +3310,38 @@ fn execute_config<Event, UserApp>(
 // Resolving a DataSrc<T>/GlobalSymbol into a concrete value
 // ---------------------------------------------------------------------------
 
-trait ResolveValue<'frame, 'application, Event, UserApp>
+trait ResolveValue<'frame, 'application, UserApp>
 where
     'application: 'frame,
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
-    type DeclarationType: Default;
+    type DeclarationType;
     type ReturnType;
     fn resolve_src(
         var: &'frame DataSrc<Self::DeclarationType>,
-        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration>>>,
         user_app: &'application UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType;
     fn resolve_name(
         var: &GlobalSymbol,
-        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration>>>,
         user_app: &'application UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType;
 }
 
-impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
     for UIImageDescriptor
 where
     'application: 'frame,
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     type DeclarationType = Option<&'frame UIImageDescriptor>;
     type ReturnType = Option<&'frame UIImageDescriptor>;
     fn resolve_name(
         name: &GlobalSymbol,
-        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration>>>,
         user_app: &'application UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3420,7 +3359,7 @@ where
     }
     fn resolve_src(
         _var: &'frame DataSrc<Self::DeclarationType>,
-        _locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        _locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration>>>,
         _user_app: &'application UserApp,
         _list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3428,19 +3367,17 @@ where
     }
 }
 
-impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
     for Color
 where
     'application: 'frame,
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     type DeclarationType = Color;
     type ReturnType = Color;
     fn resolve_name(
         name: &GlobalSymbol,
-        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration>>>,
         user_app: &'application UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3464,7 +3401,7 @@ where
     }
     fn resolve_src(
         var: &'frame DataSrc<Self::DeclarationType>,
-        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration>>>,
         user_app: &'application UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3475,19 +3412,17 @@ where
     }
 }
 
-impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
     for String
 where
     'application: 'frame,
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     type DeclarationType = String;
     type ReturnType = &'frame str;
     fn resolve_name(
         name: &GlobalSymbol,
-        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration>>>,
         user_app: &'application UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3511,7 +3446,7 @@ where
     }
     fn resolve_src(
         var: &'frame DataSrc<Self::DeclarationType>,
-        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &'frame DataSrc<Declaration>>>,
         user_app: &'application UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3522,19 +3457,17 @@ where
     }
 }
 
-impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
     for f32
 where
     'application: 'frame,
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     type DeclarationType = f32;
     type ReturnType = f32;
     fn resolve_src(
         var: &DataSrc<Self::DeclarationType>,
-        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
         user_app: &UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3545,7 +3478,7 @@ where
     }
     fn resolve_name(
         name: &GlobalSymbol,
-        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
         user_app: &UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3567,19 +3500,17 @@ where
     }
 }
 
-impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
     for u16
 where
     'application: 'frame,
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     type DeclarationType = u16;
     type ReturnType = u16;
     fn resolve_src(
         var: &DataSrc<Self::DeclarationType>,
-        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
         user_app: &UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3590,7 +3521,7 @@ where
     }
     fn resolve_name(
         name: &GlobalSymbol,
-        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
         user_app: &UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3614,19 +3545,17 @@ where
     }
 }
 
-impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
     for i16
 where
     'application: 'frame,
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     type DeclarationType = i16;
     type ReturnType = i16;
     fn resolve_src(
         var: &DataSrc<Self::DeclarationType>,
-        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
         user_app: &UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3637,7 +3566,7 @@ where
     }
     fn resolve_name(
         name: &GlobalSymbol,
-        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
         user_app: &UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3661,19 +3590,17 @@ where
     }
 }
 
-impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
     for bool
 where
     'application: 'frame,
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
     type DeclarationType = bool;
     type ReturnType = bool;
     fn resolve_src(
         var: &DataSrc<Self::DeclarationType>,
-        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
         user_app: &UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3684,7 +3611,7 @@ where
     }
     fn resolve_name(
         name: &GlobalSymbol,
-        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
         user_app: &UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3706,19 +3633,17 @@ where
     }
 }
 
-impl<'frame, 'application, Event, UserApp> ResolveValue<'frame, 'application, Event, UserApp>
-    for Event
+impl<'frame, 'application, UserApp> ResolveValue<'frame, 'application, UserApp>
+    for GlobalSymbol
 where
     'application: 'frame,
-    Event: FromStr + Clone + PartialEq + Default + Debug + EventHandler<UserApplication = UserApp>,
-    <Event as FromStr>::Err: Debug,
-    UserApp: LayoutRunnerReflection<Event>,
+    UserApp: LayoutRunnerReflection,
 {
-    type DeclarationType = Event;
-    type ReturnType = Event;
+    type DeclarationType = GlobalSymbol;
+    type ReturnType = GlobalSymbol;
     fn resolve_src(
         var: &DataSrc<Self::DeclarationType>,
-        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
         user_app: &UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3729,7 +3654,7 @@ where
     }
     fn resolve_name(
         name: &GlobalSymbol,
-        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration<Event>>>>,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
         user_app: &UserApp,
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
@@ -3746,7 +3671,9 @@ where
         {
             value.clone()
         } else {
-            user_app.get_event(name, list_data).unwrap_or_default()
+            user_app
+                .get_event(name, list_data)
+                .unwrap_or_else(|| GlobalSymbol::new(""))
         }
     }
 }
@@ -3754,29 +3681,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Clone, Debug, Default, PartialEq)]
-    struct NoEvent;
-
-    impl FromStr for NoEvent {
-        type Err = ();
-        fn from_str(_: &str) -> Result<Self, Self::Err> {
-            Ok(NoEvent)
-        }
-    }
-
-    impl EventHandler for NoEvent {
-        type UserApplication = ();
-        fn dispatch(
-            &self,
-            _app: &mut (),
-            _context: Option<EventContext>,
-            _api: &mut API<NoEvent, ()>,
-        ) {
-        }
-    }
-
-    impl LayoutRunnerReflection<NoEvent> for () {}
 
     /// The parser should turn `src/layouts/main.md` into a non-empty,
     /// flattened command stream without panicking or erroring.
@@ -3786,7 +3690,7 @@ mod tests {
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/layouts/main.md"))
                 .unwrap();
         let (page_name, body, reusables) =
-            process_layout::<NoEvent>(file).expect("main.md should parse");
+            process_layout(file).expect("main.md should parse");
 
         assert_eq!(page_name, "-Main");
         assert!(!body.is_empty());
