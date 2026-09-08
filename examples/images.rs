@@ -1,4 +1,3 @@
-use image::load_from_memory;
 use telera_app::*;
 
 /// `Image Viewer.md` shows all three ways a layout gets an image:

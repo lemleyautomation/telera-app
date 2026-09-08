@@ -47,8 +47,11 @@ enum FieldKind {
     Text,
     Color,
     Image,
-    /// A `Vec<T>`; the element type's identifier (e.g. `Document`).
-    List(Ident),
+    /// A `Vec<T>`. Carries the element type's own [`FieldKind`] when `T` is a
+    /// primitive we can expose directly (`Vec<String>`, `Vec<f32>`, `Vec<bool>`,
+    /// `Vec<Color>`, `Vec<UIImageDescriptor>`); `None` when `T` is a struct that
+    /// has to provide its fields through `T: FieldAccess`.
+    List(Option<Box<FieldKind>>),
 }
 
 fn classify_field_type(ty: &Type) -> Option<FieldKind> {
@@ -70,10 +73,10 @@ fn classify_field_type(ty: &Type) -> Option<FieldKind> {
             let PathArguments::AngleBracketed(args) = &segment.arguments else {
                 return None;
             };
-            let Some(GenericArgument::Type(Type::Path(inner))) = args.args.first() else {
+            let Some(GenericArgument::Type(inner)) = args.args.first() else {
                 return None;
             };
-            Some(FieldKind::List(inner.path.segments.last()?.ident.clone()))
+            Some(FieldKind::List(classify_field_type(inner).map(Box::new)))
         }
         _ => None,
     }
@@ -156,7 +159,7 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                         #field_name => return Some(&self.#field_ident),
                     });
                 }
-                FieldKind::List(_element_type) => {
+                FieldKind::List(element_kind) => {
                     plain_list_length.push(quote::quote! {
                         #field_name => Some(self.#field_ident.len()),
                     });
@@ -170,47 +173,93 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                         });
                     }
 
-                    if !has_attr(&field.attrs, "no_field_access") {
-                        list_bool.push(quote::quote! {
-                            if list_key == #field_name
-                                && let Some(item) = self.#field_ident.get(*index)
-                                && let Some(value) = telera_app::FieldAccess::field_bool(item, name)
-                            {
-                                return Some(value);
+                    if has_attr(&field.attrs, "no_field_access") {
+                        // Only `get_list_length` for this field.
+                    } else {
+                        match element_kind.as_deref() {
+                            // `Vec<String>` / `Vec<f32>` / ... - the item *is* the
+                            // value, so any lookup name inside the list resolves to
+                            // it. No `T: FieldAccess` bound needed.
+                            Some(FieldKind::Text) => list_text.push(quote::quote! {
+                                if list_key == #field_name
+                                    && let Some(item) = self.#field_ident.get(*index)
+                                {
+                                    return Some(item);
+                                }
+                            }),
+                            Some(FieldKind::Bool) => list_bool.push(quote::quote! {
+                                if list_key == #field_name
+                                    && let Some(item) = self.#field_ident.get(*index)
+                                {
+                                    return Some(*item);
+                                }
+                            }),
+                            Some(FieldKind::Numeric) => list_numeric.push(quote::quote! {
+                                if list_key == #field_name
+                                    && let Some(item) = self.#field_ident.get(*index)
+                                {
+                                    return Some(*item as f32);
+                                }
+                            }),
+                            Some(FieldKind::Color) => list_color.push(quote::quote! {
+                                if list_key == #field_name
+                                    && let Some(item) = self.#field_ident.get(*index)
+                                {
+                                    return Some(item);
+                                }
+                            }),
+                            Some(FieldKind::Image) => list_image.push(quote::quote! {
+                                if list_key == #field_name
+                                    && let Some(item) = self.#field_ident.get(*index)
+                                {
+                                    return Some(item);
+                                }
+                            }),
+                            // `Vec<SomeStruct>` - each item supplies its own fields
+                            // through `T: FieldAccess` (normally `#[derive(FieldAccess)]`).
+                            _ => {
+                                list_bool.push(quote::quote! {
+                                    if list_key == #field_name
+                                        && let Some(item) = self.#field_ident.get(*index)
+                                        && let Some(value) = telera_app::FieldAccess::field_bool(item, name)
+                                    {
+                                        return Some(value);
+                                    }
+                                });
+                                list_numeric.push(quote::quote! {
+                                    if list_key == #field_name
+                                        && let Some(item) = self.#field_ident.get(*index)
+                                        && let Some(value) = telera_app::FieldAccess::field_numeric(item, name)
+                                    {
+                                        return Some(value);
+                                    }
+                                });
+                                list_text.push(quote::quote! {
+                                    if list_key == #field_name
+                                        && let Some(item) = self.#field_ident.get(*index)
+                                        && let Some(value) = telera_app::FieldAccess::field_text(item, name)
+                                    {
+                                        return Some(value);
+                                    }
+                                });
+                                list_color.push(quote::quote! {
+                                    if list_key == #field_name
+                                        && let Some(item) = self.#field_ident.get(*index)
+                                        && let Some(value) = telera_app::FieldAccess::field_color(item, name)
+                                    {
+                                        return Some(value);
+                                    }
+                                });
+                                list_image.push(quote::quote! {
+                                    if list_key == #field_name
+                                        && let Some(item) = self.#field_ident.get(*index)
+                                        && let Some(value) = telera_app::FieldAccess::field_image(item, name)
+                                    {
+                                        return Some(value);
+                                    }
+                                });
                             }
-                        });
-                        list_numeric.push(quote::quote! {
-                            if list_key == #field_name
-                                && let Some(item) = self.#field_ident.get(*index)
-                                && let Some(value) = telera_app::FieldAccess::field_numeric(item, name)
-                            {
-                                return Some(value);
-                            }
-                        });
-                        list_text.push(quote::quote! {
-                            if list_key == #field_name
-                                && let Some(item) = self.#field_ident.get(*index)
-                                && let Some(value) = telera_app::FieldAccess::field_text(item, name)
-                            {
-                                return Some(value);
-                            }
-                        });
-                        list_color.push(quote::quote! {
-                            if list_key == #field_name
-                                && let Some(item) = self.#field_ident.get(*index)
-                                && let Some(value) = telera_app::FieldAccess::field_color(item, name)
-                            {
-                                return Some(value);
-                            }
-                        });
-                        list_image.push(quote::quote! {
-                            if list_key == #field_name
-                                && let Some(item) = self.#field_ident.get(*index)
-                                && let Some(value) = telera_app::FieldAccess::field_image(item, name)
-                            {
-                                return Some(value);
-                            }
-                        });
+                        }
                     }
                 }
             }

@@ -89,7 +89,7 @@
                         - `padding-right`8
                         - `padding-bottom` 8
                         - `floating`
-                            - `offset` `y` 40
+                            - `offset-y` 40
                             - `attach`
                                 - `element`
                                 - `parent`
@@ -128,6 +128,25 @@
                 - `width-fixed` 250
                 - `height-grow`
                 - `radius-all` 8
+            - element search box
+              - config
+                - color white
+                - radius-all 10
+                - padding-all 12
+                - padding-left 6
+                - width-grow
+                - height-fixed 40
+                - border-all 4
+                - border-color black
+                - focus
+                  - border-color blue
+                - key-event key_event
+                - scroll-horizontal
+              - text
+                - `config`
+                  - `font-size` 24
+                  - `color` black
+                - *search_bar*
             - `list` Documents
                 - `if-index` selected_document
                     - `element`
@@ -161,7 +180,7 @@
         - `element` main content
             - `config`
                 - `color` *content background color*
-                - `scroll` `y`
+                - `scroll-vertical`
                 - `vertical`
                 - `child-gap` 16
                 - `padding-all` 16

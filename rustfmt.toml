@@ -1,0 +1,5 @@
+empty_item_single_line = "False"
+fn_args_layout = "Compressed"
+use_small_heuristics = "Max"
+max_width = 500
+imports_granularity = "Crate"

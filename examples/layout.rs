@@ -12,7 +12,6 @@ struct LayoutApp {
     documents: Vec<Document>,
     selected_document: usize,
     file_menu_opened: bool,
-    #[allow(dead_code)]
     search_bar: String,
 }
 
@@ -21,6 +20,23 @@ impl LayoutApp {
     #[layout_event]
     fn file_button_clicked(&mut self, _context: Option<EventContext>, _api: &mut API) {
         self.file_menu_opened = !self.file_menu_opened;
+    }
+
+    #[layout_event]
+    fn key_event(&mut self, _context: Option<EventContext>, api: &mut API) {
+        for key in api.key_events() {
+            // winit reports every physical key twice - once `Pressed`, once
+            // `Released` - and fills in `text` on both, so acting on anything
+            // other than `Pressed` types each character again on key-up.
+            if key.state != ElementState::Pressed {
+                continue;
+            }
+            if key.logical_key == Key::Named(NamedKey::Backspace) {
+                self.search_bar.pop();
+            } else if let Some(text) = &key.text {
+                self.search_bar.push_str(text);
+            }
+        }
     }
 
     #[layout_event]

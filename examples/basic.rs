@@ -43,7 +43,7 @@ impl App for BasicApp {
 
     #[layout_fn]
     fn layout(&mut  self, page: &str, api: &mut API) {
-        for input in api.keyboard_buffer.drain(..) {
+        for input in api.key_events().to_vec() {
             process_keyboard_input(&self.search_bar, input);
         }
 
@@ -180,7 +180,7 @@ impl App for BasicApp {
                     header,
                     e!(
                         if api.l.hovered() {
-                            if api.left_mouse_clicked {
+                            if api.left_mouse_clicked() {
                                 self.file_menu_open = !self.file_menu_open;
                             }
                             hovered_file_button
@@ -249,7 +249,7 @@ impl App for BasicApp {
                         side_bar,
                         for i in 0..self.documents.len() {
                             api.l.open_element();
-                            if api.l.hovered() && api.left_mouse_clicked {
+                            if api.l.hovered() && api.left_mouse_clicked() {
                                 api.l.configure_element(&clicked_side_bar_button);
                                 self.selected_document = i;
                             }

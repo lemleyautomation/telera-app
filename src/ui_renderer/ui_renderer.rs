@@ -20,7 +20,24 @@ use wgpu::util::DeviceExt;
 
 use telera_layout::{MeasureText, RenderCommand, Vec2};
 
-use crate::ui_toolkit::ui_shapes::CustomElement;
+use symbol_table::GlobalSymbol;
+
+/// Per-instance configuration for a `line` custom element.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct LineConfig {
+    pub width_source: Option<GlobalSymbol>,
+    pub width: f32,
+}
+
+/// The custom layout elements this renderer knows how to draw, threaded through
+/// the layout engine as its custom-element payload.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub enum CustomElement {
+    #[default]
+    Circle,
+    Line(LineConfig),
+    RenderWindow,
+}
 
 pub struct TextLine {
     line: glyphon::Buffer,
@@ -259,6 +276,13 @@ pub struct UIRenderer {
 
     pub render_pipeline: Option<wgpu::RenderPipeline>,
 
+    /// Blits the per-window cached UI texture over the 3D scene each frame.
+    /// Built in `build_shaders` (it needs the surface format); the layout and
+    /// sampler it uses are format-independent and made in `new`.
+    composite_pipeline: Option<wgpu::RenderPipeline>,
+    composite_bind_group_layout: wgpu::BindGroupLayout,
+    composite_sampler: wgpu::Sampler,
+
     pub font_system: FontSystem,
     swash_cache: SwashCache,
     text_viewport: Option<glyphon::Viewport>,
@@ -382,6 +406,39 @@ impl UIRenderer {
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
         });
 
+        let composite_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("ui_composite_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ui_composite_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let measurement_buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
@@ -405,6 +462,9 @@ impl UIRenderer {
             new_atlas_binding_required: false,
 
             render_pipeline: None,
+            composite_pipeline: None,
+            composite_bind_group_layout,
+            composite_sampler,
 
             font_system,
             swash_cache,
@@ -468,6 +528,12 @@ impl UIRenderer {
             },
         ));
 
+        self.composite_pipeline = Some(build_composite_pipeline(
+            device,
+            config.format,
+            &self.composite_bind_group_layout,
+        ));
+
         let cache = Cache::new(device);
         let mut atlas = TextAtlas::new(device, queue, &cache, config.format);
         let text_renderer = TextRenderer::new(
@@ -490,6 +556,27 @@ impl UIRenderer {
         self.text_viewport = Some(Viewport::new(device, &cache));
         self.text_atlas = Some(atlas);
         self.text_renderer = Some(text_renderer);
+    }
+
+    /// Layout + sampler a [`UiSurface`](crate::graphics::ui_surface::UiSurface)
+    /// binds its colour texture into for compositing. Format-independent, so
+    /// they exist from `new` (before `build_shaders`).
+    pub fn composite_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.composite_bind_group_layout
+    }
+    pub fn composite_sampler(&self) -> &wgpu::Sampler {
+        &self.composite_sampler
+    }
+
+    /// Draws the cached UI texture (via `bind_group`) over whatever is already in
+    /// the render pass's colour target. The pass must have no depth attachment.
+    pub fn composite(&self, render_pass: &mut wgpu::RenderPass, bind_group: &wgpu::BindGroup) {
+        let Some(pipeline) = &self.composite_pipeline else {
+            return;
+        };
+        render_pass.set_pipeline(pipeline);
+        render_pass.set_bind_group(0, bind_group, &[]);
+        render_pass.draw(0..3, 0..1);
     }
 
     pub fn resize(&mut self, size: (i32, i32), queue: &wgpu::Queue) {
@@ -1496,6 +1583,168 @@ impl UIPipeline {
 
         device.create_render_pipeline(&render_pip_desc)
     }
+}
+
+/// Builds the fullscreen-triangle pipeline that composites a cached UI texture
+/// (see `ui_composite.wgsl`) over the 3D scene. Alpha-blended, no vertex
+/// buffers, no depth attachment.
+fn build_composite_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("UI Composite Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("ui_composite.wgsl").into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("UI Composite Pipeline Layout"),
+        bind_group_layouts: &[bind_group_layout],
+        push_constant_ranges: &[],
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("UI Composite Pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    })
+}
+
+/// A 64-bit hash of everything that affects the pixels `render_layout` would
+/// draw for `commands`. When two consecutive frames hash to the same value the
+/// UI render pass is skipped and the previous frame's texture is re-composited.
+pub fn commands_fingerprint(
+    commands: &[RenderCommand<'_, UIImageDescriptor, CustomElement, CustomLayoutSettings>],
+    dpi_scale: f32,
+    viewport_size: (f32, f32),
+) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut h = DefaultHasher::new();
+
+    fn f(h: &mut DefaultHasher, x: f32) {
+        x.to_bits().hash(h);
+    }
+    fn bbox(h: &mut DefaultHasher, b: &telera_layout::BoundingBox) {
+        f(h, b.x);
+        f(h, b.y);
+        f(h, b.width);
+        f(h, b.height);
+    }
+    fn color(h: &mut DefaultHasher, c: &telera_layout::Color) {
+        f(h, c.r);
+        f(h, c.g);
+        f(h, c.b);
+        f(h, c.a);
+    }
+    fn radii(h: &mut DefaultHasher, r: &telera_layout::CornerRadii) {
+        f(h, r.top_left);
+        f(h, r.top_right);
+        f(h, r.bottom_left);
+        f(h, r.bottom_right);
+    }
+
+    f(&mut h, dpi_scale);
+    f(&mut h, viewport_size.0);
+    f(&mut h, viewport_size.1);
+
+    for command in commands {
+        match command {
+            RenderCommand::None => 0u8.hash(&mut h),
+            RenderCommand::Rectangle(r) => {
+                1u8.hash(&mut h);
+                r.id.hash(&mut h);
+                r.z_index.hash(&mut h);
+                bbox(&mut h, &r.bounding_box);
+                color(&mut h, &r.color);
+                radii(&mut h, &r.corner_radii);
+            }
+            RenderCommand::Border(b) => {
+                2u8.hash(&mut h);
+                b.id.hash(&mut h);
+                b.z_index.hash(&mut h);
+                bbox(&mut h, &b.bounding_box);
+                color(&mut h, &b.color);
+                radii(&mut h, &b.corner_radii);
+                b.width.left.hash(&mut h);
+                b.width.right.hash(&mut h);
+                b.width.top.hash(&mut h);
+                b.width.bottom.hash(&mut h);
+                b.width.between_children.hash(&mut h);
+            }
+            RenderCommand::Text(t) => {
+                3u8.hash(&mut h);
+                t.id.hash(&mut h);
+                t.z_index.hash(&mut h);
+                t.text.as_bytes().hash(&mut h);
+                bbox(&mut h, &t.bounding_box);
+                color(&mut h, &t.color);
+                t.font_id.hash(&mut h);
+                t.font_size.hash(&mut h);
+                t.letter_spacing.hash(&mut h);
+                t.line_height.hash(&mut h);
+            }
+            RenderCommand::Image(i) => {
+                4u8.hash(&mut h);
+                i.id.hash(&mut h);
+                i.z_index.hash(&mut h);
+                bbox(&mut h, &i.bounding_box);
+                color(&mut h, &i.background_color);
+                i.data.atlas.as_bytes().hash(&mut h);
+                f(&mut h, i.data.u1);
+                f(&mut h, i.data.v1);
+                f(&mut h, i.data.u2);
+                f(&mut h, i.data.v2);
+            }
+            RenderCommand::Custom(c) => {
+                5u8.hash(&mut h);
+                c.id.hash(&mut h);
+                c.z_index.hash(&mut h);
+                bbox(&mut h, &c.bounding_box);
+                color(&mut h, &c.background_color);
+                radii(&mut h, &c.corner_radii);
+                match c.data {
+                    CustomElement::Circle => 0u8.hash(&mut h),
+                    CustomElement::RenderWindow => 1u8.hash(&mut h),
+                    CustomElement::Line(line) => {
+                        2u8.hash(&mut h);
+                        line.width_source.hash(&mut h);
+                        line.width.to_bits().hash(&mut h);
+                    }
+                }
+            }
+            RenderCommand::ScissorStart(b) => {
+                6u8.hash(&mut h);
+                bbox(&mut h, b);
+            }
+            RenderCommand::ScissorEnd => 7u8.hash(&mut h),
+        }
+    }
+
+    h.finish()
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]

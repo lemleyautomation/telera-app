@@ -1,7 +1,7 @@
 # TML (Telera Markdown Language) Specification
 
 This document describes TML as implemented today by
-`src/ui_toolkit/layout_runner.rs` (the parser: `process_layout` /
+`src/ui_renderer/layout_runner.rs` (the parser: `process_layout` /
 `process_element` / `process_configs` / `process_variable`, and the runner:
 `Binder::set_page` / `set_layout` / `execute_config` / `ResolveValue`). It is
 a reference for the language surface that actually parses and runs, not an
@@ -97,11 +97,10 @@ file.
 
 Caveats, both a consequence of the pass running with no grammar context:
 
-- Only the **leading** keyword is touched. The inline-code argument markers a
-  few keywords still expect - `` `min` ``/`` `max` `` for the `*-grow` /
-  `*-fit` clamps, `` `x` ``/`` `y` `` for `scroll` / `offset`,
-  `` `width` ``/`` `height` `` for `floating-dimensions` - must still be
-  written with backticks.
+- Only the **leading** keyword is touched. Every config keyword takes at most a
+  single plain-text (or `*dynamic*`) value now, so the rest of the line is left
+  alone; a UV rect like `` `image` *atlas* `[0,0,1,1]` `` still needs its own
+  backticks around the bracketed list.
 - A plain-text line that *happens* to start with a keyword word (a `text`
   element whose content begins with `color`, `image`, `if`, `line`, ...) will
   be turned into a config or element. Write that line's backticks yourself,
@@ -407,21 +406,21 @@ literally.
 Config commands live inside a `config` block (`element`/`circle`/`line`) or
 a text element's own `config` block (text-only subset). Each row below
 gives the keyword, its argument shape, and what it sets. "single" means one
-value, static (plain text, parsed via `FromStr`) or dynamic (`*name*`);
-"min/max" means the keyword can appear with no argument, one of `` `min` ``/
-`` `max` `` plus a value, or both.
+value, static (plain text, parsed via `FromStr`) or dynamic (`*name*`). Every
+keyword takes at most one value; the clamped-sizing keywords come as a family
+(`width-grow`, `width-grow-min`, `width-grow-max`), and writing more than one
+member folds them into a single sizing rule.
 
 | Keyword | Shape | Effect |
 |---|---|---|
 | `grow` | none | element grows to fill both axes |
-| `width-grow` | none / `min`,`max` | grow horizontally, optionally clamped |
-| `height-grow` | none / `min`,`max` | grow vertically, optionally clamped |
+| `width-grow` / `width-grow-min` / `width-grow-max` | none / single (number) | grow horizontally; the `-min` / `-max` members clamp it (combine both for a range) |
+| `height-grow` / `height-grow-min` / `height-grow-max` | none / single (number) | grow vertically, same family shape |
 | `fit` | none | fit to content on both axes |
-| `width-fit` | none / `min`,`max` | fit to content horizontally, optionally clamped |
-| `height-fit` | none / `min`,`max` | fit to content vertically, optionally clamped |
+| `width-fit` / `width-fit-min` / `width-fit-max` | none / single (number) | fit to content horizontally, optionally clamped |
+| `height-fit` / `height-fit-min` / `height-fit-max` | none / single (number) | fit to content vertically, optionally clamped |
 | `width-fixed` | single (number) | fixed width |
 | `height-fixed` | single (number) | fixed height |
-| `fixed` | `width`,`height` (min/max-style pair) | fixed width and height in one keyword |
 | `fixed-square` | single (number) | fixed width *and* height, both set to the same value |
 | `width-percent` | single (number) | width as a percentage of the parent |
 | `height-percent` | single (number) | height as a percentage of the parent |
@@ -440,13 +439,13 @@ value, static (plain text, parsed via `FromStr`) or dynamic (`*name*`);
 | `border-all` | single (number) | border width, all sides |
 | `border-top`/`-left`/`-bottom`/`-right` | single (number) | border width, one side |
 | `border-in-between` | single (number) | border drawn between children |
-| `scroll` `` `x` ``/`` `y` `` | one or both of `` `x` ``/`` `y` `` as inline code | enables clipping/scrolling on that axis (both if both given). The child offset is driven automatically from the layout engine's scroll state each frame. |
+| `scroll-horizontal` / `scroll-vertical` | none | enables clipping/scrolling on that axis; use both keywords for both axes. The child offset is driven automatically from the layout engine's scroll state each frame. |
 | `id-indexed` | single (name) | like an `element` id, but folds the current `list`/`item` iteration index into the hash so each row gets a distinct id (no-op outside a list) |
 | `image` *name* / `image` name | single (name), emphasised or bare | resolve `name` to a `UIImageDescriptor` - a `set-image` declaration first, then the app's `get_image` (see [Images](#images)) |
 | `image` *atlas* `[u1, v1, u2, v2]` | name then a bracketed 4-float UV rect | an inline literal descriptor - no lookup; `atlas` is a name a `load` directive or the app staged |
-| `floating` | none, with a nested config list | takes the element out of flow; the nested list's commands (`offset`, `attatch-parent`, `attach-self`, the floating-only keywords below, plus ordinary configs) configure the floating placement |
-| `offset` (inside `floating`) | `x`,`y` (min/max-style pair) | floating offset from its attach point |
-| `floating-dimensions` | `width`,`height` (min/max-style pair) | fixed size for the floating box, independent of its content |
+| `floating` | none, with a nested config list | takes the element out of flow; the nested list's commands (`offset-x`/`offset-y`, `attatch-parent`, `attach-self`, the floating-only keywords below, plus ordinary configs) configure the floating placement |
+| `offset-x` / `offset-y` (inside `floating`) | single (number) | floating offset from its attach point on that axis (the unwritten axis is `0`) |
+| `floating-dimensions-width` / `floating-dimensions-height` | single (number) | fixed size for the floating box on that axis, independent of its content |
 | `z-index` | single (number, may be negative) | stacking order of the floating element |
 | `attatch-parent` | plain text: `top-left`/`center-left`/`bottom-left`/`top-center`/`center`/`bottom-center`/`top-right`/`center-right`/`bottom-right` | which point on the parent (or root) the floating element attaches to |
 | `attach-self` | same nine values | which point on the floating element itself is the attach point |
@@ -457,7 +456,9 @@ value, static (plain text, parsed via `FromStr`) or dynamic (`*name*`);
 | `pointer-pass-through` | none | pointer events fall through the floating element to whatever is behind it |
 | `use` name | plain text | inline a `## name` reusable config snippet here |
 | `hover` / `unhovered`* / `hovered`* | none, or single (event name), with a nested config list | opens a block whose configs only apply while the condition holds; see [Events](#6-events) |
-| `focus`* / `focused`* / `unfocused`* | same shape as `hover` | see [Known incomplete paths](#known-incomplete-paths) - parsed but never true |
+| `focus` | same shape as `hover` | gates its block (and fires its event) while this (named) element is the focused one |
+| `focused`* / `unfocused`* | same shape as `hover` | focus-*edge* events - see [Known incomplete paths](#known-incomplete-paths) |
+| `key-event` | same shape as `hover` | fires while this (named) element is focused **and** the window has unread key events this frame; the handler reads `api.key_events()`. Focus is checked by the runner - no need to nest it in `focus`. |
 | `left-pressed`/`left-down`/`left-released`/`left-clicked`/`left-dbl-clicked` | same shape as `hover` | mouse-button event blocks |
 | `left-tpl-clicked`* | same shape | parsed but never fires (no triple-click tracking) |
 | `right-pressed`/`right-down`/`right-released`/`right-clicked` | same shape as `hover` | right mouse-button event blocks |
@@ -571,6 +572,15 @@ The condition each keyword gates on:
 | `left-clicked` | hovered *and* a left click completed this frame |
 | `left-dbl-clicked` | hovered *and* a double-click completed this frame |
 | `right-pressed`/`right-down`/`right-released`/`right-clicked` | same, right mouse button |
+| `focus` | this (named) element is the focused element |
+| `key-event` | this (named) element is focused *and* the window has key events queued this frame |
+
+Focus follows the pointer: a left or right mouse-*down* focuses the topmost
+**named** element under the cursor (only named elements are focusable), or
+clears focus if that's empty space / an unnamed element. The runner tracks the
+focused element by its name, reachable from Rust as `api.focus()`. A
+capture-mode `floating` element blocks focus (and hover) from reaching whatever
+it covers.
 
 ## Known incomplete paths
 
@@ -581,15 +591,14 @@ working:
 
 - `hovered`, `unhovered` - need hover-*edge* tracking (`API` only tracks the
   current hovered state, not the transition) - the block is always skipped.
-- `focus`, `focused`, `unfocused` - need a resolved element id before
-  `Config::Id` is assigned - always skipped.
+- `focused`, `unfocused` - need focus-*edge* tracking (the runner tracks the
+  current focused element, not the transition) - the block is always skipped.
+  (`focus`, the "while focused" gate, does work.)
 - `left-tpl-clicked` - `API` doesn't track triple-clicks - always skipped.
 - `letter-spacing` - now parses into `Config::LetterSpacing` and is applied
   to `TextConfig::letter_spacing`, but the bundled renderer's text
   measurement / glyph layout (`UIRenderer`) ignores it, so it has no visible
   effect until a renderer that honors it is used.
-- `Config::Editable` - the enum variant exists but no keyword in
-  `process_configs` ever constructs it, and its execution arm is a no-op.
 - `Config::FloatingAttachElementToElement { other_element_id }` - always
   attaches to element id `0` regardless of `other_element_id`; the layout
   engine doesn't expose an id lookup yet. There is also no TML keyword that

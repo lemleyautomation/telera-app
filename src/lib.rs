@@ -1,5 +1,4 @@
-pub use image;
-pub use image::DynamicImage;
+pub use image::{self, DynamicImage, load_from_memory};
 use notify::Watcher as _;
 pub use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 pub use rkyv;
@@ -8,18 +7,19 @@ use std::{
     fmt::Debug,
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
-    time::Instant,
 };
 pub use symbol_table;
 pub use telera_macros::*;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop, EventLoopProxy},
 };
 pub use winit::{
     dpi::LogicalSize,
+    event::{ElementState, KeyEvent},
+    keyboard::{self, Key, KeyCode, NamedKey, PhysicalKey},
     window::{Window, WindowAttributes, WindowId},
 };
 
@@ -33,22 +33,21 @@ use graphics::{
 };
 const MULTI_SAMPLE_COUNT: u32 = 1;
 
-mod ui_toolkit;
-pub use ui_toolkit::layout_runner::{
+mod ui_renderer;
+pub use ui_renderer::layout_runner::{
     Binder, Config, DataSrc, Declaration, Element, EventContext, FieldAccess, ImageLoad, Layout,
     LayoutReflector, LayoutRunnerReflection, ParsedLayout, normalize_field_symbol, process_layout,
 };
-pub use ui_toolkit::telera_layout::{Color, ElementConfiguration, TextConfig};
-pub use ui_toolkit::ui_renderer::UIImageDescriptor;
-pub use ui_toolkit::ui_shapes::*;
-use ui_toolkit::{
-    telera_layout::LayoutEngine, ui_renderer::CustomLayoutSettings, ui_renderer::UIRenderer,
+pub use ui_renderer::telera_layout::{Color, ElementConfiguration, TextConfig};
+pub use ui_renderer::ui_renderer::{CustomElement, LineConfig, UIImageDescriptor};
+use ui_renderer::{
+    telera_layout::LayoutEngine, ui_renderer::CustomLayoutSettings,
+    ui_renderer::commands_fingerprint, ui_renderer::UIRenderer,
 };
 
 pub enum APIError {
     ModelNotFound,
 }
-
 /// Sent through the winit event loop's user-event channel by the
 /// background thread `spawn_layout_watcher` starts for `RunType::Watch` -
 /// `notify`'s watcher callback runs off the event-loop thread and can't
@@ -155,37 +154,101 @@ pub struct API {
 
     viewport_lookup: bimap::BiMap<String, WindowId>,
     viewports: HashMap<WindowId, Viewport>,
+    /// The window currently being updated / laid out / drawn. Set for the
+    /// duration of [`API::redraw_viewport`]; the public input accessors
+    /// (`left_mouse_clicked`, `mouse_position`, `key_events`, ...) read the
+    /// matching [`Viewport`], so layout code and event handlers transparently
+    /// see only the input for the window they're building.
+    active_window: Option<WindowId>,
+}
 
-    pub event_string: String,
+/// Per-window input accessors. Each reads the [`Viewport`] named by
+/// `active_window` (set for the duration of [`API::redraw_viewport`]), so layout
+/// code and event handlers see only the input for the window being built. Away
+/// from a redraw - or if the active window has gone - they return a neutral
+/// default rather than panicking.
+impl API {
+    fn active_viewport(&self) -> Option<&Viewport> {
+        self.viewports.get(&self.active_window?)
+    }
+    fn active_viewport_mut(&mut self) -> Option<&mut Viewport> {
+        self.viewports.get_mut(&self.active_window?)
+    }
 
-    pub keyboard_buffer: Vec<KeyEvent>,
+    pub fn dt(&self) -> f32 {
+        self.active_viewport().map_or(0.0, |v| v.dt)
+    }
+    pub fn window_size(&self) -> (f32, f32) {
+        self.active_viewport().map_or((0.0, 0.0), |v| v.size)
+    }
+    pub fn dpi_scale(&self) -> f32 {
+        self.active_viewport().map_or(1.0, |v| v.dpi_scale)
+    }
+    pub fn mouse_position(&self) -> (f32, f32) {
+        self.active_viewport().map_or((0.0, 0.0), |v| v.mouse_position)
+    }
+    pub fn mouse_delta(&self) -> (f32, f32) {
+        self.active_viewport().map_or((0.0, 0.0), |v| v.mouse_delta)
+    }
+    pub fn scroll_delta(&self) -> (f32, f32) {
+        self.active_viewport().map_or((0.0, 0.0), |v| v.scroll_delta)
+    }
+    pub fn x_at_click(&self) -> f32 {
+        self.active_viewport().map_or(0.0, |v| v.x_at_click)
+    }
+    pub fn y_at_click(&self) -> f32 {
+        self.active_viewport().map_or(0.0, |v| v.y_at_click)
+    }
+    /// The name of the element focused in the active window, or `None`.
+    pub fn focus(&self) -> Option<symbol_table::GlobalSymbol> {
+        self.active_viewport().and_then(|v| v.focus)
+    }
+    /// Sets (or, with `None`, clears) the active window's focused element. Called
+    /// by the layout runner as it walks the tree on a mouse-down frame.
+    pub(crate) fn set_focus(&mut self, focus: Option<symbol_table::GlobalSymbol>) {
+        if let Some(viewport) = self.active_viewport_mut() {
+            viewport.focus = focus;
+        }
+    }
 
-    pub window_size: (f32, f32),
-    pub left_mouse_pressed: bool,
-    pub left_mouse_down: bool,
-    pub left_mouse_released: bool,
-    pub left_mouse_clicked: bool,
-    #[allow(dead_code)]
-    left_mouse_double_clicked: bool,
-    left_mouse_clicked_timer: Option<Instant>,
-    _left_mouse_dbl_clicked_timer: Option<Instant>,
+    pub fn left_mouse_pressed(&self) -> bool {
+        self.active_viewport().is_some_and(|v| v.left_mouse_pressed)
+    }
+    pub fn left_mouse_down(&self) -> bool {
+        self.active_viewport().is_some_and(|v| v.left_mouse_down)
+    }
+    pub fn left_mouse_released(&self) -> bool {
+        self.active_viewport().is_some_and(|v| v.left_mouse_released)
+    }
+    pub fn left_mouse_clicked(&self) -> bool {
+        self.active_viewport().is_some_and(|v| v.left_mouse_clicked)
+    }
+    pub fn left_mouse_double_clicked(&self) -> bool {
+        self.active_viewport()
+            .is_some_and(|v| v.left_mouse_double_clicked)
+    }
+    pub fn right_mouse_pressed(&self) -> bool {
+        self.active_viewport().is_some_and(|v| v.right_mouse_pressed)
+    }
+    pub fn right_mouse_down(&self) -> bool {
+        self.active_viewport().is_some_and(|v| v.right_mouse_down)
+    }
+    pub fn right_mouse_released(&self) -> bool {
+        self.active_viewport().is_some_and(|v| v.right_mouse_released)
+    }
+    pub fn right_mouse_clicked(&self) -> bool {
+        self.active_viewport().is_some_and(|v| v.right_mouse_clicked)
+    }
 
-    right_mouse_pressed: bool,
-    right_mouse_down: bool,
-    right_mouse_released: bool,
-    right_mouse_clicked: bool,
-    right_mouse_clicked_timer: Option<Instant>,
-
-    pub x_at_click: f32,
-    pub y_at_click: f32,
-    pub focus: u32,
-
-    pub dpi_scale: f32,
-    pub mouse_poistion: (f32, f32),
-    pub mouse_delta: (f32, f32),
-    #[allow(dead_code)]
-    scroll_delta_time: Instant,
-    scroll_delta_distance: (f32, f32),
+    /// Key events that landed on the active window since its last redraw.
+    /// Cleared by `Viewport::end_frame` once the frame has consumed them, so a
+    /// layout or handler must read them the same frame they arrive.
+    pub fn key_events(&self) -> &[KeyEvent] {
+        self.active_viewport().map_or(&[], |v| v.key_events.as_slice())
+    }
+    pub fn event_string(&self) -> &str {
+        self.active_viewport().map_or("", |v| v.event_string.as_str())
+    }
 }
 
 // private api functions
@@ -222,7 +285,6 @@ impl API {
         self.viewports.remove(&window_id);
     }
     fn resize_viewport(&mut self, window_id: WindowId, size: PhysicalSize<u32>) {
-        self.window_size = (size.width as f32, size.height as f32);
         if let Some(viewport) = self.viewports.get_mut(&window_id) {
             viewport.resize(&self.device, size, MULTI_SAMPLE_COUNT);
         }
@@ -294,14 +356,14 @@ impl API {
                 );
             }
 
-            let viewport = Viewport {
+            let viewport = Viewport::new(
                 window,
                 page,
                 surface,
                 surface_config,
                 depth_texture,
                 multi_sample_texture,
-            };
+            );
 
             self.viewport_lookup.insert(name, window_id);
             self.viewports.insert(window_id, viewport);
@@ -311,6 +373,10 @@ impl API {
     where
         UserApp: App,
     {
+        // Everything from here to `end_frame` builds and draws *this* window;
+        // the input accessors read the viewport named here.
+        self.active_window = Some(window_id);
+
         let page = self
             .viewports
             .get(&window_id)
@@ -320,11 +386,17 @@ impl API {
             && let Some(page) = page
         {
             //println!("UI renderer good");
+            viewport.begin_frame();
             let size: (f32, f32) = viewport.window.inner_size().into();
-            self.dpi_scale = viewport.window.scale_factor() as f32;
+            // Copy the input this frame needs out while the viewport is borrowed;
+            // `self.l` / `run_layout` below need `self` exclusively.
+            let dpi_scale = viewport.dpi_scale;
+            let mouse_position = viewport.mouse_position;
+            let left_mouse_down = viewport.left_mouse_down;
+            let scroll_delta = viewport.scroll_delta;
 
             let mut ui_renderer = self.ui_renderer.take().unwrap();
-            ui_renderer.dpi_scale = self.dpi_scale;
+            ui_renderer.dpi_scale = dpi_scale;
             ui_renderer.resize((size.0 as i32, size.1 as i32), &self.queue);
 
             self.l.set_layout_dimensions(
@@ -332,14 +404,14 @@ impl API {
                 ui_renderer.viewport_size.1 / ui_renderer.dpi_scale,
             );
             self.l.pointer_state(
-                self.mouse_poistion.0 / ui_renderer.dpi_scale,
-                self.mouse_poistion.1 / ui_renderer.dpi_scale,
-                self.left_mouse_down,
+                mouse_position.0 / ui_renderer.dpi_scale,
+                mouse_position.1 / ui_renderer.dpi_scale,
+                left_mouse_down,
             );
             self.l.update_scroll_containers(
                 false,
-                (self.scroll_delta_distance.0 / ui_renderer.dpi_scale) * 3.0,
-                (self.scroll_delta_distance.1 / ui_renderer.dpi_scale) * 3.0,
+                (scroll_delta.0 / ui_renderer.dpi_scale) * 3.0,
+                (scroll_delta.1 / ui_renderer.dpi_scale) * 3.0,
                 0.016,
             );
             // Descriptors from the last frame's layout have been rendered; the
@@ -354,8 +426,6 @@ impl API {
             let (commands, ui_renderer) = self.l.end_layout();
             render_commands = commands;
             //            println!("{:#?}", render_commands);
-            self.scroll_delta_distance = (0.0, 0.0);
-            self.scroll_delta_time = Instant::now();
 
             Some(ui_renderer)
         } else {
@@ -365,6 +435,9 @@ impl API {
         if let Some(mut ui_renderer) = ui_renderer {
             if let Some(viewport) = self.viewports.get_mut(&window_id) {
                 let drawable = viewport.get_current_texture();
+                let drawable_view = drawable
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
                 //println!("render surface acquired");
                 let mut command_encoder =
                     self.device
@@ -372,67 +445,138 @@ impl API {
                             label: Some("Render Encoder"),
                         });
 
+                // The cached UI layer is only re-rendered when this frame's
+                // render commands differ from the ones already baked into it;
+                // otherwise the pass is skipped and step 3 just re-composites
+                // last frame's pixels over the freshly drawn scene.
+                viewport.ensure_ui_surface(
+                    &self.device,
+                    ui_renderer.composite_bind_group_layout(),
+                    ui_renderer.composite_sampler(),
+                );
+                let fingerprint = commands_fingerprint(
+                    &render_commands,
+                    ui_renderer.dpi_scale,
+                    ui_renderer.viewport_size,
+                );
+                let aspect = viewport.aspect();
+                let ui_surface = viewport.ui_surface.as_mut().unwrap();
+                let ui_dirty = ui_surface.last_fingerprint != Some(fingerprint);
+
                 if MULTI_SAMPLE_COUNT == 1 {
-                    //println!("beginning render pass");
-                    let mut render_pass: wgpu::RenderPass =
-                        command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("RenderPass"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &drawable
-                                    .texture
-                                    .create_view(&wgpu::TextureViewDescriptor::default()), //&view_port.multi_sample_texture.view,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                                        r: 0.15,
-                                        g: 0.15,
-                                        b: 0.15,
-                                        a: 1.0,
-                                    }),
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: Some(
-                                wgpu::RenderPassDepthStencilAttachment {
-                                    view: &viewport.depth_texture.view,
-                                    depth_ops: Some(wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(1.0),
+                    // 1. Re-render the UI into its offscreen texture, only when
+                    //    the commands changed.
+                    if ui_dirty {
+                        let mut ui_pass =
+                            command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("UI Pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &ui_surface.color_view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                                            r: 0.0,
+                                            g: 0.0,
+                                            b: 0.0,
+                                            a: 0.0,
+                                        }),
                                         store: wgpu::StoreOp::Store,
-                                    }),
-                                    stencil_ops: None,
-                                },
-                            ),
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                        });
+                                    },
+                                })],
+                                depth_stencil_attachment: Some(
+                                    wgpu::RenderPassDepthStencilAttachment {
+                                        view: &ui_surface.depth_view,
+                                        depth_ops: Some(wgpu::Operations {
+                                            load: wgpu::LoadOp::Clear(1.0),
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                        stencil_ops: None,
+                                    },
+                                ),
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            });
+                        ui_renderer.render_layout(
+                            render_commands,
+                            &mut ui_pass,
+                            &self.device,
+                            &self.queue,
+                            &viewport.surface_config,
+                        );
+                        drop(ui_pass);
+                        ui_surface.last_fingerprint = Some(fingerprint);
+                    }
 
-                    self.scene_renderer.render(
-                        &mut self.models,
-                        &mut render_pass,
-                        &self.queue,
-                        viewport.aspect(),
-                    );
+                    // 2. Draw the 3D scene into the swapchain.
+                    {
+                        let mut scene_pass =
+                            command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Scene Pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &drawable_view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                                            r: 0.15,
+                                            g: 0.15,
+                                            b: 0.15,
+                                            a: 1.0,
+                                        }),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: Some(
+                                    wgpu::RenderPassDepthStencilAttachment {
+                                        view: &viewport.depth_texture.view,
+                                        depth_ops: Some(wgpu::Operations {
+                                            load: wgpu::LoadOp::Clear(1.0),
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                        stencil_ops: None,
+                                    },
+                                ),
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            });
+                        self.scene_renderer.render(
+                            &mut self.models,
+                            &mut scene_pass,
+                            &self.queue,
+                            aspect,
+                        );
+                    }
 
-                    ui_renderer.render_layout(
-                        render_commands,
-                        &mut render_pass,
-                        &self.device,
-                        &self.queue,
-                        &viewport.surface_config,
-                    );
+                    // 3. Composite the cached UI texture over the scene.
+                    {
+                        let mut composite_pass =
+                            command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("UI Composite Pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &drawable_view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            });
+                        ui_renderer
+                            .composite(&mut composite_pass, &ui_surface.composite_bind_group);
+                    }
 
                     //println!("frame rendreed");
                 } else {
+                    // MSAA path: scene only. UI compositing is not wired here
+                    // (dead while MULTI_SAMPLE_COUNT == 1).
                     let mut render_pass: wgpu::RenderPass =
                         command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("RenderPass"),
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                                 view: &viewport.multi_sample_texture.view,
-                                resolve_target: Some(
-                                    &drawable
-                                        .texture
-                                        .create_view(&wgpu::TextureViewDescriptor::default()),
-                                ),
+                                resolve_target: Some(&drawable_view),
                                 ops: wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(wgpu::Color {
                                         r: 1.0,
@@ -461,7 +605,7 @@ impl API {
                         &mut self.models,
                         &mut render_pass,
                         &self.queue,
-                        viewport.aspect(),
+                        aspect,
                     );
                 }
 
@@ -470,29 +614,15 @@ impl API {
             }
 
             self.ui_renderer = Some(ui_renderer);
-
-            self.left_mouse_pressed = false;
-            self.left_mouse_released = false;
-            self.left_mouse_clicked = false;
-            self.left_mouse_double_clicked = false;
-            if let Some(timer) = self.left_mouse_clicked_timer
-                && timer.elapsed().as_millis() > 400
-            {
-                self.left_mouse_clicked_timer = None;
-            }
-            // if let Some(timer) = self.core.left_mouse_dbl_clicked_timer
-            // && timer.elapsed().as_millis() > 300 {
-            //     self.core.left_mouse_dbl_clicked_timer = None;
-            // }
-            self.right_mouse_pressed = false;
-            self.right_mouse_released = false;
-            self.right_mouse_clicked = false;
-            if let Some(timer) = self.right_mouse_clicked_timer
-                && timer.elapsed().as_millis() > 300
-            {
-                self.right_mouse_clicked_timer = None;
-            }
         }
+
+        // The frame that observed this window's one-shot input is done - clear
+        // the edge-triggered flags, deltas and key events so they don't leak
+        // into the next redraw.
+        if let Some(viewport) = self.viewports.get_mut(&window_id) {
+            viewport.end_frame();
+        }
+        self.active_window = None;
     }
 }
 
@@ -794,14 +924,14 @@ where
                                     .clone()
                                     .unwrap_or_else(|| startup.window_name.clone());
 
-                                let initial_viewport = Viewport {
+                                let initial_viewport = Viewport::new(
                                     window,
-                                    page: initial_page,
+                                    initial_page,
                                     surface,
                                     surface_config,
                                     depth_texture,
                                     multi_sample_texture,
-                                };
+                                );
 
                                 let l = LayoutEngine::new((0.0, 0.0));
 
@@ -825,30 +955,7 @@ where
                                     models: Vec::<Model>::new(),
                                     viewport_lookup,
                                     viewports,
-                                    event_string: "".to_string(),
-                                    keyboard_buffer: Vec::new(),
-                                    window_size: (0.0, 0.0),
-                                    left_mouse_pressed: false,
-                                    left_mouse_down: false,
-                                    left_mouse_released: false,
-                                    left_mouse_clicked: false,
-                                    left_mouse_double_clicked: false,
-                                    left_mouse_clicked_timer: None,
-                                    _left_mouse_dbl_clicked_timer: None,
-
-                                    right_mouse_pressed: false,
-                                    right_mouse_down: false,
-                                    right_mouse_released: false,
-                                    right_mouse_clicked: false,
-                                    right_mouse_clicked_timer: None,
-                                    x_at_click: 0.0,
-                                    y_at_click: 0.0,
-                                    focus: 0,
-                                    dpi_scale: 0.0,
-                                    mouse_poistion: (0.0, 0.0),
-                                    mouse_delta: (0.0, 0.0),
-                                    scroll_delta_time: Instant::now(),
-                                    scroll_delta_distance: (0.0, 0.0),
+                                    active_window: None,
                                 };
 
                                 // `API` reads and parses the layout files itself - the
@@ -909,7 +1016,9 @@ where
                     scale_factor,
                     inner_size_writer: _,
                 } => {
-                    api.dpi_scale = scale_factor as f32;
+                    if let Some(viewport) = api.viewports.get_mut(&window_id) {
+                        viewport.dpi_scale = scale_factor as f32;
+                    }
                 }
                 WindowEvent::RedrawRequested => {
                     //println!("redraw requested");
@@ -920,62 +1029,22 @@ where
                     state,
                     button,
                 } => {
-                    match button {
-                        MouseButton::Left => {
-                            match state {
-                                ElementState::Pressed => {
-                                    api.left_mouse_pressed = true;
-                                    api.left_mouse_down = true;
-                                    if api.left_mouse_clicked_timer.is_none() {
-                                        api.left_mouse_clicked_timer = Some(Instant::now());
-                                    }
-                                    // else {
-                                    //     self.core.left_mouse_clicked_timer = None;
-                                    //     self.core.left_mouse_dbl_clicked_timer = Some(Instant::now());
-                                    // }
-                                    api.x_at_click = api.mouse_poistion.0 / api.dpi_scale;
-                                    api.y_at_click = api.mouse_poistion.1 / api.dpi_scale;
-                                }
-                                ElementState::Released => {
-                                    if let Some(timer) = api.left_mouse_clicked_timer
-                                        && timer.elapsed().as_millis() < 400
-                                    {
-                                        api.left_mouse_clicked = true;
-                                        api.left_mouse_clicked_timer = None;
-                                    }
-                                    // if let Some(timer) = self.core.left_mouse_dbl_clicked_timer
-                                    // && timer.elapsed().as_millis() < 300 {
-                                    //     self.core.left_mouse_double_clicked = true;
-                                    //     self.core.left_mouse_dbl_clicked_timer = None;
-                                    // }
-                                    api.left_mouse_down = false;
-                                    api.left_mouse_released = true;
-                                }
+                    if let Some(viewport) = api.viewports.get_mut(&window_id) {
+                        match (button, state) {
+                            (MouseButton::Left, ElementState::Pressed) => {
+                                viewport.left_mouse_press()
                             }
+                            (MouseButton::Left, ElementState::Released) => {
+                                viewport.left_mouse_release()
+                            }
+                            (MouseButton::Right, ElementState::Pressed) => {
+                                viewport.right_mouse_press()
+                            }
+                            (MouseButton::Right, ElementState::Released) => {
+                                viewport.right_mouse_release()
+                            }
+                            _ => {}
                         }
-                        MouseButton::Right => match state {
-                            ElementState::Pressed => {
-                                api.right_mouse_pressed = true;
-                                api.right_mouse_down = true;
-                                if api.right_mouse_clicked_timer.is_none() {
-                                    api.right_mouse_clicked_timer = Some(Instant::now());
-                                }
-                                api.x_at_click = api.mouse_poistion.0 / api.dpi_scale;
-                                api.y_at_click = api.mouse_poistion.1 / api.dpi_scale;
-                            }
-                            ElementState::Released => {
-                                if let Some(timer) = api.right_mouse_clicked_timer
-                                    && timer.elapsed().as_millis() < 300
-                                {
-                                    api.right_mouse_clicked = true;
-                                    api.right_mouse_clicked_timer = None;
-                                }
-                                api.right_mouse_down = false;
-                                api.right_mouse_released = true;
-                            }
-                        },
-
-                        _ => {}
                     }
                 }
                 WindowEvent::MouseWheel {
@@ -983,27 +1052,34 @@ where
                     delta,
                     phase: _,
                 } => {
-                    api.scroll_delta_distance = match delta {
-                        MouseScrollDelta::LineDelta(x, y) => (x, y),
-                        MouseScrollDelta::PixelDelta(position) => position.into(),
-                    };
+                    if let Some(viewport) = api.viewports.get_mut(&window_id) {
+                        viewport.scroll_delta = match delta {
+                            MouseScrollDelta::LineDelta(x, y) => (x, y),
+                            MouseScrollDelta::PixelDelta(position) => position.into(),
+                        };
+                    }
                     api.request_redraw_viewport(window_id);
                 }
                 WindowEvent::CursorMoved {
                     device_id: _,
                     position,
                 } => {
+                    if let Some(viewport) = api.viewports.get_mut(&window_id) {
+                        let position: (f32, f32) = position.into();
+                        viewport.mouse_delta.0 = position.0 - viewport.mouse_position.0;
+                        viewport.mouse_delta.1 = position.1 - viewport.mouse_position.1;
+                        viewport.mouse_position = position;
+                    }
                     api.request_redraw_viewport(window_id);
-                    api.mouse_delta.0 = position.x as f32 - api.mouse_poistion.0;
-                    api.mouse_delta.1 = position.y as f32 - api.mouse_poistion.1;
-                    api.mouse_poistion = position.into();
                 }
                 WindowEvent::KeyboardInput {
                     device_id: _,
                     event,
                     is_synthetic: _,
                 } => {
-                    api.keyboard_buffer.push(event);
+                    if let Some(viewport) = api.viewports.get_mut(&window_id) {
+                        viewport.key_events.push(event);
+                    }
                 }
                 _ => {}
             }

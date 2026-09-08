@@ -242,6 +242,14 @@ pub enum Element {
     },
     LeftTripleClickedClosed,
 
+    /// Gates on "this window received keyboard input this frame" and fires its
+    /// handler once when that becomes true; the handler reads the events via
+    /// `API::key_events`.
+    KeyEventOpened {
+        event: Option<DataSrc<GlobalSymbol>>,
+    },
+    KeyEventClosed,
+
     RightPressedOpened {
         event: Option<DataSrc<GlobalSymbol>>,
     },
@@ -412,7 +420,6 @@ pub enum Config {
     WrapWords,
     WrapNewLines,
     WrapNone,
-    Editable(bool),
 }
 
 #[derive(Clone, Debug, Display, PartialEq)]
@@ -616,20 +623,24 @@ const LEADING_KEYWORDS: &[&str] = &[
     "align", "align-children-x", "align-children-y", "aspect-ratio", "attach-root", "attach-self",
     "attatch-parent", "border-all", "border-bottom", "border-color", "border-in-between",
     "border-left", "border-right", "border-top", "child-gap", "circle", "clip-to-parent", "color",
-    "config", "declarations", "element", "fit", "fixed", "fixed-square", "floating",
-    "floating-dimensions",
+    "config", "declarations", "element", "fit", "fixed-square", "floating",
+    "floating-dimensions-height", "floating-dimensions-width",
     "fn", "focus", "focused", "font-color", "font-id", "font-size", "get-bool", "get-color",
-    "get-event", "get-image", "get-numeric", "get-text", "grow", "height-fit", "height-fixed",
-    "height-grow", "height-percent", "horizontal", "hover", "hovered", "id-indexed", "if",
-    "if-index", "if-index-not", "if-not", "image", "item", "left-clicked", "left-dbl-clicked",
+    "get-event", "get-image", "get-numeric", "get-text", "grow", "height-fit", "height-fit-max",
+    "height-fit-min", "height-fixed", "height-grow", "height-grow-max", "height-grow-min",
+    "height-percent", "horizontal", "hover", "hovered", "id-indexed", "if",
+    "if-index", "if-index-not", "if-not", "image", "item", "key-event", "left-clicked",
+    "left-dbl-clicked",
     "left-down", "left-pressed", "left-released", "left-tpl-clicked", "letter-spacing", "line",
-    "line-height", "list", "load", "no-clip", "offset", "padding-all", "padding-bottom",
-    "padding-left", "padding-right", "padding-top", "pointer", "pointer-capture",
+    "line-height", "list", "load", "no-clip", "offset-x", "offset-y", "padding-all",
+    "padding-bottom", "padding-left", "padding-right", "padding-top", "pointer", "pointer-capture",
     "pointer-pass-through", "radius-all", "radius-bottom-left", "radius-bottom-right",
     "radius-top-left", "radius-top-right", "right-clicked", "right-down", "right-pressed",
-    "right-released", "scroll", "set-bool", "set-color", "set-event", "set-image", "set-numeric",
+    "right-released", "scroll-horizontal", "scroll-vertical", "set-bool", "set-color", "set-event",
+    "set-image", "set-numeric",
     "set-text", "text", "unfocused", "unhovered", "use", "vertical", "width",
-    "width-fit", "width-fixed", "width-grow", "width-percent", "wrap", "z-index",
+    "width-fit", "width-fit-max", "width-fit-min", "width-fixed", "width-grow", "width-grow-max",
+    "width-grow-min", "width-percent", "wrap", "z-index",
 ];
 
 /// Pre-parsing pass: lets a layout file be written without the `` ` `` inline-code
@@ -641,10 +652,9 @@ const LEADING_KEYWORDS: &[&str] = &[
 /// starts with `` ` `` is left untouched - so it's safe to run unconditionally
 /// and to mix both styles in one file.
 ///
-/// Only the leading keyword is touched. Inline-code argument markers a few
-/// keywords still expect (`` `min` ``/`` `max` `` for the `*-grow`/`*-fit`
-/// clamps, `` `x` ``/`` `y` `` for `scroll`/`offset`, `` `width` ``/`` `height` ``
-/// for `floating-dimensions`) must still be written with backticks. And because
+/// Only the leading keyword is touched. Every config keyword now takes at most
+/// one value, so nothing after the keyword needs backticks except a UV rect
+/// (`` `image` *atlas* `[0,0,1,1]` ``). And because
 /// this runs with no grammar context, a plain-text line - a `text` element's
 /// content, say - that happens to start with a keyword word (`color`, `image`,
 /// `if`, ...) *will* be turned into a config; write that line's backticks
@@ -1256,159 +1266,40 @@ fn process_element(element: &Node) -> Vec<Layout> {
 #[derive(Debug)]
 enum AvailableParameters<T> {
     None,
-    AStatic(T),
-    ADynamic(GlobalSymbol),
-    BStatic(T),
-    BDynamic(GlobalSymbol),
-    TwoStatic(T, T),
-    TwoDynamic(GlobalSymbol, GlobalSymbol),
-    AStaticBDynamic(T, GlobalSymbol),
-    ADynamicBStatic(GlobalSymbol, T),
     SingleStatic(T),
     SingleDynamic(GlobalSymbol),
 }
 
-fn parameter_check<T: FromStr>(
-    parameters: &Paragraph,
-    bound_a: &str,
-    bound_b: &str,
-) -> AvailableParameters<T> {
-    if parameters.children.len() < 2 {
-        return AvailableParameters::None;
-    }
-    //  CASE: 2 static parameters
-    if let Some(bound_range_a) = parameters.children.get(2)
-        && let Node::InlineCode(bound_range_a) = bound_range_a
-        && (bound_range_a.value.as_str() == bound_a || bound_range_a.value.as_str() == bound_b)
-        && let Some(bound_value_a) = parameters.children.get(3)
-        && let Node::Text(bound_value_a) = bound_value_a
-        && let Ok(bound_value_a) = T::from_str(bound_value_a.value.trim())
-        && let Some(bound_range_b) = parameters.children.get(4)
-        && let Node::InlineCode(bound_range_b) = bound_range_b
-        && (bound_range_b.value.as_str() == bound_a || bound_range_b.value.as_str() == bound_b)
-        && let Some(bound_value_b) = parameters.children.get(5)
-        && let Node::Text(bound_value_b) = bound_value_b
-        && let Ok(bound_value_b) = T::from_str(bound_value_b.value.trim())
-    {
-        if bound_range_a.value.as_str() == bound_a {
-            AvailableParameters::TwoStatic(bound_value_a, bound_value_b)
-        } else {
-            AvailableParameters::TwoStatic(bound_value_b, bound_value_a)
-        }
-    }
-    //  CASE: 2 dynamic parameters
-    else if let Some(bound_range_a) = parameters.children.get(2)
-        && let Node::InlineCode(bound_range_a) = bound_range_a
-        && (bound_range_a.value.as_str() == bound_a || bound_range_a.value.as_str() == bound_b)
-        && let Some(bound_value_a) = parameters.children.get(4)
-        && let Node::Emphasis(bound_value_a) = bound_value_a
-        && let Some(bound_value_a) = bound_value_a.children.first()
-        && let Node::Text(bound_value_a) = bound_value_a
-        && let Some(bound_range_b) = parameters.children.get(6)
-        && let Node::InlineCode(bound_range_b) = bound_range_b
-        && (bound_range_b.value.as_str() == bound_a || bound_range_b.value.as_str() == bound_b)
-        && let Some(bound_value_b) = parameters.children.get(8)
-        && let Node::Emphasis(bound_value_b) = bound_value_b
-        && let Some(bound_value_b) = bound_value_b.children.first()
-        && let Node::Text(bound_value_b) = bound_value_b
-    {
-        let bound_value_a = GlobalSymbol::new(bound_value_a.value.trim());
-        let bound_value_b = GlobalSymbol::new(bound_value_b.value.trim());
-        if bound_range_a.value.as_str() == bound_a {
-            AvailableParameters::TwoDynamic(bound_value_a, bound_value_b)
-        } else {
-            AvailableParameters::TwoDynamic(bound_value_b, bound_value_a)
-        }
-    }
-    //  CASE: parameter A dynamic, b static
-    else if let Some(bound_range_a) = parameters.children.get(2)
-        && let Node::InlineCode(bound_range_a) = bound_range_a
-        && (bound_range_a.value.as_str() == bound_a || bound_range_a.value.as_str() == bound_b)
-        && let Some(bound_value_a) = parameters.children.get(4)
-        && let Node::Emphasis(bound_value_a) = bound_value_a
-        && let Some(bound_value_a) = bound_value_a.children.first()
-        && let Node::Text(bound_value_a) = bound_value_a
-        && let Some(bound_range_b) = parameters.children.get(6)
-        && let Node::InlineCode(bound_range_b) = bound_range_b
-        && (bound_range_b.value.as_str() == bound_a || bound_range_b.value.as_str() == bound_b)
-        && let Some(bound_value_b) = parameters.children.get(7)
-        && let Node::Text(bound_value_b) = bound_value_b
-        && let Ok(bound_value_b) = T::from_str(bound_value_b.value.trim())
-    {
-        let bound_value_a = GlobalSymbol::new(bound_value_a.value.trim());
-        if bound_range_a.value.as_str() == bound_a {
-            AvailableParameters::ADynamicBStatic(bound_value_a, bound_value_b)
-        } else {
-            AvailableParameters::AStaticBDynamic(bound_value_b, bound_value_a)
-        }
-    }
-    //  CASE: parameter A static, b dynamic
-    else if let Some(bound_range_a) = parameters.children.get(2)
-        && let Node::InlineCode(bound_range_a) = bound_range_a
-        && (bound_range_a.value.as_str() == bound_a || bound_range_a.value.as_str() == bound_b)
-        && let Some(bound_value_a) = parameters.children.get(3)
-        && let Node::Text(bound_value_a) = bound_value_a
-        && let Ok(bound_value_a) = T::from_str(bound_value_a.value.trim())
-        && let Some(bound_range_b) = parameters.children.get(4)
-        && let Node::InlineCode(bound_range_b) = bound_range_b
-        && (bound_range_b.value.as_str() == bound_a || bound_range_b.value.as_str() == bound_b)
-        && let Some(bound_value_b) = parameters.children.get(6)
-        && let Node::Emphasis(bound_value_b) = bound_value_b
-        && let Some(bound_value_b) = bound_value_b.children.first()
-        && let Node::Text(bound_value_b) = bound_value_b
-    {
-        let bound_value_b = GlobalSymbol::new(bound_value_b.value.trim());
-        if bound_range_a.value.as_str() == bound_a {
-            AvailableParameters::ADynamicBStatic(bound_value_b, bound_value_a)
-        } else {
-            AvailableParameters::AStaticBDynamic(bound_value_a, bound_value_b)
-        }
-    }
-    //  CASE: 1 static parameter
-    else if let Some(bound_range_a) = parameters.children.get(2)
-        && let Node::InlineCode(bound_range_a) = bound_range_a
-        && (bound_range_a.value.as_str() == bound_a || bound_range_a.value.as_str() == bound_b)
-        && let Some(bound_value_a) = parameters.children.get(3)
-        && let Node::Text(bound_value_a) = bound_value_a
-        && let Ok(bound_value_a) = T::from_str(bound_value_a.value.trim())
-    {
-        if bound_range_a.value.as_str() == bound_a {
-            AvailableParameters::AStatic(bound_value_a)
-        } else {
-            AvailableParameters::BStatic(bound_value_a)
-        }
-    }
-    //  CASE: 1 dynamic parameter
-    else if let Some(bound_range_a) = parameters.children.get(2)
-        && let Node::InlineCode(bound_range_a) = bound_range_a
-        && (bound_range_a.value.as_str() == bound_a || bound_range_a.value.as_str() == bound_b)
-        && let Some(bound_value_a) = parameters.children.get(4)
-        && let Node::Emphasis(bound_value_a) = bound_value_a
-        && let Some(bound_value_a) = bound_value_a.children.first()
-        && let Node::Text(bound_value_a) = bound_value_a
-    {
-        let bound_value_a = GlobalSymbol::new(bound_value_a.value.trim());
-        if bound_range_a.value.as_str() == bound_a {
-            AvailableParameters::ADynamic(bound_value_a)
-        } else {
-            AvailableParameters::BDynamic(bound_value_a)
-        }
-    } else if let Some(parameter) = parameters.children.get(2)
+/// Reads the single argument of a config keyword: an `*emphasised*` name is a
+/// dynamic (`get-*`) reference, a plain-text token is a literal parsed as `T`,
+/// and anything else (or nothing) is [`AvailableParameters::None`]. Keywords
+/// that used to take a `` `min` ``/`` `max` `` (etc.) pair are now split into
+/// one keyword per value, so this only ever handles a lone argument.
+fn parameter_check<T: FromStr>(parameters: &Paragraph) -> AvailableParameters<T> {
+    if let Some(parameter) = parameters.children.get(2)
         && let Node::Emphasis(parameter) = parameter
         && let Some(parameter) = parameter.children.first()
         && let Node::Text(parameter) = parameter
     {
-        let parameter = GlobalSymbol::new(parameter.value.trim());
-        AvailableParameters::SingleDynamic(parameter)
+        AvailableParameters::SingleDynamic(GlobalSymbol::new(parameter.value.trim()))
     } else if let Some(parameter) = parameters.children.get(1)
         && let Node::Text(parameter) = parameter
         && let Ok(parameter) = T::from_str(parameter.value.trim())
     {
         AvailableParameters::SingleStatic(parameter)
-    }
-    //  CASE: no parameters
-    else {
+    } else {
         AvailableParameters::None
+    }
+}
+
+/// Resolves a config keyword's lone numeric argument to a `DataSrc`, or `None`
+/// when the keyword was written bare. Used by the split sizing keywords
+/// (`width-grow-min`, `offset-x`, ...).
+fn optional_arg<T: FromStr>(config: &Paragraph) -> Option<DataSrc<T>> {
+    match parameter_check::<T>(config) {
+        AvailableParameters::SingleDynamic(name) => Some(DataSrc::Dynamic(name)),
+        AvailableParameters::SingleStatic(value) => Some(DataSrc::Static(value)),
+        AvailableParameters::None => None,
     }
 }
 
@@ -1510,11 +1401,64 @@ fn process_variable(declaration: &Node) -> Option<(String, DataSrc<Declaration>)
     }
 }
 
+/// One grow/fit axis while a config block is being parsed. The bare keyword
+/// (`width-grow`) and its `-min` / `-max` companions each land in a separate
+/// list item, so they're collected here and folded into a single `Config` by
+/// [`AxisSizing::emit`] once the whole block has been read.
+#[derive(Default)]
+struct AxisSizing {
+    bare: bool,
+    min: Option<DataSrc<f32>>,
+    max: Option<DataSrc<f32>>,
+}
+
+impl AxisSizing {
+    fn emit(
+        self,
+        configs: &mut Vec<Layout>,
+        bare: Config,
+        min_only: impl FnOnce(DataSrc<f32>) -> Config,
+        max_only: impl FnOnce(DataSrc<f32>) -> Config,
+        min_max: impl FnOnce(DataSrc<f32>, DataSrc<f32>) -> Config,
+    ) {
+        let config = match (self.min, self.max) {
+            (Some(min), Some(max)) => Some(min_max(min, max)),
+            (Some(min), None) => Some(min_only(min)),
+            (None, Some(max)) => Some(max_only(max)),
+            (None, None) if self.bare => Some(bare),
+            (None, None) => None,
+        };
+        if let Some(config) = config {
+            configs.push(Layout::Config(config));
+        }
+    }
+}
+
+/// The multi-input config keywords, each now split into one keyword per value,
+/// collected across a whole config block and emitted once at the end.
+#[derive(Default)]
+struct SizingAccumulator {
+    width_grow: AxisSizing,
+    height_grow: AxisSizing,
+    width_fit: AxisSizing,
+    height_fit: AxisSizing,
+    offset_x: Option<DataSrc<f32>>,
+    offset_y: Option<DataSrc<f32>>,
+    floating_width: Option<DataSrc<f32>>,
+    floating_height: Option<DataSrc<f32>>,
+}
+
 fn process_configs(
     configuration_set: &List,
     custom_element: &mut Option<&mut CustomElement>,
 ) -> Vec<Layout> {
     let mut configs = Vec::new();
+    let mut sizing = SizingAccumulator::default();
+    // `scroll-horizontal` / `scroll-vertical` both feed the one `Config::Clip`
+    // (clip state is set per-axis-pair by the layout engine), so collect them
+    // across the whole config list and emit a single command at the end.
+    let mut scroll_horizontal = false;
+    let mut scroll_vertical = false;
 
     for configuration_item in &configuration_set.children {
         if let Some(config_elements) = configuration_item.children()
@@ -1526,7 +1470,7 @@ fn process_configs(
             match config_type.value.as_str() {
                 "grow" => configs.push(Layout::Config(Config::GrowAll)),
                 "fit" => configs.push(Layout::Config(Config::FitAll)),
-                "id-indexed" => match parameter_check::<String>(config, "", "") {
+                "id-indexed" => match parameter_check::<String>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::IdIndexed(DataSrc::Dynamic(a))))
                     }
@@ -1535,7 +1479,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "aspect-ratio" => match parameter_check::<f32>(config, "", "") {
+                "aspect-ratio" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::AspectRatio(DataSrc::Dynamic(a))))
                     }
@@ -1544,167 +1488,22 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "width-grow" => match parameter_check::<f32>(config, "min", "max") {
-                    AvailableParameters::None => configs.push(Layout::Config(Config::GrowX)),
-                    AvailableParameters::ADynamic(a) => {
-                        configs.push(Layout::Config(Config::GrowXmin(DataSrc::Dynamic(a))))
-                    }
-                    AvailableParameters::AStatic(a) => {
-                        configs.push(Layout::Config(Config::GrowXmin(DataSrc::Static(a))))
-                    }
-                    AvailableParameters::BDynamic(b) => {
-                        configs.push(Layout::Config(Config::GrowXmax(DataSrc::Dynamic(b))))
-                    }
-                    AvailableParameters::BStatic(b) => {
-                        configs.push(Layout::Config(Config::GrowXmax(DataSrc::Static(b))))
-                    }
-                    AvailableParameters::TwoStatic(min, max) => {
-                        configs.push(Layout::Config(Config::GrowXminmax {
-                            min: DataSrc::Static(min),
-                            max: DataSrc::Static(max),
-                        }))
-                    }
-                    AvailableParameters::TwoDynamic(min, max) => {
-                        configs.push(Layout::Config(Config::GrowXminmax {
-                            min: DataSrc::Dynamic(min),
-                            max: DataSrc::Dynamic(max),
-                        }))
-                    }
-                    AvailableParameters::ADynamicBStatic(min, max) => {
-                        configs.push(Layout::Config(Config::GrowXminmax {
-                            min: DataSrc::Dynamic(min),
-                            max: DataSrc::Static(max),
-                        }))
-                    }
-                    AvailableParameters::AStaticBDynamic(min, max) => {
-                        configs.push(Layout::Config(Config::GrowXminmax {
-                            min: DataSrc::Static(min),
-                            max: DataSrc::Dynamic(max),
-                        }))
-                    }
-                    _ => {}
-                },
-                "height-grow" => match parameter_check::<f32>(config, "min", "max") {
-                    AvailableParameters::None => configs.push(Layout::Config(Config::GrowY)),
-                    AvailableParameters::ADynamic(a) => {
-                        configs.push(Layout::Config(Config::GrowYmin(DataSrc::Dynamic(a))))
-                    }
-                    AvailableParameters::AStatic(a) => {
-                        configs.push(Layout::Config(Config::GrowYmin(DataSrc::Static(a))))
-                    }
-                    AvailableParameters::BDynamic(b) => {
-                        configs.push(Layout::Config(Config::GrowYmax(DataSrc::Dynamic(b))))
-                    }
-                    AvailableParameters::BStatic(b) => {
-                        configs.push(Layout::Config(Config::GrowYmax(DataSrc::Static(b))))
-                    }
-                    AvailableParameters::TwoStatic(min, max) => {
-                        configs.push(Layout::Config(Config::GrowYminmax {
-                            min: DataSrc::Static(min),
-                            max: DataSrc::Static(max),
-                        }))
-                    }
-                    AvailableParameters::TwoDynamic(min, max) => {
-                        configs.push(Layout::Config(Config::GrowYminmax {
-                            min: DataSrc::Dynamic(min),
-                            max: DataSrc::Dynamic(max),
-                        }))
-                    }
-                    AvailableParameters::ADynamicBStatic(min, max) => {
-                        configs.push(Layout::Config(Config::GrowYminmax {
-                            min: DataSrc::Dynamic(min),
-                            max: DataSrc::Static(max),
-                        }))
-                    }
-                    AvailableParameters::AStaticBDynamic(min, max) => {
-                        configs.push(Layout::Config(Config::GrowYminmax {
-                            min: DataSrc::Static(min),
-                            max: DataSrc::Dynamic(max),
-                        }))
-                    }
-                    _ => {}
-                },
-                "width-fit" => match parameter_check::<f32>(config, "min", "max") {
-                    AvailableParameters::None => configs.push(Layout::Config(Config::FitX)),
-                    AvailableParameters::ADynamic(a) => {
-                        configs.push(Layout::Config(Config::FitXmin(DataSrc::Dynamic(a))))
-                    }
-                    AvailableParameters::AStatic(a) => {
-                        configs.push(Layout::Config(Config::FitXmin(DataSrc::Static(a))))
-                    }
-                    AvailableParameters::BDynamic(b) => {
-                        configs.push(Layout::Config(Config::FitXmax(DataSrc::Dynamic(b))))
-                    }
-                    AvailableParameters::BStatic(b) => {
-                        configs.push(Layout::Config(Config::FitXmax(DataSrc::Static(b))))
-                    }
-                    AvailableParameters::TwoStatic(min, max) => {
-                        configs.push(Layout::Config(Config::FitXminmax {
-                            min: DataSrc::Static(min),
-                            max: DataSrc::Static(max),
-                        }))
-                    }
-                    AvailableParameters::TwoDynamic(min, max) => {
-                        configs.push(Layout::Config(Config::FitXminmax {
-                            min: DataSrc::Dynamic(min),
-                            max: DataSrc::Dynamic(max),
-                        }))
-                    }
-                    AvailableParameters::ADynamicBStatic(min, max) => {
-                        configs.push(Layout::Config(Config::FitXminmax {
-                            min: DataSrc::Dynamic(min),
-                            max: DataSrc::Static(max),
-                        }))
-                    }
-                    AvailableParameters::AStaticBDynamic(min, max) => {
-                        configs.push(Layout::Config(Config::FitXminmax {
-                            min: DataSrc::Static(min),
-                            max: DataSrc::Dynamic(max),
-                        }))
-                    }
-                    _ => {}
-                },
-                "height-fit" => match parameter_check::<f32>(config, "min", "max") {
-                    AvailableParameters::None => configs.push(Layout::Config(Config::FitY)),
-                    AvailableParameters::ADynamic(a) => {
-                        configs.push(Layout::Config(Config::FitYmin(DataSrc::Dynamic(a))))
-                    }
-                    AvailableParameters::AStatic(a) => {
-                        configs.push(Layout::Config(Config::FitYmin(DataSrc::Static(a))))
-                    }
-                    AvailableParameters::BDynamic(b) => {
-                        configs.push(Layout::Config(Config::FitYmax(DataSrc::Dynamic(b))))
-                    }
-                    AvailableParameters::BStatic(b) => {
-                        configs.push(Layout::Config(Config::FitYmax(DataSrc::Static(b))))
-                    }
-                    AvailableParameters::TwoStatic(min, max) => {
-                        configs.push(Layout::Config(Config::FitYminmax {
-                            min: DataSrc::Static(min),
-                            max: DataSrc::Static(max),
-                        }))
-                    }
-                    AvailableParameters::TwoDynamic(min, max) => {
-                        configs.push(Layout::Config(Config::FitYminmax {
-                            min: DataSrc::Dynamic(min),
-                            max: DataSrc::Dynamic(max),
-                        }))
-                    }
-                    AvailableParameters::ADynamicBStatic(min, max) => {
-                        configs.push(Layout::Config(Config::FitYminmax {
-                            min: DataSrc::Dynamic(min),
-                            max: DataSrc::Static(max),
-                        }))
-                    }
-                    AvailableParameters::AStaticBDynamic(min, max) => {
-                        configs.push(Layout::Config(Config::FitYminmax {
-                            min: DataSrc::Static(min),
-                            max: DataSrc::Dynamic(max),
-                        }))
-                    }
-                    _ => {}
-                },
-                "width-fixed" => match parameter_check::<f32>(config, "", "") {
+                // Sizing keywords come in three flat pieces - the bare keyword
+                // plus a `-min` / `-max` variant - which are folded back into one
+                // `Config` at the end of this function (see `sizing` below).
+                "width-grow" => sizing.width_grow.bare = true,
+                "width-grow-min" => sizing.width_grow.min = optional_arg(config),
+                "width-grow-max" => sizing.width_grow.max = optional_arg(config),
+                "height-grow" => sizing.height_grow.bare = true,
+                "height-grow-min" => sizing.height_grow.min = optional_arg(config),
+                "height-grow-max" => sizing.height_grow.max = optional_arg(config),
+                "width-fit" => sizing.width_fit.bare = true,
+                "width-fit-min" => sizing.width_fit.min = optional_arg(config),
+                "width-fit-max" => sizing.width_fit.max = optional_arg(config),
+                "height-fit" => sizing.height_fit.bare = true,
+                "height-fit-min" => sizing.height_fit.min = optional_arg(config),
+                "height-fit-max" => sizing.height_fit.max = optional_arg(config),
+                "width-fixed" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::FixedX(DataSrc::Dynamic(a))))
                     }
@@ -1713,7 +1512,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "height-fixed" => match parameter_check::<f32>(config, "", "") {
+                "height-fixed" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::FixedY(DataSrc::Dynamic(a))))
                     }
@@ -1722,26 +1521,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "fixed" => match parameter_check::<f32>(config, "width", "height") {
-                    AvailableParameters::TwoStatic(w, h) => {
-                        configs.push(Layout::Config(Config::FixedX(DataSrc::Static(w))));
-                        configs.push(Layout::Config(Config::FixedY(DataSrc::Static(h))));
-                    }
-                    AvailableParameters::TwoDynamic(w, h) => {
-                        configs.push(Layout::Config(Config::FixedX(DataSrc::Dynamic(w))));
-                        configs.push(Layout::Config(Config::FixedY(DataSrc::Dynamic(h))));
-                    }
-                    AvailableParameters::ADynamicBStatic(w, h) => {
-                        configs.push(Layout::Config(Config::FixedX(DataSrc::Dynamic(w))));
-                        configs.push(Layout::Config(Config::FixedY(DataSrc::Static(h))));
-                    }
-                    AvailableParameters::AStaticBDynamic(w, h) => {
-                        configs.push(Layout::Config(Config::FixedX(DataSrc::Static(w))));
-                        configs.push(Layout::Config(Config::FixedY(DataSrc::Dynamic(h))));
-                    }
-                    _ => {}
-                },
-                "fixed-square" => match parameter_check::<f32>(config, "", "") {
+                "fixed-square" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::FixedSquare(DataSrc::Dynamic(a))))
                     }
@@ -1750,7 +1530,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "width-percent" => match parameter_check::<f32>(config, "", "") {
+                "width-percent" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::PercentX(DataSrc::Dynamic(a))))
                     }
@@ -1759,7 +1539,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "height-percent" => match parameter_check::<f32>(config, "", "") {
+                "height-percent" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::PercentY(DataSrc::Dynamic(a))))
                     }
@@ -1768,7 +1548,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "padding-all" => match parameter_check::<u16>(config, "", "") {
+                "padding-all" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::PaddingAll(DataSrc::Dynamic(a))))
                     }
@@ -1777,7 +1557,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "padding-top" => match parameter_check::<u16>(config, "", "") {
+                "padding-top" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::PaddingTop(DataSrc::Dynamic(a))))
                     }
@@ -1786,7 +1566,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "padding-right" => match parameter_check::<u16>(config, "", "") {
+                "padding-right" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::PaddingRight(DataSrc::Dynamic(a))))
                     }
@@ -1795,7 +1575,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "padding-bottom" => match parameter_check::<u16>(config, "", "") {
+                "padding-bottom" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::PaddingBottom(DataSrc::Dynamic(a))))
                     }
@@ -1804,7 +1584,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "padding-left" => match parameter_check::<u16>(config, "", "") {
+                "padding-left" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::PaddingLeft(DataSrc::Dynamic(a))))
                     }
@@ -1813,7 +1593,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "child-gap" => match parameter_check::<u16>(config, "", "") {
+                "child-gap" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::ChildGap(DataSrc::Dynamic(a))))
                     }
@@ -1848,7 +1628,7 @@ fn process_configs(
                         }
                     }
                 }
-                "color" => match parameter_check::<Color>(config, "", "") {
+                "color" => match parameter_check::<Color>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::Color(DataSrc::Dynamic(a))))
                     }
@@ -1861,7 +1641,7 @@ fn process_configs(
                     if let Some(custom_element) = custom_element
                         && let CustomElement::Line(line_config) = custom_element
                     {
-                        match parameter_check::<f32>(config, "", "") {
+                        match parameter_check::<f32>(config) {
                             AvailableParameters::SingleDynamic(a) => {
                                 line_config.width_source = Some(a)
                             }
@@ -1870,7 +1650,7 @@ fn process_configs(
                         }
                     }
                 }
-                "radius-all" => match parameter_check::<f32>(config, "", "") {
+                "radius-all" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::RadiusAll(DataSrc::Dynamic(a))))
                     }
@@ -1879,7 +1659,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "radius-top-left" => match parameter_check::<f32>(config, "", "") {
+                "radius-top-left" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::RadiusTopLeft(DataSrc::Dynamic(a))))
                     }
@@ -1888,7 +1668,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "radius-top-right" => match parameter_check::<f32>(config, "", "") {
+                "radius-top-right" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::RadiusTopRight(DataSrc::Dynamic(a))))
                     }
@@ -1897,7 +1677,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "radius-bottom-left" => match parameter_check::<f32>(config, "", "") {
+                "radius-bottom-left" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => configs.push(Layout::Config(
                         Config::RadiusBottomLeft(DataSrc::Dynamic(a)),
                     )),
@@ -1906,7 +1686,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "radius-bottom-right" => match parameter_check::<f32>(config, "", "") {
+                "radius-bottom-right" => match parameter_check::<f32>(config) {
                     AvailableParameters::SingleDynamic(a) => configs.push(Layout::Config(
                         Config::RadiusBottomRight(DataSrc::Dynamic(a)),
                     )),
@@ -1915,7 +1695,7 @@ fn process_configs(
                     )),
                     _ => {}
                 },
-                "border-color" => match parameter_check::<Color>(config, "", "") {
+                "border-color" => match parameter_check::<Color>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::BorderColor(DataSrc::Dynamic(a))))
                     }
@@ -1924,7 +1704,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "border-all" => match parameter_check::<u16>(config, "", "") {
+                "border-all" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::BorderAll(DataSrc::Dynamic(a))))
                     }
@@ -1933,7 +1713,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "border-top" => match parameter_check::<u16>(config, "", "") {
+                "border-top" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::BorderTop(DataSrc::Dynamic(a))))
                     }
@@ -1942,7 +1722,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "border-left" => match parameter_check::<u16>(config, "", "") {
+                "border-left" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::BorderLeft(DataSrc::Dynamic(a))))
                     }
@@ -1951,7 +1731,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "border-bottom" => match parameter_check::<u16>(config, "", "") {
+                "border-bottom" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::BorderBottom(DataSrc::Dynamic(a))))
                     }
@@ -1960,7 +1740,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "border-right" => match parameter_check::<u16>(config, "", "") {
+                "border-right" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::BorderRight(DataSrc::Dynamic(a))))
                     }
@@ -1969,7 +1749,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "border-in-between" => match parameter_check::<u16>(config, "", "") {
+                "border-in-between" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => configs.push(Layout::Config(
                         Config::BorderBetweenChildren(DataSrc::Dynamic(a)),
                     )),
@@ -1978,35 +1758,8 @@ fn process_configs(
                     )),
                     _ => {}
                 },
-                "scroll" => {
-                    if let Some(direction_a) = config.children.get(2)
-                        && let Node::InlineCode(direction_a) = direction_a
-                        && (direction_a.value.as_str() == "x" || direction_a.value.as_str() == "y")
-                        && let Some(direction_b) = config.children.get(4)
-                        && let Node::InlineCode(direction_b) = direction_b
-                        && (direction_b.value.as_str() == "x" || direction_b.value.as_str() == "y")
-                    {
-                        configs.push(Layout::Config(Config::Clip {
-                            vertical: DataSrc::Static(true),
-                            horizontal: DataSrc::Static(true),
-                        }));
-                    } else if let Some(direction_a) = config.children.get(2)
-                        && let Node::InlineCode(direction_a) = direction_a
-                        && (direction_a.value.as_str() == "x" || direction_a.value.as_str() == "y")
-                    {
-                        if direction_a.value.as_str() == "x" {
-                            configs.push(Layout::Config(Config::Clip {
-                                vertical: DataSrc::Static(false),
-                                horizontal: DataSrc::Static(true),
-                            }));
-                        } else {
-                            configs.push(Layout::Config(Config::Clip {
-                                vertical: DataSrc::Static(true),
-                                horizontal: DataSrc::Static(false),
-                            }));
-                        }
-                    }
-                }
+                "scroll-horizontal" => scroll_horizontal = true,
+                "scroll-vertical" => scroll_vertical = true,
                 "image" => {
                     // Three shapes:
                     //   `image` *name*              -> resolve `name` (set-image / get_image)
@@ -2081,7 +1834,7 @@ fn process_configs(
                 "attach-root" => {
                     configs.push(Layout::Config(Config::FloatingAttachElementToRoot))
                 }
-                "z-index" => match parameter_check::<i16>(config, "", "") {
+                "z-index" => match parameter_check::<i16>(config) {
                     AvailableParameters::SingleDynamic(z) => {
                         configs.push(Layout::Config(Config::FloatingZIndex {
                             z: DataSrc::Dynamic(z),
@@ -2094,33 +1847,12 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "floating-dimensions" => match parameter_check::<f32>(config, "width", "height") {
-                    AvailableParameters::TwoStatic(w, h) => {
-                        configs.push(Layout::Config(Config::FloatingDimensions {
-                            width: DataSrc::Static(w),
-                            height: DataSrc::Static(h),
-                        }))
-                    }
-                    AvailableParameters::TwoDynamic(w, h) => {
-                        configs.push(Layout::Config(Config::FloatingDimensions {
-                            width: DataSrc::Dynamic(w),
-                            height: DataSrc::Dynamic(h),
-                        }))
-                    }
-                    AvailableParameters::ADynamicBStatic(w, h) => {
-                        configs.push(Layout::Config(Config::FloatingDimensions {
-                            width: DataSrc::Dynamic(w),
-                            height: DataSrc::Static(h),
-                        }))
-                    }
-                    AvailableParameters::AStaticBDynamic(w, h) => {
-                        configs.push(Layout::Config(Config::FloatingDimensions {
-                            width: DataSrc::Static(w),
-                            height: DataSrc::Dynamic(h),
-                        }))
-                    }
-                    _ => {}
-                },
+                "floating-dimensions-width" => {
+                    sizing.floating_width = optional_arg(config)
+                }
+                "floating-dimensions-height" => {
+                    sizing.floating_height = optional_arg(config)
+                }
                 "use" => {
                     if let Some(reusable_name) = config.children.get(1)
                         && let Node::Text(reusable_name) = reusable_name
@@ -2133,7 +1865,7 @@ fn process_configs(
                 }
 
                 "hovered" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::HoveredOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2147,7 +1879,6 @@ fn process_configs(
                         AvailableParameters::None => {
                             configs.push(Layout::Element(Element::HoveredOpened { event: None }))
                         }
-                        _ => {}
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
@@ -2157,7 +1888,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::HoveredClosed));
                 }
                 "unhovered" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::UnHoveredOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2171,7 +1902,6 @@ fn process_configs(
                         AvailableParameters::None => {
                             configs.push(Layout::Element(Element::UnHoveredOpened { event: None }))
                         }
-                        _ => {}
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
@@ -2181,7 +1911,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::UnHoveredClosed));
                 }
                 "hover" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::HoverOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2195,7 +1925,6 @@ fn process_configs(
                         AvailableParameters::None => {
                             configs.push(Layout::Element(Element::HoverOpened { event: None }))
                         }
-                        _ => {}
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
@@ -2205,7 +1934,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::HoverClosed));
                 }
                 "focused" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::FocusedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2219,7 +1948,6 @@ fn process_configs(
                         AvailableParameters::None => {
                             configs.push(Layout::Element(Element::FocusedOpened { event: None }))
                         }
-                        _ => {}
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
@@ -2229,7 +1957,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::FocusedClosed));
                 }
                 "unfocused" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::UnFocusedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2243,7 +1971,6 @@ fn process_configs(
                         AvailableParameters::None => {
                             configs.push(Layout::Element(Element::UnFocusedOpened { event: None }))
                         }
-                        _ => {}
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
@@ -2253,7 +1980,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::UnFocusedClosed));
                 }
                 "focus" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::FocusOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2267,7 +1994,6 @@ fn process_configs(
                         AvailableParameters::None => {
                             configs.push(Layout::Element(Element::FocusOpened { event: None }))
                         }
-                        _ => {}
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
@@ -2276,8 +2002,30 @@ fn process_configs(
                     }
                     configs.push(Layout::Element(Element::FocusClosed));
                 }
+                "key-event" => {
+                    match parameter_check::<GlobalSymbol>(config) {
+                        AvailableParameters::SingleDynamic(a) => {
+                            configs.push(Layout::Element(Element::KeyEventOpened {
+                                event: Some(DataSrc::Dynamic(a)),
+                            }))
+                        }
+                        AvailableParameters::SingleStatic(a) => {
+                            configs.push(Layout::Element(Element::KeyEventOpened {
+                                event: Some(DataSrc::Static(a)),
+                            }))
+                        }
+                        AvailableParameters::None => configs
+                            .push(Layout::Element(Element::KeyEventOpened { event: None })),
+                    }
+                    if let Some(onconfig_on) = config_elements.get(1)
+                        && let Node::List(onconfig_on) = onconfig_on
+                    {
+                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                    }
+                    configs.push(Layout::Element(Element::KeyEventClosed));
+                }
                 "left-pressed" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftPressedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2290,7 +2038,6 @@ fn process_configs(
                         }
                         AvailableParameters::None => configs
                             .push(Layout::Element(Element::LeftPressedOpened { event: None })),
-                        _ => {}
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
@@ -2300,7 +2047,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::LeftPressedClosed));
                 }
                 "left-down" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftDownOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2314,7 +2061,6 @@ fn process_configs(
                         AvailableParameters::None => {
                             configs.push(Layout::Element(Element::LeftDownOpened { event: None }))
                         }
-                        _ => {}
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
@@ -2324,7 +2070,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::LeftDownClosed));
                 }
                 "left-released" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftReleasedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2337,7 +2083,6 @@ fn process_configs(
                         }
                         AvailableParameters::None => configs
                             .push(Layout::Element(Element::LeftReleasedOpened { event: None })),
-                        _ => {}
                     }
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
@@ -2347,7 +2092,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::LeftReleasedClosed));
                 }
                 "left-clicked" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftClickedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2360,7 +2105,6 @@ fn process_configs(
                         }
                         AvailableParameters::None => configs
                             .push(Layout::Element(Element::LeftClickedOpened { event: None })),
-                        _ => {}
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
@@ -2370,7 +2114,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::LeftClickedClosed));
                 }
                 "left-dbl-clicked" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftDoubleClickedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2386,7 +2130,6 @@ fn process_configs(
                                 event: None,
                             }))
                         }
-                        _ => {}
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
@@ -2396,7 +2139,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::LeftDoubleClickedClosed));
                 }
                 "left-tpl-clicked" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::LeftTripleClickedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2412,7 +2155,6 @@ fn process_configs(
                                 event: None,
                             }))
                         }
-                        _ => {}
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
@@ -2422,7 +2164,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::LeftTripleClickedClosed));
                 }
                 "right-pressed" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::RightPressedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2435,7 +2177,6 @@ fn process_configs(
                         }
                         AvailableParameters::None => configs
                             .push(Layout::Element(Element::RightPressedOpened { event: None })),
-                        _ => {}
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
@@ -2445,7 +2186,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::RightPressedClosed));
                 }
                 "right-down" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::RightDownOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2459,7 +2200,6 @@ fn process_configs(
                         AvailableParameters::None => {
                             configs.push(Layout::Element(Element::RightDownOpened { event: None }))
                         }
-                        _ => {}
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
@@ -2469,7 +2209,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::RightDownClosed));
                 }
                 "right-released" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::RightReleasedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2485,7 +2225,6 @@ fn process_configs(
                                 event: None,
                             }))
                         }
-                        _ => {}
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
@@ -2495,7 +2234,7 @@ fn process_configs(
                     configs.push(Layout::Element(Element::RightReleasedClosed));
                 }
                 "right-clicked" => {
-                    match parameter_check::<GlobalSymbol>(config, "", "") {
+                    match parameter_check::<GlobalSymbol>(config) {
                         AvailableParameters::SingleDynamic(a) => {
                             configs.push(Layout::Element(Element::RightClickedOpened {
                                 event: Some(DataSrc::Dynamic(a)),
@@ -2508,7 +2247,6 @@ fn process_configs(
                         }
                         AvailableParameters::None => configs
                             .push(Layout::Element(Element::RightClickedOpened { event: None })),
-                        _ => {}
                     }
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
@@ -2533,7 +2271,7 @@ fn process_configs(
                     }
                 }
 
-                "font-id" => match parameter_check::<u16>(config, "", "") {
+                "font-id" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::FontId(DataSrc::Dynamic(a))))
                     }
@@ -2542,7 +2280,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "font-size" => match parameter_check::<u16>(config, "", "") {
+                "font-size" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::FontSize(DataSrc::Dynamic(a))))
                     }
@@ -2563,7 +2301,7 @@ fn process_configs(
                         }
                     }
                 }
-                "line-height" => match parameter_check::<u16>(config, "", "") {
+                "line-height" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::LineHeight(DataSrc::Dynamic(a))))
                     }
@@ -2572,7 +2310,7 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "letter-spacing" => match parameter_check::<u16>(config, "", "") {
+                "letter-spacing" => match parameter_check::<u16>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::LetterSpacing(DataSrc::Dynamic(a))))
                     }
@@ -2593,7 +2331,7 @@ fn process_configs(
                         }
                     }
                 }
-                "font-color" => match parameter_check::<Color>(config, "", "") {
+                "font-color" => match parameter_check::<Color>(config) {
                     AvailableParameters::SingleDynamic(a) => {
                         configs.push(Layout::Config(Config::FontColor(DataSrc::Dynamic(a))))
                     }
@@ -2603,57 +2341,8 @@ fn process_configs(
                     _ => {}
                 },
 
-                "offset" => match parameter_check::<f32>(config, "x", "y") {
-                    AvailableParameters::ADynamic(a) => {
-                        configs.push(Layout::Config(Config::FloatingOffset {
-                            x: DataSrc::Dynamic(a),
-                            y: DataSrc::Static(0.0),
-                        }))
-                    }
-                    AvailableParameters::AStatic(a) => {
-                        configs.push(Layout::Config(Config::FloatingOffset {
-                            x: DataSrc::Static(a),
-                            y: DataSrc::Static(0.0),
-                        }))
-                    }
-                    AvailableParameters::BDynamic(b) => {
-                        configs.push(Layout::Config(Config::FloatingOffset {
-                            x: DataSrc::Static(0.0),
-                            y: DataSrc::Dynamic(b),
-                        }))
-                    }
-                    AvailableParameters::BStatic(b) => {
-                        configs.push(Layout::Config(Config::FloatingOffset {
-                            x: DataSrc::Static(0.0),
-                            y: DataSrc::Static(b),
-                        }))
-                    }
-                    AvailableParameters::TwoStatic(a, b) => {
-                        configs.push(Layout::Config(Config::FloatingOffset {
-                            x: DataSrc::Static(a),
-                            y: DataSrc::Static(b),
-                        }))
-                    }
-                    AvailableParameters::TwoDynamic(x, y) => {
-                        configs.push(Layout::Config(Config::FloatingOffset {
-                            x: DataSrc::Dynamic(x),
-                            y: DataSrc::Dynamic(y),
-                        }))
-                    }
-                    AvailableParameters::ADynamicBStatic(x, y) => {
-                        configs.push(Layout::Config(Config::FloatingOffset {
-                            x: DataSrc::Dynamic(x),
-                            y: DataSrc::Static(y),
-                        }))
-                    }
-                    AvailableParameters::AStaticBDynamic(x, y) => {
-                        configs.push(Layout::Config(Config::FloatingOffset {
-                            x: DataSrc::Static(x),
-                            y: DataSrc::Dynamic(y),
-                        }))
-                    }
-                    _ => {}
-                },
+                "offset-x" => sizing.offset_x = optional_arg(config),
+                "offset-y" => sizing.offset_y = optional_arg(config),
                 "attatch-parent" => {
                     if let Some(attach_point) = config.children.get(1)
                         && let Node::Text(attach_point) = attach_point
@@ -2713,6 +2402,64 @@ fn process_configs(
                 _ => {}
             }
         }
+    }
+
+    if scroll_horizontal || scroll_vertical {
+        configs.push(Layout::Config(Config::Clip {
+            vertical: DataSrc::Static(scroll_vertical),
+            horizontal: DataSrc::Static(scroll_horizontal),
+        }));
+    }
+
+    let SizingAccumulator {
+        width_grow,
+        height_grow,
+        width_fit,
+        height_fit,
+        offset_x,
+        offset_y,
+        floating_width,
+        floating_height,
+    } = sizing;
+    width_grow.emit(
+        &mut configs,
+        Config::GrowX,
+        Config::GrowXmin,
+        Config::GrowXmax,
+        |min, max| Config::GrowXminmax { min, max },
+    );
+    height_grow.emit(
+        &mut configs,
+        Config::GrowY,
+        Config::GrowYmin,
+        Config::GrowYmax,
+        |min, max| Config::GrowYminmax { min, max },
+    );
+    width_fit.emit(
+        &mut configs,
+        Config::FitX,
+        Config::FitXmin,
+        Config::FitXmax,
+        |min, max| Config::FitXminmax { min, max },
+    );
+    height_fit.emit(
+        &mut configs,
+        Config::FitY,
+        Config::FitYmin,
+        Config::FitYmax,
+        |min, max| Config::FitYminmax { min, max },
+    );
+    if offset_x.is_some() || offset_y.is_some() {
+        configs.push(Layout::Config(Config::FloatingOffset {
+            x: offset_x.unwrap_or(DataSrc::Static(0.0)),
+            y: offset_y.unwrap_or(DataSrc::Static(0.0)),
+        }));
+    }
+    if floating_width.is_some() || floating_height.is_some() {
+        configs.push(Layout::Config(Config::FloatingDimensions {
+            width: floating_width.unwrap_or(DataSrc::Static(0.0)),
+            height: floating_height.unwrap_or(DataSrc::Static(0.0)),
+        }));
     }
 
     configs
@@ -2874,6 +2621,13 @@ impl Binder {
         let mut config = ElementConfiguration::default();
         let mut text_config = TextConfig::default();
 
+        // Focus only moves on a mouse-down frame. `set_layout` fills this with
+        // the topmost hovered named element as it walks; whatever's left (incl.
+        // `None`, i.e. a click on empty space / an unnamed element) is committed
+        // below, so clicking away clears focus.
+        let focusing = api.left_mouse_pressed() || api.right_mouse_pressed();
+        let mut focus_target: Option<GlobalSymbol> = None;
+
         let _pointer = set_layout(
             api,
             layout_commands,
@@ -2884,7 +2638,12 @@ impl Binder {
             &mut text_config,
             user_app,
             winit::window::CursorIcon::Default,
+            &mut focus_target,
         );
+
+        if focusing {
+            api.set_focus(focus_target);
+        }
 
         Some(())
     }
@@ -2919,12 +2678,23 @@ fn set_layout<UserApp>(
     text_config: &mut TextConfig,
     user_app: &mut UserApp,
     mut pointer: winit::window::CursorIcon,
+    // Accumulates the focus target for this frame: on a mouse-down frame every
+    // hovered *named* element writes its own name here as the tree is walked
+    // (outermost first), so the last writer - the innermost / topmost hovered
+    // named element - wins. `set_page` commits it to `api.set_focus` afterwards.
+    focus_target: &mut Option<GlobalSymbol>,
 ) -> winit::window::CursorIcon
 where
     UserApp: LayoutRunnerReflection + LayoutReflector,
 {
     let mut nesting_level: u32 = 0;
     let mut skip: Option<u32> = None;
+    // Name of the element whose `config` block is currently open (its `` `element`
+    // *name* `` -> `Config::Id`), or `None` for an unnamed element. Reset at each
+    // `ConfigOpened`, read at `ConfigClosed` and by the `focus` gate.
+    let mut current_element_name: Option<GlobalSymbol> = None;
+    // Was this a left/right mouse-down frame? Then focus is up for grabs.
+    let focusing = api.left_mouse_pressed() || api.right_mouse_pressed();
 
     let mut recursive_commands = Vec::<Layout>::new();
     let mut recursive_call_stack = HashMap::<GlobalSymbol, &DataSrc<Declaration>>::new();
@@ -3044,50 +2814,69 @@ where
                     Element::UnHoveredOpened { .. } => event_gate_unsupported!(), // TODO: needs hover-edge tracking in `API`
                     Element::UnHoveredClosed => event_gate_close!(),
 
-                    Element::FocusOpened { .. } => event_gate_unsupported!(), // TODO: needs the resolved element id before it's assigned
+                    // `focus`: gates its block while this (named) element is the
+                    // focused one - the analogue of `hover`. `focused` /
+                    // `unfocused` still need focus-*edge* tracking, so they stay
+                    // unsupported like `hovered` / `unhovered`.
+                    Element::FocusOpened { event } => {
+                        let is_focused = current_element_name
+                            .is_some_and(|name| api.focus() == Some(name));
+                        event_gate_open!(is_focused, event)
+                    }
                     Element::FocusClosed => event_gate_close!(),
-                    Element::FocusedOpened { .. } => event_gate_unsupported!(),
+                    Element::FocusedOpened { .. } => event_gate_unsupported!(), // TODO: needs focus-edge tracking
                     Element::FocusedClosed => event_gate_close!(),
-                    Element::UnFocusedOpened { .. } => event_gate_unsupported!(),
+                    Element::UnFocusedOpened { .. } => event_gate_unsupported!(), // TODO: needs focus-edge tracking
                     Element::UnFocusedClosed => event_gate_close!(),
 
                     Element::LeftPressedOpened { event } => {
-                        event_gate_open!(api.left_mouse_pressed, event)
+                        event_gate_open!(api.left_mouse_pressed(), event)
                     }
                     Element::LeftPressedClosed => event_gate_close!(),
                     Element::LeftDownOpened { event } => {
-                        event_gate_open!(api.left_mouse_down, event)
+                        event_gate_open!(api.left_mouse_down(), event)
                     }
                     Element::LeftDownClosed => event_gate_close!(),
                     Element::LeftReleasedOpened { event } => {
-                        event_gate_open!(api.left_mouse_released, event)
+                        event_gate_open!(api.left_mouse_released(), event)
                     }
                     Element::LeftReleasedClosed => event_gate_close!(),
                     Element::LeftClickedOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.left_mouse_clicked, event)
+                        event_gate_open!(api.l.hovered() && api.left_mouse_clicked(), event)
                     }
                     Element::LeftClickedClosed => event_gate_close!(),
                     Element::LeftDoubleClickedOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.left_mouse_double_clicked, event)
+                        event_gate_open!(api.l.hovered() && api.left_mouse_double_clicked(), event)
                     }
                     Element::LeftDoubleClickedClosed => event_gate_close!(),
                     Element::LeftTripleClickedOpened { .. } => event_gate_unsupported!(), // TODO: `API` doesn't track triple-clicks yet
                     Element::LeftTripleClickedClosed => event_gate_close!(),
 
+                    // `key-event` only fires while its element holds focus - the
+                    // runner checks that here, so a layout never has to nest it
+                    // inside a `focus` block. (Only named elements are focusable,
+                    // so an unnamed `key-event` element is simply never active.)
+                    Element::KeyEventOpened { event } => {
+                        let focused = current_element_name
+                            .is_some_and(|name| api.focus() == Some(name));
+                        event_gate_open!(focused && !api.key_events().is_empty(), event)
+                    }
+                    Element::KeyEventClosed => event_gate_close!(),
+
                     Element::RightPressedOpened { event } => {
-                        event_gate_open!(api.right_mouse_pressed, event)
+                        event_gate_open!(api.right_mouse_pressed(), event)
                     }
                     Element::RightPressedClosed => event_gate_close!(),
                     Element::RightDownOpened { event } => {
-                        event_gate_open!(api.right_mouse_down, event)
+                        event_gate_open!(api.right_mouse_down(), event)
                     }
                     Element::RightDownClosed => event_gate_close!(),
                     Element::RightReleasedOpened { event } => {
-                        event_gate_open!(api.right_mouse_released, event)
+                        event_gate_open!(api.right_mouse_released(), event)
                     }
                     Element::RightReleasedClosed => event_gate_close!(),
                     Element::RightClickedOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.right_mouse_clicked, event)
+                        event_gate_open!(api.l.hovered() && api.right_mouse_clicked(), event)
                     }
                     Element::RightClickedClosed => event_gate_close!(),
 
@@ -3125,6 +2914,7 @@ where
                                     &mut item_text_config,
                                     user_app,
                                     pointer,
+                                    focus_target,
                                 );
                             }
                         }
@@ -3156,6 +2946,7 @@ where
                                 &mut item_text_config,
                                 user_app,
                                 pointer,
+                                focus_target,
                             );
                         }
                     }
@@ -3201,14 +2992,24 @@ where
                         nesting_level += 1;
                         if skip.is_none() {
                             *config = ElementConfiguration::default();
+                            current_element_name = None;
                         }
                     }
                     Element::ConfigClosed => {
                         nesting_level -= 1;
                         if skip.is_none() {
-                            let id = api.l.configure_element(config);
-                            if api.l.hovered() && api.left_mouse_clicked {
-                                api.focus = id;
+                            api.l.configure_element(config);
+                            // Rule: only a *named* element can take focus, and
+                            // only on the frame a mouse button went down while it
+                            // was hovered. `hovered()` is false for anything a
+                            // capture-mode floating element covers, and the
+                            // outermost-first walk means the innermost (topmost)
+                            // hovered named element writes last and wins.
+                            if focusing
+                                && let Some(name) = current_element_name
+                                && api.l.hovered()
+                            {
+                                *focus_target = Some(name);
                             }
                         }
                     }
@@ -3259,6 +3060,7 @@ where
                                     text_config,
                                     user_app,
                                     pointer,
+                                    focus_target,
                                 );
                             }
                         }
@@ -3278,6 +3080,12 @@ where
             }
             Layout::Config(config_command) => {
                 if skip.is_none() {
+                    // The element's `` `element` *name* `` lands here as a static
+                    // `Config::Id`; remember it (interned) so `ConfigClosed` and
+                    // the `focus` gate can key focus off the name.
+                    if let Config::Id(DataSrc::Static(name)) = &*config_command {
+                        current_element_name = Some(GlobalSymbol::new(name.as_str()));
+                    }
                     execute_config(
                         config_command,
                         config,
@@ -3661,7 +3469,6 @@ fn execute_config<UserApp>(
         Config::AlignRight => {
             text_config.align_right();
         }
-        Config::Editable(_state) => {}
         Config::FontId(id) => {
             text_config.font_id(u16::resolve_src(id, locals, user_app, list_data));
         }
@@ -4111,8 +3918,14 @@ mod tests {
         - `horizontal`
         - `aspect-ratio` 1.5
         - `fixed-square` 24
-        - `fixed` `width` 10 `height` 20
+        - `width-fixed` 10
+        - `height-fixed` 20
         - `id-indexed` row
+        - `scroll-horizontal`
+        - `scroll-vertical`
+        - `width-grow-min` 30
+        - `width-grow-max` 90
+        - `height-grow-min` 15
         - `floating`
             - `clip-to-parent`
             - `no-clip`
@@ -4120,7 +3933,10 @@ mod tests {
             - `pointer-pass-through`
             - `attach-root`
             - `z-index` 5
-            - `floating-dimensions` `width` 100 `height` 50
+            - `offset-x` 4
+            - `offset-y` 8
+            - `floating-dimensions-width` 100
+            - `floating-dimensions-height` 50
     - `text`
         - `config`
             - `letter-spacing` 2
@@ -4148,6 +3964,29 @@ mod tests {
         assert!(has(&|c| matches!(c, Config::FixedX(DataSrc::Static(w)) if *w == 10.0)));
         assert!(has(&|c| matches!(c, Config::FixedY(DataSrc::Static(h)) if *h == 20.0)));
         assert!(has(&|c| matches!(c, Config::IdIndexed(_))));
+        // split sizing keywords fold back into one config per axis
+        assert!(has(&|c| matches!(
+            c,
+            Config::GrowXminmax {
+                min: DataSrc::Static(min),
+                max: DataSrc::Static(max),
+            } if *min == 30.0 && *max == 90.0
+        )));
+        assert!(has(&|c| matches!(c, Config::GrowYmin(DataSrc::Static(m)) if *m == 15.0)));
+        assert!(has(&|c| matches!(
+            c,
+            Config::FloatingOffset {
+                x: DataSrc::Static(x),
+                y: DataSrc::Static(y),
+            } if *x == 4.0 && *y == 8.0
+        )));
+        assert!(has(&|c| matches!(
+            c,
+            Config::Clip {
+                vertical: DataSrc::Static(true),
+                horizontal: DataSrc::Static(true),
+            }
+        )));
         assert!(has(&|c| matches!(c, Config::FloatingClipToParent)));
         assert!(has(&|c| matches!(c, Config::FloatingNoClip)));
         assert!(has(&|c| matches!(c, Config::FloatingPointerCapture)));
