@@ -22,6 +22,16 @@ impl CameraController {
         }
     }
 
+    /// True while any movement key is held. `process_events` only fires on the
+    /// press/release edges, so the frame loop polls this each `about_to_wait` to
+    /// keep producing frames for the duration of a hold.
+    pub fn is_moving(&self) -> bool {
+        self.is_forward_pressed
+            || self.is_backward_pressed
+            || self.is_left_pressed
+            || self.is_right_pressed
+    }
+
     #[allow(dead_code)]
     pub fn process_events(&mut self, event: &WindowEvent) -> bool {
         match event {

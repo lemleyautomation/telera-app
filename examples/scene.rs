@@ -24,6 +24,10 @@ impl App for MyApp {
     }
 
     fn onload(&mut self, api: &mut API) {
+        // The model spins every frame, so ask the framework to keep drawing
+        // this window (paced to `frame_interval`, 30 fps by default).
+        api.set_viewport_continuous("scene", true);
+
         // rfd's `set_directory` needs an *absolute* path on Linux - the XDG
         // portal backend silently ignores a relative one (like `"./"`) and
         // falls back to the last-used folder, usually $HOME. `current_dir()`

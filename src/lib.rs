@@ -3,10 +3,7 @@ use notify::Watcher as _;
 pub use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 pub use rkyv;
 use std::{
-    collections::HashMap,
-    fmt::Debug,
-    path::{Path, PathBuf},
-    sync::{Arc, mpsc},
+    collections::HashMap, fmt::Debug, path::{Path, PathBuf}, sync::{Arc, mpsc}, time::{Duration, Instant},
 };
 pub use symbol_table;
 pub use telera_macros::*;
@@ -269,11 +266,6 @@ impl API {
         self.binder = binder;
     }
 
-    fn request_redraw_viewport(&mut self, window_id: WindowId) {
-        if let Some(viewport) = self.viewports.get_mut(&window_id) {
-            viewport.window.request_redraw();
-        }
-    }
     fn remove_viewport(&mut self, window_id: WindowId) {
         let viewport_title = if let Some(viewport) = self.viewports.get(&window_id) {
             viewport.window.title().clone()
@@ -682,7 +674,44 @@ impl API {
             && let Some(window) = self.viewports.get_mut(window_id)
         {
             window.page = page.to_string();
-            window.window.request_redraw();
+            window.redraw_requested = true;
+        }
+    }
+
+    /// Asks the framework to produce **one** more frame for `viewport` (its
+    /// title / lookup key). The frame is paced by that viewport's
+    /// `frame_interval` and the flag clears once it renders. For a running
+    /// animation, prefer [`API::set_viewport_continuous`].
+    pub fn request_redraw(&mut self, viewport: &str) {
+        if let Some(window_id) = self.viewport_lookup.get_by_left(viewport)
+            && let Some(window) = self.viewports.get_mut(window_id)
+        {
+            window.redraw_requested = true;
+        }
+    }
+
+    /// Turns a viewport's continuous-render loop on or off. While on, the
+    /// framework produces a frame every `frame_interval` for that window
+    /// (default 30 fps) without the app re-asking each frame. Turning it on also
+    /// wakes the loop immediately.
+    pub fn set_viewport_continuous(&mut self, viewport: &str, continuous: bool) {
+        if let Some(window_id) = self.viewport_lookup.get_by_left(viewport)
+            && let Some(window) = self.viewports.get_mut(window_id)
+        {
+            window.continuous_rendering = continuous;
+            if continuous {
+                window.redraw_requested = true;
+            }
+        }
+    }
+
+    /// Overrides a viewport's minimum gap between animation frames (default
+    /// 30 fps). Larger = slower / less CPU.
+    pub fn set_viewport_frame_interval(&mut self, viewport: &str, interval: Duration) {
+        if let Some(window_id) = self.viewport_lookup.get_by_left(viewport)
+            && let Some(window) = self.viewports.get_mut(window_id)
+        {
+            window.frame_interval = interval;
         }
     }
 
@@ -840,6 +869,52 @@ impl<UserApp> ApplicationHandler<InternalEvents> for Application<UserApp>
 where
     UserApp: App,
 {
+    /// The frame-loop scheduler. Runs once per event-loop iteration, right
+    /// before the loop blocks. It decides, per window, whether a frame is owed
+    /// (a pending `redraw_requested`, a `continuous_rendering` loop, or camera
+    /// movement) and, if so, whether enough time has passed since that window's
+    /// last frame to ask for another. When nothing is owed anywhere the loop is
+    /// parked on `ControlFlow::Wait` and sleeps until the next OS event -
+    /// that's what keeps idle CPU at ~0.
+    fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let Some(api) = &mut self.api else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        };
+
+        // App logic + window staging: moved off `window_event` so they run once
+        // per loop wake (i.e. per frame while animating), not once per OS event.
+        self.user_application.update(api);
+        api.create_staged_viewports(event_loop);
+
+        let now = Instant::now();
+        let camera_moving = api.scene_renderer.camera_controller.is_moving();
+
+        let mut next_wake: Option<Instant> = None;
+        for viewport in api.viewports.values_mut() {
+            let minimized =
+                viewport.surface_config.width == 0 || viewport.surface_config.height == 0;
+            let wants_frame = !minimized
+                && (viewport.redraw_requested
+                    || viewport.continuous_rendering
+                    || camera_moving);
+            if !wants_frame {
+                continue;
+            }
+
+            let due = viewport.last_render + viewport.frame_interval;
+            if now >= due {
+                viewport.window.request_redraw();
+            } else {
+                next_wake = Some(next_wake.map_or(due, |w| w.min(due)));
+            }
+        }
+
+        event_loop.set_control_flow(match next_wake {
+            Some(deadline) => ControlFlow::WaitUntil(deadline),
+            None => ControlFlow::Wait,
+        });
+    }
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         //println!("building context");
         if self.api.is_none() {
@@ -998,9 +1073,20 @@ where
         event: winit::event::WindowEvent,
     ) {
         if let Some(api) = &mut self.api {
-            api.create_staged_viewports(event_loop);
-            self.user_application.update(api);
-            api.scene_renderer.camera_controller.process_events(&event);
+            let camera_handled = api.scene_renderer.camera_controller.process_events(&event);
+
+            // Anything that can change what a frame would draw schedules one.
+            // `about_to_wait` turns the flag into a paced redraw request.
+            let touches_render = camera_handled
+                || matches!(
+                    &event,
+                    WindowEvent::Resized(_)
+                        | WindowEvent::ScaleFactorChanged { .. }
+                        | WindowEvent::MouseInput { .. }
+                        | WindowEvent::MouseWheel { .. }
+                        | WindowEvent::CursorMoved { .. }
+                        | WindowEvent::KeyboardInput { .. }
+                );
 
             match event {
                 WindowEvent::CloseRequested => {
@@ -1058,7 +1144,6 @@ where
                             MouseScrollDelta::PixelDelta(position) => position.into(),
                         };
                     }
-                    api.request_redraw_viewport(window_id);
                 }
                 WindowEvent::CursorMoved {
                     device_id: _,
@@ -1070,7 +1155,6 @@ where
                         viewport.mouse_delta.1 = position.1 - viewport.mouse_position.1;
                         viewport.mouse_position = position;
                     }
-                    api.request_redraw_viewport(window_id);
                 }
                 WindowEvent::KeyboardInput {
                     device_id: _,
@@ -1083,7 +1167,12 @@ where
                 }
                 _ => {}
             }
-            api.request_redraw_viewport(window_id);
+
+            if touches_render
+                && let Some(viewport) = api.viewports.get_mut(&window_id)
+            {
+                viewport.redraw_requested = true;
+            }
         }
     }
 
@@ -1103,8 +1192,8 @@ where
                 // it in the `Binder` under whatever page name it
                 // defines), so redraw every viewport rather than trying
                 // to work out which one(s) are affected.
-                for viewport in api.viewports.values() {
-                    viewport.window.request_redraw();
+                for viewport in api.viewports.values_mut() {
+                    viewport.redraw_requested = true;
                 }
             }
             Err(error) => {
@@ -1119,7 +1208,8 @@ where
     UserApp: App,
 {
     if let Ok(event_loop) = EventLoop::<InternalEvents>::with_user_event().build() {
-        event_loop.set_control_flow(ControlFlow::Poll);
+        // `about_to_wait` sets the real policy from the first iteration.
+        event_loop.set_control_flow(ControlFlow::Wait);
         let mut app = Application::new(event_loop.create_proxy(), user_application);
         event_loop.run_app(&mut app).unwrap();
     } else {

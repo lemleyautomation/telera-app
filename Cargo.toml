@@ -39,3 +39,9 @@ winresource = "0.1.19"
 [features]
 parse_logger = []
 drm = []
+
+# Line tables in optimized builds so `samply` / `cargo flamegraph` can name
+# frames (applies to the whole graph: telera-layout, wgpu, lyon, glyphon, ...).
+# ~10-15% larger binary, no runtime cost. See the Profiling section in readme.md.
+[profile.release]
+debug = "line-tables-only"

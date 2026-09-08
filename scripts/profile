@@ -1,0 +1,34 @@
+#!/bin/sh
+# Build an example in release (with line tables, see Cargo.toml) and record a
+# CPU profile with samply. Opens the Firefox Profiler when the app exits.
+#
+#   scripts/profile              # profiles examples/stress
+#   scripts/profile scene        # profiles examples/scene
+#   scripts/profile stress --foo # extra args after the name go to the example
+#
+# One-time host setup:
+#   cargo install samply
+#   # samply needs perf_event_paranoid <= 1 for a non-root user. Make it stick:
+#   echo 'kernel.perf_event_paranoid = 1' | sudo tee /etc/sysctl.d/10-perf.conf
+#   sudo sysctl --system
+set -e
+
+# `cargo install` drops binaries in ~/.cargo/bin, which isn't always on PATH.
+samply=samply
+command -v samply >/dev/null 2>&1 || samply="${CARGO_HOME:-$HOME/.cargo}/bin/samply"
+if ! [ -x "$samply" ] && ! command -v "$samply" >/dev/null 2>&1; then
+	echo "samply not found. Install it with: cargo install samply" >&2
+	exit 1
+fi
+
+if [ "$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 0)" -gt 1 ]; then
+	echo "kernel.perf_event_paranoid is > 1; samply needs it <= 1 for a non-root user." >&2
+	echo "  echo 'kernel.perf_event_paranoid = 1' | sudo tee /etc/sysctl.d/10-perf.conf && sudo sysctl --system" >&2
+	echo "(or, one-off: echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid)" >&2
+	exit 1
+fi
+
+ex="${1:-layout}"
+[ $# -gt 0 ] && shift
+cargo build --release --example "$ex"
+exec "$samply" record "./target/release/examples/$ex" "$@"

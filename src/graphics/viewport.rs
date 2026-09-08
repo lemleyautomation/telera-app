@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use symbol_table::GlobalSymbol;
 use winit::window::Window;
@@ -8,6 +8,10 @@ use winit::{dpi::PhysicalSize, event::KeyEvent};
 use crate::graphics::{
     depth_texture::DepthTexture, multi_sample_texture::MultiSampleTexture, ui_surface::UiSurface,
 };
+
+/// Default gap the animation / continuous-render path paces to: 30 fps. Apps
+/// override per window with `API::set_viewport_frame_interval`.
+pub const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_nanos(33_333_333);
 
 /// One window and everything that is specific to it: its GPU surface, the page
 /// it currently shows, and - the point of this struct - all the mouse / keyboard
@@ -34,9 +38,22 @@ pub struct Viewport {
     /// `ScaleFactorChanged`.
     pub dpi_scale: f32,
 
+    // --- frame loop ---
+    /// This window needs one frame produced. Set by input events, hot-reload,
+    /// `API::request_redraw`; cleared by [`Viewport::end_frame`]. The event loop
+    /// (`Application::about_to_wait`) turns it into a `window.request_redraw()`.
+    pub redraw_requested: bool,
+    /// App-driven "keep producing frames" switch for an animation loop, set via
+    /// `API::set_viewport_continuous`. Independent of the one-shot above.
+    pub continuous_rendering: bool,
+    /// Minimum wall-clock gap between frames while `redraw_requested` /
+    /// `continuous_rendering` / camera movement keep asking for them.
+    pub frame_interval: Duration,
+
     // --- timing ---
-    /// When this window was last drawn; only [`Viewport::begin_frame`] reads it.
-    last_render: Instant,
+    /// When this window was last drawn. [`Viewport::begin_frame`] stamps it and
+    /// `about_to_wait` paces off it.
+    pub last_render: Instant,
     /// Seconds between the last two redraws of this window.
     pub dt: f32,
 
@@ -98,6 +115,9 @@ impl Viewport {
             depth_texture,
             multi_sample_texture,
             ui_surface: None,
+            redraw_requested: false,
+            continuous_rendering: false,
+            frame_interval: DEFAULT_FRAME_INTERVAL,
             size,
             dpi_scale,
             last_render: Instant::now(),
@@ -157,6 +177,8 @@ impl Viewport {
         self.mouse_delta = (0.0, 0.0);
         self.key_events.clear();
         self.event_string.clear();
+        // This frame incorporated every pending input, so the request is met.
+        self.redraw_requested = false;
     }
 
     /// Records a left-button press for this window: sets the down/pressed flags,

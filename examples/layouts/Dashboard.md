@@ -1,0 +1,449 @@
+# root
+- `element`
+  - `config`
+    - `grow`
+    - `vertical`
+    - `color` rgb(9,9,14)
+    - `padding-all` 6
+    - `child-gap` 6
+
+  - `element`
+    - `config`
+      - `width-grow`
+      - `height-fixed` 34
+      - `horizontal`
+      - `align-children-y` center
+      - `child-gap` 12
+      - `padding-left` 10
+      - `padding-right` 10
+      - `color` rgb(14,14,22)
+      - `radius-all` 5
+    - `text`
+      - `config`
+        - `font-size` 15
+        - `color` rgb(126,150,255)
+      - NOCTURNE TERMINAL
+    - `element`
+      - `config`
+        - `horizontal`
+        - `width-grow`
+        - `height-grow`
+        - `align-children-y` center
+        - `child-gap` 16
+      - `list` indices
+        - `element`
+          - `config`
+            - `horizontal`
+            - `child-gap` 5
+            - `align-children-y` center
+          - `text`
+            - `config`
+              - `font-size` 11
+              - `color` rgb(140,148,172)
+            - *idx_sym*
+          - `text`
+            - `config`
+              - `font-size` 11
+              - `color` rgb(210,216,232)
+            - *idx_val*
+          - `text`
+            - `config`
+              - `font-size` 11
+              - `color` *idx_color*
+            - *idx_chg*
+    - `text`
+      - `config`
+        - `font-size` 11
+        - `color` rgb(120,128,150)
+      - *clock*
+
+  - `element`
+    - `config`
+      - `grow`
+      - `horizontal`
+      - `child-gap` 6
+
+    - `element`
+      - `config`
+        - `width-fixed` 344
+        - `height-grow`
+        - `vertical`
+        - `color` rgb(13,13,20)
+        - `radius-all` 5
+        - `padding-all` 8
+        - `child-gap` 4
+      - `element`
+        - `config`
+          - `horizontal`
+          - `width-grow`
+          - `child-gap` 6
+          - `padding-left` 4
+        - `text`
+          - `config`
+            - `font-size` 11
+            - `color` rgb(120,128,150)
+          - WATCHLIST
+        - `element`
+          - `config`
+            - `width-grow`
+        - `text`
+          - `config`
+            - `font-size` 11
+            - `color` rgb(90,96,120)
+          - LAST / CHG / %
+      - `element`
+        - `config`
+          - `width-grow`
+          - `height-grow`
+          - `vertical`
+          - `child-gap` 1
+          - `scroll-vertical`
+        - `list` watchlist
+          - `element`
+            - `config`
+              - `horizontal`
+              - `width-grow`
+              - `height-fixed` 18
+              - `align-children-y` center
+              - `child-gap` 4
+              - `padding-left` 4
+              - `color` rgb(15,15,23)
+              - `radius-all` 3
+            - `element`
+              - `config`
+                - `width-fixed` 52
+              - `text`
+                - `config`
+                  - `font-size` 12
+                  - `color` rgb(212,218,235)
+                - *sym*
+            - `element`
+              - `config`
+                - `width-fixed` 66
+              - `text`
+                - `config`
+                  - `font-size` 12
+                  - `color` rgb(150,158,180)
+                - *last*
+            - `element`
+              - `config`
+                - `width-fixed` 62
+              - `text`
+                - `config`
+                  - `font-size` 12
+                  - `color` *chg_color*
+                - *chg*
+            - `element`
+              - `config`
+                - `width-fixed` 56
+              - `text`
+                - `config`
+                  - `font-size` 12
+                  - `color` *chg_color*
+                - *chg_pct*
+            - `element`
+              - `config`
+                - `width-grow`
+              - `text`
+                - `config`
+                  - `font-size` 12
+                  - `color` rgb(92,100,128)
+                - *spark*
+
+    - `element`
+      - `config`
+        - `grow`
+        - `vertical`
+        - `child-gap` 4
+      - `element`
+        - `config`
+          - `horizontal`
+          - `width-grow`
+          - `height-fixed` 40
+          - `align-children-y` center
+          - `child-gap` 14
+          - `padding-left` 12
+          - `padding-right` 12
+          - `color` rgb(13,13,20)
+          - `radius-all` 5
+          - `scroll-horizontal`
+        - `text`
+          - `config`
+            - `font-size` 18
+            - `color` rgb(214,220,235)
+          - *sym_big*
+        - `text`
+          - `config`
+            - `font-size` 20
+            - `color` *last_color*
+          - *last_big*
+        - `text`
+          - `config`
+            - `font-size` 11
+            - `color` rgb(140,148,172)
+          - *o*
+        - `text`
+          - `config`
+            - `font-size` 11
+            - `color` rgb(140,148,172)
+          - *h*
+        - `text`
+          - `config`
+            - `font-size` 11
+            - `color` rgb(140,148,172)
+          - *l*
+        - `text`
+          - `config`
+            - `font-size` 11
+            - `color` rgb(200,206,224)
+          - *c*
+        - `element`
+          - `config`
+            - `width-grow`
+        - `text`
+          - `config`
+            - `font-size` 11
+            - `color` rgb(96,102,128)
+          - *hud*
+
+      - `element`
+        - `config`
+          - `width-grow`
+          - `height-grow`
+          - `horizontal`
+          - `child-gap` 4
+        - `element`
+          - `config`
+            - `width-grow`
+            - `height-grow`
+            - `color` rgb(11,11,17)
+            - `radius-all` 5
+            - `padding-all` 4
+            - `scroll-horizontal`
+          - `element`
+            - `config`
+              - `height-grow`
+              - `width-grow`
+              - `horizontal`
+              - `child-gap` 1
+            - `list` candles
+              - `element`
+                - `config`
+                  - `width-fixed` 5
+                  - `height-grow`
+                  - `vertical`
+                - `element`
+                  - `config`
+                    - `width-grow`
+                    - `height-percent` *cd_top*
+                - `element`
+                  - `config`
+                    - `width-grow`
+                    - `height-percent` *cd_range*
+                    - `color` *cd_color*
+        - `element`
+          - `config`
+            - `width-fixed` 52
+            - `height-grow`
+            - `vertical`
+            - `child-gap` 2
+          - `list` price_axis
+            - `text`
+              - `config`
+                - `font-size` 10
+                - `color` rgb(110,118,142)
+              - *price_axis*
+
+      - `element`
+        - `config`
+          - `width-grow`
+          - `height-fixed` 78
+          - `color` rgb(11,11,17)
+          - `radius-all` 5
+          - `padding-all` 4
+          - `scroll-horizontal`
+        - `element`
+          - `config`
+            - `height-grow`
+            - `width-grow`
+            - `horizontal`
+            - `child-gap` 1
+          - `list` candles
+            - `element`
+              - `config`
+                - `width-fixed` 5
+                - `height-grow`
+                - `vertical`
+              - `element`
+                - `config`
+                  - `width-grow`
+                  - `height-percent` *vol_top*
+              - `element`
+                - `config`
+                  - `width-grow`
+                  - `height-percent` *vol_range*
+                  - `color` *vol_color*
+
+      - `element`
+        - `config`
+          - `horizontal`
+          - `width-grow`
+          - `height-fixed` 16
+          - `child-gap` 4
+          - `scroll-horizontal`
+        - `list` time_axis
+          - `element`
+            - `config`
+              - `width-grow`
+            - `text`
+              - `config`
+                - `font-size` 10
+                - `color` rgb(110,118,142)
+              - *time_axis*
+
+    - `element`
+      - `config`
+        - `width-fixed` 300
+        - `height-grow`
+        - `vertical`
+        - `color` rgb(13,13,20)
+        - `radius-all` 5
+        - `padding-all` 8
+        - `child-gap` 3
+        - `scroll-vertical`
+      - `text`
+        - `config`
+          - `font-size` 11
+          - `color` rgb(120,128,150)
+        - ORDER BOOK
+      - `list` asks
+        - `element`
+          - `config`
+            - `horizontal`
+            - `width-grow`
+            - `height-fixed` 15
+            - `align-children-y` center
+            - `child-gap` 6
+            - `padding-left` 6
+            - `padding-right` 6
+            - `color` *side_color*
+          - `element`
+            - `config`
+              - `width-fixed` 78
+            - `text`
+              - `config`
+                - `font-size` 11
+                - `color` rgb(238,120,120)
+              - *price*
+          - `element`
+            - `config`
+              - `width-fixed` 70
+            - `text`
+              - `config`
+                - `font-size` 11
+                - `color` rgb(180,186,204)
+              - *size*
+          - `element`
+            - `config`
+              - `width-grow`
+            - `text`
+              - `config`
+                - `font-size` 11
+                - `color` rgb(110,116,140)
+              - *cum*
+      - `element`
+        - `config`
+          - `width-grow`
+          - `height-fixed` 20
+          - `align-children-y` center
+          - `align-children-x` center
+          - `color` rgb(20,20,30)
+          - `radius-all` 3
+        - `text`
+          - `config`
+            - `font-size` 11
+            - `color` rgb(150,158,180)
+          - *spread*
+      - `list` bids
+        - `element`
+          - `config`
+            - `horizontal`
+            - `width-grow`
+            - `height-fixed` 15
+            - `align-children-y` center
+            - `child-gap` 6
+            - `padding-left` 6
+            - `padding-right` 6
+            - `color` *side_color*
+          - `element`
+            - `config`
+              - `width-fixed` 78
+            - `text`
+              - `config`
+                - `font-size` 11
+                - `color` rgb(110,220,150)
+              - *price*
+          - `element`
+            - `config`
+              - `width-fixed` 70
+            - `text`
+              - `config`
+                - `font-size` 11
+                - `color` rgb(180,186,204)
+              - *size*
+          - `element`
+            - `config`
+              - `width-grow`
+            - `text`
+              - `config`
+                - `font-size` 11
+                - `color` rgb(110,116,140)
+              - *cum*
+      - `element`
+        - `config`
+          - `width-grow`
+          - `height-fixed` 20
+          - `align-children-y` center
+        - `text`
+          - `config`
+            - `font-size` 11
+            - `color` rgb(120,128,150)
+          - TIME &amp; SALES
+      - `list` tape
+        - `element`
+          - `config`
+            - `horizontal`
+            - `width-grow`
+            - `height-fixed` 14
+            - `align-children-y` center
+            - `child-gap` 6
+            - `padding-left` 6
+          - `element`
+            - `config`
+              - `fixed-square` 6
+              - `radius-all` 3
+              - `color` *dot_color*
+          - `element`
+            - `config`
+              - `width-fixed` 74
+            - `text`
+              - `config`
+                - `font-size` 11
+                - `color` rgb(110,116,140)
+              - *t_time*
+          - `element`
+            - `config`
+              - `width-fixed` 70
+            - `text`
+              - `config`
+                - `font-size` 11
+                - `color` rgb(190,196,214)
+              - *t_px*
+          - `element`
+            - `config`
+              - `width-grow`
+            - `text`
+              - `config`
+                - `font-size` 11
+                - `color` *dot_color*
+              - *t_sz*

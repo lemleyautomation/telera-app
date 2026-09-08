@@ -1,1 +1,6 @@
 /target
+
+# profiling artifacts
+/profile.json*
+/flamegraph.svg
+/perf.data*

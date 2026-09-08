@@ -48,3 +48,49 @@ a GUI app framework designed for performance, and modularity.
     - batch rendering of UI for performance
     - expose api for user created UI/3D Shaders
     - expose api for user Graphics middleware
+
+
+## Profiling
+
+`[profile.release]` in `Cargo.toml` sets `debug = "line-tables-only"`, so
+optimized builds carry enough debug info for a profiler to name frames across
+the whole graph (telera-layout / clay, wgpu, lyon, glyphon). No runtime cost,
+~10-15% larger binary. The first build after a fresh checkout recompiles all
+deps once.
+
+### samply (recommended)
+
+Statistical sampler that opens the recording in the Firefox Profiler web UI
+(flamegraph + inverted call tree + per-thread timeline). Pure Rust, no `perf`
+package, works without root.
+
+One-time host setup:
+
+```
+cargo install samply
+# ~/.cargo/bin must be on PATH (the script also falls back to it directly)
+# samply needs perf_event_paranoid <= 1 for a non-root user:
+echo 'kernel.perf_event_paranoid = 1' | sudo tee /etc/sysctl.d/10-perf.conf && sudo sysctl --system
+```
+
+Then:
+
+```
+scripts/profile stress        # build + record examples/stress, quit the window to view
+```
+
+`scripts/profile [example] [args…]` wraps `cargo build --release --example`
++ `samply record`; the example name defaults to `stress`, extra args pass to the
+example. To record without a browser:
+`samply record --save-only -o profile.json.gz ./target/release/examples/stress`,
+then `samply load profile.json.gz`.
+
+### cargo-flamegraph (single SVG)
+
+When you want one self-contained file to attach to an issue. Needs `perf`.
+
+```
+sudo pacman -S perf           # or the distro equivalent
+cargo install flamegraph      # one-time
+cargo flamegraph --release --example stress   # writes flamegraph.svg; Ctrl-C the app to finish
+```
