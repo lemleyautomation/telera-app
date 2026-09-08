@@ -1,6 +1,6 @@
+pub use cgmath;
 pub use image::{self, DynamicImage, load_from_memory};
 use notify::Watcher as _;
-pub use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 pub use rkyv;
 use std::{
     collections::HashMap, fmt::Debug, path::{Path, PathBuf}, sync::{Arc, mpsc}, time::{Duration, Instant},
@@ -24,19 +24,22 @@ mod graphics;
 pub use graphics::model::{
     BaseMesh, Euler, Model, Quaternion, Transform, TransformMatrix, load_model_gltf,
 };
+pub use graphics::camera::Camera;
 use graphics::{
-    depth_texture::DepthTexture, multi_sample_texture::MultiSampleTexture,
-    scene_renderer::SceneRenderer, texture, viewport::Viewport,
+    scene_renderer::SceneRenderer,
+    textures::{DepthTexture, MultiSampleTexture},
+    viewport::Viewport,
 };
 const MULTI_SAMPLE_COUNT: u32 = 1;
 
 mod ui_renderer;
 pub use ui_renderer::layout_runner::{
-    Binder, Config, DataSrc, Declaration, Element, EventContext, FieldAccess, ImageLoad, Layout,
-    LayoutReflector, LayoutRunnerReflection, ParsedLayout, normalize_field_symbol, process_layout,
+    Binder, Config, CustomElementSpec, DataSrc, Declaration, Element, EventContext, FieldAccess,
+    ImageLoad, Layout, LayoutReflector, LayoutRunnerReflection, ParsedLayout, normalize_field_symbol,
+    process_layout,
 };
 pub use ui_renderer::telera_layout::{Color, ElementConfiguration, TextConfig};
-pub use ui_renderer::ui_renderer::{CustomElement, LineConfig, UIImageDescriptor};
+pub use ui_renderer::ui_renderer::{CustomElement, UIImageDescriptor};
 use ui_renderer::{
     telera_layout::LayoutEngine, ui_renderer::CustomLayoutSettings,
     ui_renderer::commands_fingerprint, ui_renderer::UIRenderer,
@@ -142,6 +145,13 @@ pub struct API {
     /// cleared at the start of every layout pass.
     #[allow(clippy::vec_box)] // stable element addresses are the whole point
     image_frame_arena: Vec<Box<UIImageDescriptor>>,
+    /// Per-frame storage for the `CustomElement` shapes the markdown layout
+    /// resolves from a `` `circle` ``/`` `line` ``/`` `arc` ``/... element's
+    /// `CustomElementSpec`. Same rationale (and boxing) as `image_frame_arena`:
+    /// the layout engine holds a raw pointer to each until the render pass reads
+    /// it. Cleared at the start of every layout pass.
+    #[allow(clippy::vec_box)] // stable element addresses are the whole point
+    custom_shape_arena: Vec<Box<CustomElement>>,
     /// Atlases loaded from `` `load` `` directives in layout files, keyed by
     /// atlas name -> source path, so re-parsing a file (hot reload) can tell an
     /// already-loaded image from a new one.
@@ -316,6 +326,7 @@ impl API {
             let surface_config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format: *surface_format,
+                color_space: wgpu::SurfaceColorSpace::Auto,
                 width: size.width,
                 height: size.height,
                 present_mode: surface_capabilities.present_modes[0],
@@ -374,6 +385,10 @@ impl API {
             .get(&window_id)
             .map(|viewport| viewport.page.clone());
         let mut render_commands = Vec::new();
+        // `render-window` rects for the scene renderer. Collected from this
+        // frame's commands (below) even when the cached UI texture is reused -
+        // the scene redraws every frame.
+        let mut render_windows: Vec<ui_renderer::ui_renderer::RenderWindow> = Vec::new();
         let ui_renderer = if let Some(viewport) = self.viewports.get_mut(&window_id)
             && let Some(page) = page
         {
@@ -410,6 +425,7 @@ impl API {
             // engine holds no live pointers into the arena now, so it's safe to
             // drop them before this frame fills it again.
             self.image_frame_arena.clear();
+            self.custom_shape_arena.clear();
             self.l.begin_layout(ui_renderer);
             match self.watch_path {
                 RunType::None => user_application.layout(&page, self),
@@ -417,6 +433,10 @@ impl API {
             }
             let (commands, ui_renderer) = self.l.end_layout();
             render_commands = commands;
+            render_windows = ui_renderer::ui_renderer::collect_render_windows(
+                &render_commands,
+                ui_renderer.dpi_scale,
+            );
             //            println!("{:#?}", render_commands);
 
             Some(ui_renderer)
@@ -425,8 +445,9 @@ impl API {
         };
 
         if let Some(mut ui_renderer) = ui_renderer {
-            if let Some(viewport) = self.viewports.get_mut(&window_id) {
-                let drawable = viewport.get_current_texture();
+            if let Some(viewport) = self.viewports.get_mut(&window_id)
+                && let Some(drawable) = viewport.get_current_texture()
+            {
                 let drawable_view = drawable
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
@@ -451,7 +472,10 @@ impl API {
                     ui_renderer.dpi_scale,
                     ui_renderer.viewport_size,
                 );
-                let aspect = viewport.aspect();
+                let scene_target = (
+                    viewport.surface_config.width as f32,
+                    viewport.surface_config.height as f32,
+                );
                 let ui_surface = viewport.ui_surface.as_mut().unwrap();
                 let ui_dirty = ui_surface.last_fingerprint != Some(fingerprint);
 
@@ -464,6 +488,7 @@ impl API {
                                 label: Some("UI Pass"),
                                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                                     view: &ui_surface.color_view,
+                                    depth_slice: None,
                                     resolve_target: None,
                                     ops: wgpu::Operations {
                                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -487,6 +512,7 @@ impl API {
                                 ),
                                 timestamp_writes: None,
                                 occlusion_query_set: None,
+                                multiview_mask: None,
                             });
                         ui_renderer.render_layout(
                             render_commands,
@@ -506,6 +532,7 @@ impl API {
                                 label: Some("Scene Pass"),
                                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                                     view: &drawable_view,
+                                    depth_slice: None,
                                     resolve_target: None,
                                     ops: wgpu::Operations {
                                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -529,12 +556,15 @@ impl API {
                                 ),
                                 timestamp_writes: None,
                                 occlusion_query_set: None,
+                                multiview_mask: None,
                             });
                         self.scene_renderer.render(
                             &mut self.models,
                             &mut scene_pass,
+                            &self.device,
                             &self.queue,
-                            aspect,
+                            &render_windows,
+                            scene_target,
                         );
                     }
 
@@ -545,6 +575,7 @@ impl API {
                                 label: Some("UI Composite Pass"),
                                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                                     view: &drawable_view,
+                                    depth_slice: None,
                                     resolve_target: None,
                                     ops: wgpu::Operations {
                                         load: wgpu::LoadOp::Load,
@@ -554,6 +585,7 @@ impl API {
                                 depth_stencil_attachment: None,
                                 timestamp_writes: None,
                                 occlusion_query_set: None,
+                                multiview_mask: None,
                             });
                         ui_renderer
                             .composite(&mut composite_pass, &ui_surface.composite_bind_group);
@@ -568,6 +600,7 @@ impl API {
                             label: Some("RenderPass"),
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                                 view: &viewport.multi_sample_texture.view,
+                                depth_slice: None,
                                 resolve_target: Some(&drawable_view),
                                 ops: wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -591,18 +624,21 @@ impl API {
                             ),
                             timestamp_writes: None,
                             occlusion_query_set: None,
+                            multiview_mask: None,
                         });
 
                     self.scene_renderer.render(
                         &mut self.models,
                         &mut render_pass,
+                        &self.device,
                         &self.queue,
-                        aspect,
+                        &render_windows,
+                        scene_target,
                     );
                 }
 
                 self.queue.submit(std::iter::once(command_encoder.finish()));
-                drawable.present();
+                self.queue.present(drawable);
             }
 
             self.ui_renderer = Some(ui_renderer);
@@ -657,6 +693,14 @@ impl API {
     ) -> &UIImageDescriptor {
         self.image_frame_arena.push(Box::new(descriptor));
         self.image_frame_arena.last().unwrap()
+    }
+
+    /// Boxes `shape` into the per-frame arena and hands back a reference that
+    /// stays valid for the rest of the layout + render pass (see
+    /// [`API::custom_shape_arena`]).
+    pub(crate) fn stage_frame_shape(&mut self, shape: CustomElement) -> &CustomElement {
+        self.custom_shape_arena.push(Box::new(shape));
+        self.custom_shape_arena.last().unwrap()
     }
     pub fn set_viewport_title(&mut self, viewport: &str, title: &str) {
         if let Some(window_id) = self.viewport_lookup.get_by_left(viewport)
@@ -713,6 +757,41 @@ impl API {
         {
             window.frame_interval = interval;
         }
+    }
+
+    /// Registers a scene camera under `name` (at the default framing) unless one
+    /// already exists. A `` `render-window` `` element whose name is `name` will
+    /// draw the scene through it; position it from the layout's camera keywords
+    /// or from app code via [`API::camera`]. A camera named `"default"` always
+    /// exists and is what the scene falls back to full-screen when a frame has
+    /// no `render-window`.
+    pub fn add_camera(&mut self, name: &str) {
+        self.scene_renderer
+            .add_camera(&self.device, symbol_table::GlobalSymbol::new(name));
+    }
+
+    /// Removes the scene camera `name` (a no-op for `"default"`, which cannot be
+    /// removed).
+    pub fn remove_camera(&mut self, name: &str) {
+        self.scene_renderer
+            .remove_camera(symbol_table::GlobalSymbol::new(name));
+    }
+
+    /// Mutable access to a scene camera's framing for app-driven control - its
+    /// `eye` / `target` / `fovy` fields, or the `pan` / `orbit` / `zoom` /
+    /// `perspective` / … convenience methods:
+    ///
+    /// ```ignore
+    /// if let Some(camera) = api.camera("orbit") {
+    ///     camera.orbit(dt * 0.4, 0.0).zoom(0.01);
+    /// }
+    /// ```
+    ///
+    /// `None` if no camera of that name exists yet - call [`API::add_camera`]
+    /// first, or let a `render-window` create it.
+    pub fn camera(&mut self, name: &str) -> Option<&mut Camera> {
+        self.scene_renderer
+            .camera_mut(symbol_table::GlobalSymbol::new(name))
     }
 
     /// Reads and parses a single markdown layout file (see
@@ -888,16 +967,13 @@ where
         api.create_staged_viewports(event_loop);
 
         let now = Instant::now();
-        let camera_moving = api.scene_renderer.camera_controller.is_moving();
 
         let mut next_wake: Option<Instant> = None;
         for viewport in api.viewports.values_mut() {
             let minimized =
                 viewport.surface_config.width == 0 || viewport.surface_config.height == 0;
-            let wants_frame = !minimized
-                && (viewport.redraw_requested
-                    || viewport.continuous_rendering
-                    || camera_moving);
+            let wants_frame =
+                !minimized && (viewport.redraw_requested || viewport.continuous_rendering);
             if !wants_frame {
                 continue;
             }
@@ -931,9 +1007,10 @@ where
                         power_preference: wgpu::PowerPreference::default(),
                         compatible_surface: Some(&surface),
                         force_fallback_adapter: false,
+                        apply_limit_buckets: false,
                     };
                     //println!("requesting adapater context");
-                    if let Some(adapter) =
+                    if let Ok(adapter) =
                         pollster::block_on(instance.request_adapter(&adapter_options))
                     {
                         //println!("adapter context established");
@@ -941,10 +1018,12 @@ where
                             label: Some("main device"),
                             required_features: wgpu::Features::empty(),
                             required_limits: wgpu::Limits::default(),
+                            experimental_features: wgpu::ExperimentalFeatures::disabled(),
                             memory_hints: wgpu::MemoryHints::default(),
+                            trace: wgpu::Trace::Off,
                         };
                         if let Ok((device, queue)) =
-                            pollster::block_on(adapter.request_device(&device_descriptor, None))
+                            pollster::block_on(adapter.request_device(&device_descriptor))
                         {
                             //println!("device connection established");
                             let size = window.inner_size();
@@ -956,6 +1035,7 @@ where
                                 let surface_config = wgpu::SurfaceConfiguration {
                                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                                     format: *surface_format,
+                                    color_space: wgpu::SurfaceColorSpace::Auto,
                                     width: size.width,
                                     height: size.height,
                                     present_mode: surface_capabilities.present_modes[0],
@@ -1025,6 +1105,7 @@ where
                                     ui_renderer,
                                     l,
                                     image_frame_arena: Vec::new(),
+                                    custom_shape_arena: Vec::new(),
                                     loaded_layout_images: HashMap::new(),
                                     model_ids: HashMap::new(),
                                     models: Vec::<Model>::new(),
@@ -1073,20 +1154,17 @@ where
         event: winit::event::WindowEvent,
     ) {
         if let Some(api) = &mut self.api {
-            let camera_handled = api.scene_renderer.camera_controller.process_events(&event);
-
             // Anything that can change what a frame would draw schedules one.
             // `about_to_wait` turns the flag into a paced redraw request.
-            let touches_render = camera_handled
-                || matches!(
-                    &event,
-                    WindowEvent::Resized(_)
-                        | WindowEvent::ScaleFactorChanged { .. }
-                        | WindowEvent::MouseInput { .. }
-                        | WindowEvent::MouseWheel { .. }
-                        | WindowEvent::CursorMoved { .. }
-                        | WindowEvent::KeyboardInput { .. }
-                );
+            let touches_render = matches!(
+                &event,
+                WindowEvent::Resized(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::KeyboardInput { .. }
+            );
 
             match event {
                 WindowEvent::CloseRequested => {

@@ -1,5 +1,8 @@
 # TML (Telera Markdown Language) Specification
 
+For the Rust side - the `App` trait, `run`, the macros, and the `API` methods -
+see [`telera_api.md`](telera_api.md).
+
 This document describes TML as implemented today by
 `src/ui_renderer/layout_runner.rs` (the parser: `process_layout` /
 `process_element` / `process_configs` / `process_variable`, and the runner:
@@ -264,9 +267,10 @@ value). All elements below live inside a body list (the page body, a `list`/
 ```
 
 The generic container. `optional-id` (plain text, no dash needed before it)
-sets the element's Clay id via `Config::Id` - used by `element` (and
-`circle`/`line`) whenever it's useful to name an element, though nothing in
-the current config surface can *reference* another element's id yet (see
+sets the element's Clay id via `Config::Id` - used by `element` (and the
+drawn shapes `circle`/`ring`/`line`/`arc`/`bezier`, below) whenever
+it's useful to name an element, though nothing in the current config surface
+can *reference* another element's id yet (see
 [Known incomplete paths](#known-incomplete-paths)). Inside a `list`/`item`,
 the `id-indexed` config keyword sets an id that folds in the current
 iteration index, so repeated rows don't collide. Everything after the
@@ -295,25 +299,117 @@ after `config` is the text content itself: `*name*` resolves it dynamically
 (via `String`'s `ResolveValue`, ultimately `get_text`/declarations), plain
 text is used verbatim.
 
-### `circle` / `line`
+### `circle` / `ring` / `line` / `arc` / `bezier` (drawn shapes)
 
-Shaped like `element` (own optional id, own `config` block, no children of
-their own - they're leaves). `circle` fills an ellipse inscribed in the
-element's bounding box (so `width-fixed`/`height-fixed` set its diameter)
-using the element's `color`. `line` draws a vertical line down the center
-of the bounding box (so `height-fixed` sets its length) at a `width` set by
-the **`width`** config keyword (not `width-fixed`, which sizes the bounding
-box, not the stroke) - `width` also accepts a dynamic value, unlike most
-other custom-element-only config.
+Each is shaped like `element` (own optional id, own `config` block, and -
+like `element` - it may nest child elements after that block) and draws a
+single primitive filling, or inscribed in, the element's bounding box,
+stroked/filled with the element's `color`. Size the bounding box the usual
+way (`width-fixed` / `height-fixed` / `grow` / ...); the shape follows it.
+
+A shape's children are laid out inside it like any container and drawn on
+top of it, so nesting shapes stacks them: an `arc` whose child is another
+`arc` (each `grow`ing to fill the box) draws two concentric sweeps - a track
+plus a value - which is how an RPM-style gauge is built. See
+`examples/layouts/shapes.md`.
+
+| element | draws |
+|---|---|
+| `circle` | filled disc inscribed in the box |
+| `ring` | unfilled circle (outline) inscribed in the box |
+| `line` | straight line between two points (default: vertical, down the centre) |
+| `arc` | circular arc |
+| `bezier` | cubic bezier curve |
+
+**Points** (`line`/`bezier` endpoints and control points, `arc` centre) are
+normalised `0..1` fractions of the bounding box - `0,0` is the top-left
+corner, `1,1` the bottom-right - so a shape tracks its box as the layout
+resizes. Give a point with the `-x` / `-y` keywords, or name one of the nine
+`attatch-parent` anchor words with `from` / `to` / `center`:
 
 ```markdown
 - `line`
     - `config`
-        - `width-fixed` 2
-        - `height-fixed` 40
-        - `width` 3
+        - `width-fixed` 80
+        - `height-fixed` 80
         - `color` grey
+        - `from` top-left
+        - `to` bottom-right
+        - `thickness` 3
 ```
+
+Shape-config keywords (all take a single static-or-`*dynamic*` number, like
+the old `line` `width`; they only apply to the shape they belong to and are
+ignored elsewhere):
+
+| Keyword | Shapes | Meaning |
+|---|---|---|
+| `thickness` (alias `width`) | `ring` `line` `arc` `bezier` | stroke width in logical px |
+| `from` / `to` | `line` `bezier` | endpoint, as an anchor word (`top-left`, `center`, `bottom-right`, ...) |
+| `center` | `arc` | arc centre, as an anchor word |
+| `from-x` / `from-y` / `to-x` / `to-y` | `line` `bezier` | endpoint coordinate, `0..1` fraction of the box |
+| `ctrl1-x` / `ctrl1-y` / `ctrl2-x` / `ctrl2-y` | `bezier` | the two cubic control points, `0..1` fractions |
+| `center-x` / `center-y` | `arc` | arc centre coordinate, `0..1` fraction |
+| `radius` | `arc` | `0..1` fraction of `min(width, height) / 2` (`1.0` = inscribed) |
+| `start-angle` / `end-angle` | `arc` | degrees, clockwise from the 3 o'clock position |
+
+Bare keyword defaults: `line` is a 1px vertical line down the centre
+(unchanged from before shapes were expanded); `ring` a 1px inscribed
+outline; `arc` a 1px inscribed half-circle opening downward; `bezier` a 1px
+symmetric arch between the bottom corners.
+
+### `render-window`
+
+Shaped like the drawn shapes above (own `config` block, may nest children),
+but instead of drawing anything it is a **hole in the UI** through which the
+3D scene is rendered - into this element's bounding box, using its own
+`Camera`. Size and place the box the usual way; the scene fills it.
+
+The camera is named by the element's name (`render-window cockpit` uses
+camera `cockpit`); an un-named `render-window` uses the camera `default`. A
+name that has no camera yet is created (at a default framing). Cameras are
+never auto-removed - a camera no `render-window` references this frame just
+isn't drawn. App code reaches the same cameras via `api.camera("cockpit")` (returns
+`Option<&mut Camera>`) - `Camera` has `pan` / `orbit` / `zoom` / `dolly` /
+`frame` / `perspective` / `orthographic` / `clip_planes` convenience methods -
+plus `api.add_camera` / `api.remove_camera`. With no `render-window` anywhere
+in a frame, the `default` camera fills the whole window.
+
+Camera keywords (each a single static-or-`*dynamic*` number; an omitted one
+leaves that camera value as app code or a previous frame set it, so a
+camera's parameters can be split between the layout and Rust):
+
+| Keyword | Sets |
+|---|---|
+| `eye-x` / `eye-y` / `eye-z` | camera position in scene space |
+| `target-x` / `target-y` / `target-z` | the point the camera looks at |
+| `up-x` / `up-y` / `up-z` | the camera's up vector (default `0,1,0`) |
+| `fov` | vertical field of view, degrees - also switches to a **perspective** projection |
+| `ortho-height` | world units shown vertically - also switches to an **orthographic** projection (width follows the rect's aspect) |
+| `near` / `far` | near / far clip plane distances |
+
+Nothing opaque in the UI may sit *over* a `render-window`'s rect or it hides
+the scene - the region must be transparent all the way down (no ancestor
+`color`). `render-window` children, though, are drawn on top of its scene
+view (a HUD). Because clipping is per-rect, keyboard-driven camera movement
+was removed: drive cameras from `update()` or from these keywords.
+
+```markdown
+- `element` panes
+    - `config`
+        - `grow`
+        - `horizontal`
+    - `render-window` orbit
+        - `config`
+            - `grow`
+    - `render-window` front
+        - `config`
+            - `grow`
+            - `eye-z` *front_z*
+            - `fov` 50
+```
+
+See `examples/scene.rs` + `examples/layouts/scene.md`.
 
 ### `list` / `item`
 
@@ -403,8 +499,10 @@ literally.
 
 ## 5. Config reference
 
-Config commands live inside a `config` block (`element`/`circle`/`line`) or
-a text element's own `config` block (text-only subset). Each row below
+Config commands live inside a `config` block (`element`, a drawn shape
+`circle`/`ring`/`line`/`arc`/`bezier`, or a `render-window`) or a text
+element's own `config` block
+(text-only subset). Each row below
 gives the keyword, its argument shape, and what it sets. "single" means one
 value, static (plain text, parsed via `FromStr`) or dynamic (`*name*`). Every
 keyword takes at most one value; the clamped-sizing keywords come as a family
@@ -470,7 +568,8 @@ member folds them into a single sizing rule.
 | `letter-spacing` | single (number) | text: extra spacing between letters (carried through to `TextConfig::letter_spacing`; see the note in [Known incomplete paths](#known-incomplete-paths) about renderer support) |
 | `align` | plain text: `left`/`center`/`right` | text: paragraph alignment |
 | `wrap` | plain text: `words`/`lines`/`none` | text: wrap on whitespace (`words`), only on explicit newlines (`lines`), or never (`none`) |
-| `width` (inside a `line`'s own `config`) | single (number) | the line's stroke width - not a general config, only meaningful on `line` |
+| shape-config keywords (`thickness`/`width`, `from`/`to`/`center`, `from-x`, `radius`, `start-angle`, ...) | single (number) or anchor word | geometry of a drawn shape - see [`circle` / `ring` / `line` / `arc` / `bezier`](#circle--ring--line--arc--bezier-drawn-shapes); ignored outside the shape they belong to |
+| camera keywords (`eye-x/-y/-z`, `target-x/-y/-z`, `up-x/-y/-z`, `fov`, `ortho-height`, `near`, `far`) | single (number) | position a `render-window`'s camera - see [`render-window`](#render-window); ignored elsewhere |
 
 *Marked keywords parse into real `Element` commands but never actually
 fire - see [Known incomplete paths](#known-incomplete-paths).

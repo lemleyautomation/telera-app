@@ -1,0 +1,94 @@
+# shapes
+
+- `element` root
+  - `config`
+    - `grow`
+    - `color` rgb(30,30,38)
+    - `padding-all` 24
+    - `child-gap` 24
+    - `align-children-x` center
+    - `align-children-y` center
+
+  - `element` diagonal-line cell
+    - `config`
+      - `width-fixed` 160
+      - `height-fixed` 160
+      - `color` rgb(45,45,55)
+      - `radius-all` 8
+    - `line`
+      - `config`
+        - `grow`
+        - `color` rgb(120,200,255)
+        - `from` top-left
+        - `to` bottom-right
+        - `thickness` 4
+
+  - `element` rpm gauge cell
+    - `config`
+      - `width-fixed` 160
+      - `height-fixed` 160
+      - `color` rgb(45,45,55)
+      - `radius-all` 8
+    - `arc` track
+      - `config`
+        - `grow`
+        - `color` rgb(70,70,82)
+        - `start-angle` 130
+        - `end-angle` 410
+        - `radius` 0.85
+        - `thickness` 14
+      - `arc` value
+        - `config`
+          - `grow`
+          - `align-children-x` center
+          - `align-children-y` center
+          - `color` rgb(255,140,90)
+          - `start-angle` 130
+          - `end-angle` *gauge_end*
+          - `radius` 0.85
+          - `thickness` 14
+        - `circle` hub
+          - `config`
+            - `fixed-square` 26
+            - `color` rgb(255,140,90)
+
+  - `element` ring cell
+    - `config`
+      - `width-fixed` 160
+      - `height-fixed` 160
+      - `color` rgb(45,45,55)
+      - `radius-all` 8
+    - `ring`
+      - `config`
+        - `grow`
+        - `color` rgb(150,235,160)
+        - `thickness` 6
+
+  - `element` bezier cell
+    - `config`
+      - `width-fixed` 160
+      - `height-fixed` 160
+      - `color` rgb(45,45,55)
+      - `radius-all` 8
+    - `bezier`
+      - `config`
+        - `grow`
+        - `color` rgb(255,140,200)
+        - `from` bottom-left
+        - `to` top-right
+        - `ctrl1-x` 0.9
+        - `ctrl1-y` 1.0
+        - `ctrl2-x` 0.1
+        - `ctrl2-y` 0.0
+        - `thickness` 4
+
+  - `element` circle cell
+    - `config`
+      - `width-fixed` 160
+      - `height-fixed` 160
+      - `color` rgb(45,45,55)
+      - `radius-all` 8
+    - `circle`
+      - `config`
+        - `grow`
+        - `color` rgb(200,160,255)

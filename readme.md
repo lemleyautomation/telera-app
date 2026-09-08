@@ -17,7 +17,7 @@ a GUI app framework designed for performance, and modularity.
 
 
 ## Roadmap:
-- v0.5.0: In progress
+- v0.5.0:
     - build ui with custom script
         - recursive reusable components
         - access application data with macros simply by matching the variable name in your script
@@ -32,15 +32,13 @@ a GUI app framework designed for performance, and modularity.
         - startup immediately from template project
     - 3D rendering capabilities built in
         - convenient api to load/manipulate GLTF models
-    - Known Bugs:
-        - srcipt data access not working reliably
-        - Text input not possible
-        - UI components not working/recursive
-        - user can't set ui script directory
-        - no tests
-        - multi-window page setting from user app not working
-        - independent border widths not possible
-- v0.6.0 ~ v0.9.0: feature set not decided
+- v0.6.0: In progress
+  - allow user to load and render custom shaders for scene and ui
+  - allow multiple 3d scenes
+  - window interaction improvements (dbl/tpl clicks, drag and drop)
+  - cross platform testing (webassembly?)
+  - performance improvements
+- v0.7.0 ~ v0.9.0: feature set not decided
 - v1.0
     - rich set of highly customizable UI widgets
     - reactive animations for any/all UI configuration settings
@@ -48,6 +46,13 @@ a GUI app framework designed for performance, and modularity.
     - batch rendering of UI for performance
     - expose api for user created UI/3D Shaders
     - expose api for user Graphics middleware
+
+
+## Docs
+
+- [`docs/telera_api.md`](docs/telera_api.md) — the Rust API: `App`, `run`, the
+  macros, and every `API` method, with a trivial app to start from.
+- [`docs/tml-spec.md`](docs/tml-spec.md) — the TML markdown layout language.
 
 
 ## Profiling

@@ -3,17 +3,37 @@
 # root
 - element
   - config
-    - width-grow
-    - padding-all 5
-    - color black
-  - text
+    - grow
+    - vertical
+  - element topbar
     - config
-      - font-size 16
-      - line-height 20
-      - font-color white
-    - *fps*
-- element
-  - config
-    - height-grow
-    - width-fixed 100
-    - color grey
+      - width-grow
+      - height-fixed 28
+      - color rgb(15,15,18)
+      - padding-all 5
+    - text
+      - config
+        - font-size 16
+        - line-height 20
+        - font-color white
+      - *fps*
+  - element panes
+    - config
+      - grow
+      - horizontal
+      - child-gap 2
+    - render-window orbit
+      - config
+        - grow
+    - render-window front
+      - config
+        - grow
+        - eye-x 0
+        - eye-y 160
+        - eye-z *front_z*
+        - target-x 0
+        - target-y 120
+        - target-z 0
+        - ortho-height 1000
+        - near 1
+        - far 6000

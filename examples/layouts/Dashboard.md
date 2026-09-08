@@ -98,6 +98,7 @@
           - `vertical`
           - `child-gap` 1
           - `scroll-vertical`
+          - `scroll-horizontal`
         - `list` watchlist
           - `element`
             - `config`

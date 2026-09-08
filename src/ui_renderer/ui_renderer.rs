@@ -7,8 +7,9 @@ use glyphon::{
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, cosmic_text,
 };
 
+use lyon::geom::Arc;
 use lyon::geom::euclid::{Box2D, Point2D, Size2D, UnknownUnit};
-use lyon::math::point;
+use lyon::math::{Angle, point, vector};
 use lyon::path::Path;
 use lyon::path::builder::BorderRadii;
 use lyon::tessellation::*;
@@ -22,21 +23,194 @@ use telera_layout::{MeasureText, RenderCommand, Vec2};
 
 use symbol_table::GlobalSymbol;
 
-/// Per-instance configuration for a `line` custom element.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct LineConfig {
-    pub width_source: Option<GlobalSymbol>,
-    pub width: f32,
+/// One `render-window` element resolved for the current frame: the swapchain
+/// rectangle (physical pixels) to draw a scene [`Camera`](crate::Camera) into,
+/// plus any camera parameters the layout set this frame. A `None` override
+/// leaves that camera value untouched, so a camera's parameters can be split
+/// between app code and the layout.
+///
+/// Produced by [`collect_render_windows`] from the frame's render commands and
+/// handed to the scene renderer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderWindow {
+    pub camera: GlobalSymbol,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub eye_x: Option<f32>,
+    pub eye_y: Option<f32>,
+    pub eye_z: Option<f32>,
+    pub target_x: Option<f32>,
+    pub target_y: Option<f32>,
+    pub target_z: Option<f32>,
+    pub up_x: Option<f32>,
+    pub up_y: Option<f32>,
+    pub up_z: Option<f32>,
+    pub fov: Option<f32>,
+    pub near: Option<f32>,
+    pub far: Option<f32>,
+    /// When set, switches the camera to orthographic showing this many world
+    /// units vertically. (`fov` switches it back to perspective.)
+    pub ortho_height: Option<f32>,
+}
+
+impl RenderWindow {
+    /// A full-target window for `camera` with no layout-set camera overrides -
+    /// the implicit window used when a frame declares no `render-window` at all.
+    pub fn fullscreen(camera: GlobalSymbol, w: f32, h: f32) -> Self {
+        RenderWindow {
+            camera,
+            x: 0.0,
+            y: 0.0,
+            w,
+            h,
+            eye_x: None,
+            eye_y: None,
+            eye_z: None,
+            target_x: None,
+            target_y: None,
+            target_z: None,
+            up_x: None,
+            up_y: None,
+            up_z: None,
+            fov: None,
+            near: None,
+            far: None,
+            ortho_height: None,
+        }
+    }
+}
+
+/// Scans a frame's render commands for [`CustomElement::RenderWindow`] customs
+/// and turns each into a [`RenderWindow`] (rect scaled from logical to physical
+/// pixels by `dpi_scale`). Called every frame from `API::redraw_viewport` -
+/// unlike [`UIRenderer::render_layout`] it must run even when the cached UI
+/// texture is reused, because the scene is redrawn every frame.
+pub fn collect_render_windows(
+    commands: &[RenderCommand<'_, UIImageDescriptor, CustomElement, CustomLayoutSettings>],
+    dpi_scale: f32,
+) -> Vec<RenderWindow> {
+    commands
+        .iter()
+        .filter_map(|command| {
+            let RenderCommand::Custom(c) = command else {
+                return None;
+            };
+            let CustomElement::RenderWindow {
+                camera,
+                eye_x,
+                eye_y,
+                eye_z,
+                target_x,
+                target_y,
+                target_z,
+                up_x,
+                up_y,
+                up_z,
+                fov,
+                near,
+                far,
+                ortho_height,
+            } = *c.data
+            else {
+                return None;
+            };
+            Some(RenderWindow {
+                camera,
+                x: c.bounding_box.x * dpi_scale,
+                y: c.bounding_box.y * dpi_scale,
+                w: c.bounding_box.width * dpi_scale,
+                h: c.bounding_box.height * dpi_scale,
+                eye_x,
+                eye_y,
+                eye_z,
+                target_x,
+                target_y,
+                target_z,
+                up_x,
+                up_y,
+                up_z,
+                fov,
+                near,
+                far,
+                ortho_height,
+            })
+        })
+        .collect()
 }
 
 /// The custom layout elements this renderer knows how to draw, threaded through
 /// the layout engine as its custom-element payload.
+///
+/// Every positional field is a normalised `0.0..1.0` fraction of the element's
+/// bounding box (`0,0` = top-left, `1,1` = bottom-right), so a shape tracks its
+/// box as the layout resizes. `radius` is a fraction of `min(width, height) / 2`
+/// (`1.0` = inscribed). Angles are degrees, clockwise from the 3 o'clock
+/// position. `thickness` is a logical-pixel stroke width (scaled by `dpi_scale`
+/// at draw time).
+///
+/// This is the fully-resolved payload the renderer reads; the parser builds a
+/// [`CustomElementSpec`](crate::CustomElementSpec) of `DataSrc<f32>` and
+/// resolves it into one of these each frame.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum CustomElement {
+    /// Filled disc inscribed in the bounding box.
     #[default]
     Circle,
-    Line(LineConfig),
-    RenderWindow,
+    /// Unfilled circle (stroked outline), inscribed in the bounding box.
+    Ring { thickness: f32 },
+    /// Straight line from `(from_x, from_y)` to `(to_x, to_y)`.
+    Line {
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        thickness: f32,
+    },
+    /// Circular arc centred at `(center_x, center_y)`, swept from `start_angle`
+    /// to `end_angle`.
+    Arc {
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        start_angle: f32,
+        end_angle: f32,
+        thickness: f32,
+    },
+    /// Cubic bezier from `(from_x, from_y)` to `(to_x, to_y)` with control
+    /// points `(ctrl1_x, ctrl1_y)` and `(ctrl2_x, ctrl2_y)`.
+    Bezier {
+        from_x: f32,
+        from_y: f32,
+        ctrl1_x: f32,
+        ctrl1_y: f32,
+        ctrl2_x: f32,
+        ctrl2_y: f32,
+        to_x: f32,
+        to_y: f32,
+        thickness: f32,
+    },
+    /// A hole in the UI layer that the 3D scene is drawn into, through the
+    /// [`Camera`](crate::Camera) named `camera`. Each `Some` field overrides
+    /// that camera parameter for this frame; `None` leaves it as the camera
+    /// (app code, or a previous frame) last set it. See [`RenderWindow`].
+    RenderWindow {
+        camera: GlobalSymbol,
+        eye_x: Option<f32>,
+        eye_y: Option<f32>,
+        eye_z: Option<f32>,
+        target_x: Option<f32>,
+        target_y: Option<f32>,
+        target_z: Option<f32>,
+        up_x: Option<f32>,
+        up_y: Option<f32>,
+        up_z: Option<f32>,
+        fov: Option<f32>,
+        near: Option<f32>,
+        far: Option<f32>,
+        ortho_height: Option<f32>,
+    },
 }
 
 pub struct TextLine {
@@ -302,7 +476,6 @@ pub struct UIRenderer {
 impl MeasureText for UIRenderer {
     fn measure_text(&mut self, text: &str, text_config: telera_layout::TextConfig) -> Vec2 {
         self.measurement_buffer.set_metrics_and_size(
-            &mut self.font_system,
             Metrics {
                 font_size: text_config.font_size as f32 * self.dpi_scale,
                 line_height: match text_config.line_height {
@@ -314,10 +487,10 @@ impl MeasureText for UIRenderer {
             None,
         );
         self.measurement_buffer.set_text(
-            &mut self.font_system,
             text,
-            Attrs::new().family(Family::Serif),
+            &Attrs::new().family(Family::Serif),
             Shaping::Advanced,
+            None,
         );
         for ele in self.measurement_buffer.lines.iter_mut() {
             ele.set_align(Some(Align::Left));
@@ -339,10 +512,10 @@ pub fn get_buffer(text: &str) {
     let mut font_system = FontSystem::new();
     let mut buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
     buffer.set_text(
-        &mut font_system,
         text,
-        Attrs::new().family(Family::Serif),
+        &Attrs::new().family(Family::Serif),
         Shaping::Advanced,
+        None,
     );
     buffer.shape_until_scroll(&mut font_system, false);
 
@@ -435,7 +608,7 @@ impl UIRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -546,8 +719,8 @@ impl UIRenderer {
             },
             Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual, // 1.
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual), // 1.
                 stencil: wgpu::StencilState::default(),          // 2.
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -558,7 +731,7 @@ impl UIRenderer {
         self.text_renderer = Some(text_renderer);
     }
 
-    /// Layout + sampler a [`UiSurface`](crate::graphics::ui_surface::UiSurface)
+    /// Layout + sampler a [`UiSurface`](crate::graphics::textures::UiSurface)
     /// binds its colour texture into for compositing. Format-independent, so
     /// they exist from `new` (before `build_shaders`).
     pub fn composite_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -1256,109 +1429,99 @@ impl UIRenderer {
                         self.end_atlas();
                     }
                 }
-                RenderCommand::Custom(shape) => match shape.data {
-                    CustomElement::Circle => {
-                        let mut builder = Path::builder();
-                        builder.add_circle(
-                            Point2D::new(
-                                (shape.bounding_box.x + (shape.bounding_box.width / 2.0))
-                                    * self.dpi_scale,
-                                (shape.bounding_box.y + (shape.bounding_box.height / 2.0))
-                                    * self.dpi_scale,
-                            ),
-                            shape.bounding_box.width / 2.0,
-                            path::Winding::Negative,
-                        );
-                        let path = builder.build();
+                RenderCommand::Custom(shape) => {
+                    let dpi = self.dpi_scale;
+                    let bb = shape.bounding_box;
+                    // Maps a normalised (0..1, 0..1) point in the bounding box to
+                    // a physical-pixel path coordinate.
+                    let p = |fx: f32, fy: f32| {
+                        Point2D::new((bb.x + fx * bb.width) * dpi, (bb.y + fy * bb.height) * dpi)
+                    };
+                    // Half the smaller box dimension, physical pixels - the unit
+                    // `radius` fractions and the inscribed circle/ring use.
+                    let unit_radius = bb.width.min(bb.height) / 2.0 * dpi;
+                    let color = UIColor {
+                        r: shape.background_color.r / 255.0,
+                        g: shape.background_color.g / 255.0,
+                        b: shape.background_color.b / 255.0,
+                    };
 
-                        let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
-                        let mut tessellator = FillTessellator::new();
-                        if tessellator
-                            .tessellate_path(
-                                &path,
-                                &FillOptions::default()
-                                    .with_tolerance(0.1)
-                                    .with_fill_rule(lyon::tessellation::FillRule::EvenOdd),
-                                &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| {
-                                    UIVertex {
-                                        position: UIPosition {
-                                            x: vertex.position().x,
-                                            y: vertex.position().y,
-                                            z,
-                                        },
-                                        texture: 0,
-                                        color: UIColor {
-                                            r: shape.background_color.r / 255.0,
-                                            g: shape.background_color.g / 255.0,
-                                            b: shape.background_color.b / 255.0,
-                                        },
-                                    }
-                                }),
-                            )
-                            .is_ok()
-                        {
-                            let mut offset_indices = geometry
-                                .indices
-                                .iter()
-                                .map(|index| index + self.vertices.len() as u32)
-                                .collect::<Vec<u32>>();
-                            self.vertices.append(&mut geometry.vertices);
-                            self.indices.append(&mut offset_indices);
-                            self.batch_index_end = self.indices.len() as u32;
+                    match *shape.data {
+                        CustomElement::Circle => {
+                            let mut builder = Path::builder();
+                            builder.add_circle(p(0.5, 0.5), unit_radius, path::Winding::Negative);
+                            self.fill_path(&builder.build(), color, z);
                         }
-                    }
-                    CustomElement::Line(line_config) => {
-                        let mut builder = Path::builder();
-                        builder.begin(Point2D::new(
-                            (shape.bounding_box.x + (shape.bounding_box.width / 2.0)
-                                - (line_config.width / 2.0))
-                                * self.dpi_scale,
-                            shape.bounding_box.y * self.dpi_scale,
-                        ));
-                        builder.line_to(Point2D::new(
-                            (shape.bounding_box.x + (shape.bounding_box.width / 2.0)
-                                - (line_config.width / 2.0))
-                                * self.dpi_scale,
-                            (shape.bounding_box.y + shape.bounding_box.height) * self.dpi_scale,
-                        ));
-                        builder.end(true);
-
-                        let path = builder.build();
-
-                        let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
-                        let mut tessellator = StrokeTessellator::new();
-                        if tessellator
-                            .tessellate_path(
-                                &path,
-                                &StrokeOptions::default().with_line_width(line_config.width),
-                                &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex| {
-                                    UIVertex {
-                                        position: vertex.position().into(),
-                                        texture: 0,
-                                        color: UIColor {
-                                            r: shape.background_color.r / 255.0,
-                                            g: shape.background_color.g / 255.0,
-                                            b: shape.background_color.b / 255.0,
-                                        },
-                                    }
-                                }),
-                            )
-                            .is_ok()
-                        {
-                            let mut offset_indices = geometry
-                                .indices
-                                .iter()
-                                .map(|index| index + self.vertices.len() as u32)
-                                .collect::<Vec<u32>>();
-                            self.vertices.append(&mut geometry.vertices);
-                            self.indices.append(&mut offset_indices);
-                            self.batch_index_end = self.indices.len() as u32;
+                        CustomElement::Ring { thickness } => {
+                            let mut builder = Path::builder();
+                            builder.add_circle(p(0.5, 0.5), unit_radius, path::Winding::Negative);
+                            self.stroke_path(&builder.build(), thickness * dpi, color, z);
                         }
+                        CustomElement::Line {
+                            from_x,
+                            from_y,
+                            to_x,
+                            to_y,
+                            thickness,
+                        } => {
+                            let mut builder = Path::builder();
+                            builder.begin(p(from_x, from_y));
+                            builder.line_to(p(to_x, to_y));
+                            builder.end(false);
+                            self.stroke_path(&builder.build(), thickness * dpi, color, z);
+                        }
+                        CustomElement::Arc {
+                            center_x,
+                            center_y,
+                            radius,
+                            start_angle,
+                            end_angle,
+                            thickness,
+                        } => {
+                            let r = radius * unit_radius;
+                            let arc = Arc {
+                                center: p(center_x, center_y),
+                                radii: vector(r, r),
+                                start_angle: Angle::degrees(start_angle),
+                                sweep_angle: Angle::degrees(end_angle - start_angle),
+                                x_rotation: Angle::zero(),
+                            };
+                            let mut builder = Path::builder();
+                            builder.begin(arc.from());
+                            arc.for_each_quadratic_bezier(&mut |curve| {
+                                builder.quadratic_bezier_to(curve.ctrl, curve.to);
+                            });
+                            builder.end(false);
+                            self.stroke_path(&builder.build(), thickness * dpi, color, z);
+                        }
+                        CustomElement::Bezier {
+                            from_x,
+                            from_y,
+                            ctrl1_x,
+                            ctrl1_y,
+                            ctrl2_x,
+                            ctrl2_y,
+                            to_x,
+                            to_y,
+                            thickness,
+                        } => {
+                            let mut builder = Path::builder();
+                            builder.begin(p(from_x, from_y));
+                            builder.cubic_bezier_to(
+                                p(ctrl1_x, ctrl1_y),
+                                p(ctrl2_x, ctrl2_y),
+                                p(to_x, to_y),
+                            );
+                            builder.end(false);
+                            self.stroke_path(&builder.build(), thickness * dpi, color, z);
+                        }
+                        // Draws nothing into the UI layer: the rect is left
+                        // transparent so the 3D scene composited underneath
+                        // shows through. The scene renderer picks it up from
+                        // `collect_render_windows`.
+                        CustomElement::RenderWindow { .. } => {}
                     }
-                    CustomElement::RenderWindow => {
-
-                    }
-                },
+                }
                 RenderCommand::None => {}
             }
             z -= 0.0001;
@@ -1438,12 +1601,12 @@ impl UIRenderer {
         let mut line = Buffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
 
         line.set_text(
-            &mut self.font_system,
             text,
-            Attrs::new()
+            &Attrs::new()
                 .family(Family::SansSerif)
                 .metadata((draw_order * 10000.0) as usize),
             Shaping::Advanced,
+            None,
         );
 
         line.shape_until_scroll(&mut self.font_system, false);
@@ -1475,6 +1638,71 @@ impl UIRenderer {
             self.atlas_map.insert(name.clone(), new_atlas);
             self.active_atlas = name;
         }
+    }
+
+    /// Fills `path` with a solid `color` at depth `z` and appends the result to
+    /// the current geometry buffers.
+    fn fill_path(&mut self, path: &Path, color: UIColor, z: f32) {
+        let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
+        let mut tessellator = FillTessellator::new();
+        if tessellator
+            .tessellate_path(
+                path,
+                &FillOptions::default()
+                    .with_tolerance(0.1)
+                    .with_fill_rule(lyon::tessellation::FillRule::EvenOdd),
+                &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| UIVertex {
+                    position: UIPosition {
+                        x: vertex.position().x,
+                        y: vertex.position().y,
+                        z,
+                    },
+                    texture: 0,
+                    color,
+                }),
+            )
+            .is_ok()
+        {
+            self.append_geometry(geometry);
+        }
+    }
+
+    /// Strokes `path` with a `width`-pixel line in `color` at depth `z` and
+    /// appends the result to the current geometry buffers.
+    fn stroke_path(&mut self, path: &Path, width: f32, color: UIColor, z: f32) {
+        let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
+        let mut tessellator = StrokeTessellator::new();
+        if tessellator
+            .tessellate_path(
+                path,
+                &StrokeOptions::default().with_line_width(width),
+                &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex| UIVertex {
+                    position: UIPosition {
+                        x: vertex.position().x,
+                        y: vertex.position().y,
+                        z,
+                    },
+                    texture: 0,
+                    color,
+                }),
+            )
+            .is_ok()
+        {
+            self.append_geometry(geometry);
+        }
+    }
+
+    /// Appends a tessellated `geometry` buffer to `self.vertices` / `self.indices`,
+    /// rebasing its indices onto the current vertex count and advancing the batch.
+    fn append_geometry(&mut self, mut geometry: VertexBuffers<UIVertex, u32>) {
+        let mut offset_indices = geometry
+            .indices
+            .iter()
+            .map(|index| index + self.vertices.len() as u32)
+            .collect::<Vec<u32>>();
+        self.vertices.append(&mut geometry.vertices);
+        self.indices.append(&mut offset_indices);
+        self.batch_index_end = self.indices.len() as u32;
     }
 }
 
@@ -1534,8 +1762,8 @@ impl UIPipeline {
 
         let piplaydesc = wgpu::PipelineLayoutDescriptor {
             label: Some("UI Render Pipeline Layout"),
-            bind_group_layouts: &[&texture_bind_group_layout, size_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&texture_bind_group_layout), Some(size_bind_group_layout)],
+            immediate_size: 0,
         };
         let pipeline_layout = device.create_pipeline_layout(&piplaydesc);
 
@@ -1545,13 +1773,16 @@ impl UIPipeline {
             write_mask: wgpu::ColorWrites::ALL,
         })];
 
+        let vertex_buffers: Vec<Option<wgpu::VertexBufferLayout>> =
+            self.vertex_buffer_layouts.iter().cloned().map(Some).collect();
+
         let render_pip_desc = wgpu::RenderPipelineDescriptor {
             label: Some("UI Render Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader_module,
                 entry_point: Some("vs_main"),
-                buffers: &self.vertex_buffer_layouts,
+                buffers: &vertex_buffers,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: wgpu::PrimitiveState {
@@ -1571,13 +1802,13 @@ impl UIPipeline {
             }),
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Always, // 1.
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Always), // 1.
                 stencil: wgpu::StencilState::default(),       // 2.
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample,
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         };
 
@@ -1599,8 +1830,8 @@ fn build_composite_pipeline(
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("UI Composite Pipeline Layout"),
-        bind_group_layouts: &[bind_group_layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("UI Composite Pipeline"),
@@ -1627,7 +1858,7 @@ fn build_composite_pipeline(
         }),
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -1726,13 +1957,79 @@ pub fn commands_fingerprint(
                 bbox(&mut h, &c.bounding_box);
                 color(&mut h, &c.background_color);
                 radii(&mut h, &c.corner_radii);
-                match c.data {
+                match *c.data {
                     CustomElement::Circle => 0u8.hash(&mut h),
-                    CustomElement::RenderWindow => 1u8.hash(&mut h),
-                    CustomElement::Line(line) => {
+                    CustomElement::RenderWindow {
+                        camera,
+                        eye_x,
+                        eye_y,
+                        eye_z,
+                        target_x,
+                        target_y,
+                        target_z,
+                        up_x,
+                        up_y,
+                        up_z,
+                        fov,
+                        near,
+                        far,
+                        ortho_height,
+                    } => {
+                        1u8.hash(&mut h);
+                        camera.hash(&mut h);
+                        for v in [
+                            eye_x, eye_y, eye_z, target_x, target_y, target_z, up_x, up_y, up_z,
+                            fov, near, far, ortho_height,
+                        ] {
+                            v.map(f32::to_bits).hash(&mut h);
+                        }
+                    }
+                    CustomElement::Line {
+                        from_x,
+                        from_y,
+                        to_x,
+                        to_y,
+                        thickness,
+                    } => {
                         2u8.hash(&mut h);
-                        line.width_source.hash(&mut h);
-                        line.width.to_bits().hash(&mut h);
+                        for v in [from_x, from_y, to_x, to_y, thickness] {
+                            f(&mut h, v);
+                        }
+                    }
+                    CustomElement::Ring { thickness } => {
+                        3u8.hash(&mut h);
+                        f(&mut h, thickness);
+                    }
+                    CustomElement::Arc {
+                        center_x,
+                        center_y,
+                        radius,
+                        start_angle,
+                        end_angle,
+                        thickness,
+                    } => {
+                        4u8.hash(&mut h);
+                        for v in [center_x, center_y, radius, start_angle, end_angle, thickness] {
+                            f(&mut h, v);
+                        }
+                    }
+                    CustomElement::Bezier {
+                        from_x,
+                        from_y,
+                        ctrl1_x,
+                        ctrl1_y,
+                        ctrl2_x,
+                        ctrl2_y,
+                        to_x,
+                        to_y,
+                        thickness,
+                    } => {
+                        5u8.hash(&mut h);
+                        for v in [
+                            from_x, from_y, ctrl1_x, ctrl1_y, ctrl2_x, ctrl2_y, to_x, to_y, thickness,
+                        ] {
+                            f(&mut h, v);
+                        }
                     }
                 }
             }
@@ -1825,7 +2122,7 @@ impl UIAtlasCreation for wgpu::BindGroup {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 

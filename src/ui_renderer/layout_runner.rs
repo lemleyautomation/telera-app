@@ -41,12 +41,11 @@
 //! same frame's tree.
 use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
-use markdown::mdast::{List, Node, Paragraph};
-use strum_macros::Display;
+use markdown::mdast::{List, ListItem, Node, Paragraph};
 use symbol_table::GlobalSymbol;
 use telera_layout::{Color, ElementConfiguration, TextConfig};
 
-use crate::{API, CustomElement, LineConfig, UIImageDescriptor};
+use crate::{API, CustomElement, UIImageDescriptor};
 
 const DEFAULT_TEXT: &str = ":(";
 
@@ -100,7 +99,7 @@ pub trait LayoutReflector {
 // Layout command types
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Display, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Layout {
     Element(Element),
     Declaration {
@@ -110,7 +109,7 @@ pub enum Layout {
     Config(Config),
 }
 
-#[derive(Clone, Debug, Display, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Element {
     ElementOpened {
         id: Option<DataSrc<String>>,
@@ -148,16 +147,6 @@ pub enum Element {
     // via `api.l` at that spot. A single leaf command, unlike most other
     // elements here, since there's no body of its own to open/close.
     FunctionCall(GlobalSymbol),
-
-    CircleOpened {
-        id: Option<DataSrc<String>>,
-    },
-    CircleClosed,
-
-    LineOpened {
-        id: Option<DataSrc<String>>,
-    },
-    LineClosed,
 
     // if / if-not
     IfOpened {
@@ -271,7 +260,7 @@ pub enum Element {
     RightClickedClosed,
 }
 
-#[derive(Clone, Debug, Display, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Config {
     Id(DataSrc<String>),
     /// `id_indexed` - like [`Config::Id`] but folds the current `list`/`item`
@@ -403,7 +392,7 @@ pub enum Config {
     },
     FloatingAttachElementToRoot,
 
-    CustomElement(CustomElement),
+    CustomElement(CustomElementSpec),
 
     Use {
         name: GlobalSymbol,
@@ -422,7 +411,7 @@ pub enum Config {
     WrapNone,
 }
 
-#[derive(Clone, Debug, Display, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Declaration {
     Bool(bool),
     Numeric(f32),
@@ -438,7 +427,7 @@ impl Default for Declaration {
     }
 }
 
-#[derive(Clone, Debug, Display, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DataSrc<T> {
     Static(T),
     Dynamic(GlobalSymbol),
@@ -448,6 +437,380 @@ impl<T: Default> Default for DataSrc<T> {
     fn default() -> Self {
         DataSrc::Static(T::default())
     }
+}
+
+/// The parser-side, unresolved twin of [`CustomElement`]: every geometry
+/// parameter is a [`DataSrc<f32>`] so it can be a literal or a `get-numeric`
+/// binding. [`execute_config`] resolves one of these into a plain
+/// [`CustomElement`] each frame (see [`CustomElementSpec::resolve`]).
+///
+/// The `Default` of each variant is the shape a bare keyword (`` `line` ``,
+/// `` `arc` ``, ...) draws with no config of its own.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CustomElementSpec {
+    Circle,
+    Ring {
+        thickness: DataSrc<f32>,
+    },
+    Line {
+        from_x: DataSrc<f32>,
+        from_y: DataSrc<f32>,
+        to_x: DataSrc<f32>,
+        to_y: DataSrc<f32>,
+        thickness: DataSrc<f32>,
+    },
+    Arc {
+        center_x: DataSrc<f32>,
+        center_y: DataSrc<f32>,
+        radius: DataSrc<f32>,
+        start_angle: DataSrc<f32>,
+        end_angle: DataSrc<f32>,
+        thickness: DataSrc<f32>,
+    },
+    Bezier {
+        from_x: DataSrc<f32>,
+        from_y: DataSrc<f32>,
+        ctrl1_x: DataSrc<f32>,
+        ctrl1_y: DataSrc<f32>,
+        ctrl2_x: DataSrc<f32>,
+        ctrl2_y: DataSrc<f32>,
+        to_x: DataSrc<f32>,
+        to_y: DataSrc<f32>,
+        thickness: DataSrc<f32>,
+    },
+    /// A `render-window` element: a hole for the 3D scene, drawn through the
+    /// camera named `camera` (the element's own name; un-named -> `default`).
+    /// Each `Some` override positions that camera from the layout this frame.
+    RenderWindow {
+        camera: GlobalSymbol,
+        eye_x: Option<DataSrc<f32>>,
+        eye_y: Option<DataSrc<f32>>,
+        eye_z: Option<DataSrc<f32>>,
+        target_x: Option<DataSrc<f32>>,
+        target_y: Option<DataSrc<f32>>,
+        target_z: Option<DataSrc<f32>>,
+        up_x: Option<DataSrc<f32>>,
+        up_y: Option<DataSrc<f32>>,
+        up_z: Option<DataSrc<f32>>,
+        fov: Option<DataSrc<f32>>,
+        near: Option<DataSrc<f32>>,
+        far: Option<DataSrc<f32>>,
+        ortho_height: Option<DataSrc<f32>>,
+    },
+}
+
+/// A numeric literal, for building a [`CustomElementSpec`] default.
+const fn s(v: f32) -> DataSrc<f32> {
+    DataSrc::Static(v)
+}
+
+impl CustomElementSpec {
+    /// The bare-keyword `` `ring` `` shape: a 1px inscribed outline.
+    pub fn ring() -> Self {
+        CustomElementSpec::Ring { thickness: s(1.0) }
+    }
+    /// The bare-keyword `` `line` `` shape: a 1px vertical line down the centre
+    /// of the bounding box (matches the pre-shape-expansion behaviour).
+    pub fn line() -> Self {
+        CustomElementSpec::Line {
+            from_x: s(0.5),
+            from_y: s(0.0),
+            to_x: s(0.5),
+            to_y: s(1.0),
+            thickness: s(1.0),
+        }
+    }
+    /// The bare-keyword `` `arc` `` shape: a 1px half-circle, inscribed, opening
+    /// downward.
+    pub fn arc() -> Self {
+        CustomElementSpec::Arc {
+            center_x: s(0.5),
+            center_y: s(0.5),
+            radius: s(1.0),
+            start_angle: s(0.0),
+            end_angle: s(180.0),
+            thickness: s(1.0),
+        }
+    }
+    /// The bare-keyword `` `render-window` `` element: a hole for the scene,
+    /// drawn through the `default` camera with no layout-set overrides.
+    /// `process_shape` swaps in the element's name as the camera.
+    pub fn render_window() -> Self {
+        CustomElementSpec::RenderWindow {
+            camera: GlobalSymbol::new("default"),
+            eye_x: None,
+            eye_y: None,
+            eye_z: None,
+            target_x: None,
+            target_y: None,
+            target_z: None,
+            up_x: None,
+            up_y: None,
+            up_z: None,
+            fov: None,
+            near: None,
+            far: None,
+            ortho_height: None,
+        }
+    }
+
+    /// The bare-keyword `` `bezier` `` shape: a 1px symmetric arch from the
+    /// bottom-left to the bottom-right corner.
+    pub fn bezier() -> Self {
+        CustomElementSpec::Bezier {
+            from_x: s(0.0),
+            from_y: s(1.0),
+            ctrl1_x: s(0.33),
+            ctrl1_y: s(0.0),
+            ctrl2_x: s(0.66),
+            ctrl2_y: s(0.0),
+            to_x: s(1.0),
+            to_y: s(1.0),
+            thickness: s(1.0),
+        }
+    }
+
+    /// Resolves every `DataSrc<f32>` parameter against the app / local
+    /// declarations, producing the plain [`CustomElement`] the renderer draws.
+    pub fn resolve<UserApp>(
+        &self,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> CustomElement
+    where
+        UserApp: LayoutRunnerReflection,
+    {
+        let r = |src: &DataSrc<f32>| f32::resolve_src(src, locals, user_app, list_data);
+        let ro = |src: &Option<DataSrc<f32>>| src.as_ref().map(&r);
+        match self {
+            CustomElementSpec::Circle => CustomElement::Circle,
+            CustomElementSpec::RenderWindow {
+                camera,
+                eye_x,
+                eye_y,
+                eye_z,
+                target_x,
+                target_y,
+                target_z,
+                up_x,
+                up_y,
+                up_z,
+                fov,
+                near,
+                far,
+                ortho_height,
+            } => CustomElement::RenderWindow {
+                camera: *camera,
+                eye_x: ro(eye_x),
+                eye_y: ro(eye_y),
+                eye_z: ro(eye_z),
+                target_x: ro(target_x),
+                target_y: ro(target_y),
+                target_z: ro(target_z),
+                up_x: ro(up_x),
+                up_y: ro(up_y),
+                up_z: ro(up_z),
+                fov: ro(fov),
+                near: ro(near),
+                far: ro(far),
+                ortho_height: ro(ortho_height),
+            },
+            CustomElementSpec::Ring { thickness } => CustomElement::Ring {
+                thickness: r(thickness),
+            },
+            CustomElementSpec::Line {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                thickness,
+            } => CustomElement::Line {
+                from_x: r(from_x),
+                from_y: r(from_y),
+                to_x: r(to_x),
+                to_y: r(to_y),
+                thickness: r(thickness),
+            },
+            CustomElementSpec::Arc {
+                center_x,
+                center_y,
+                radius,
+                start_angle,
+                end_angle,
+                thickness,
+            } => CustomElement::Arc {
+                center_x: r(center_x),
+                center_y: r(center_y),
+                radius: r(radius),
+                start_angle: r(start_angle),
+                end_angle: r(end_angle),
+                thickness: r(thickness),
+            },
+            CustomElementSpec::Bezier {
+                from_x,
+                from_y,
+                ctrl1_x,
+                ctrl1_y,
+                ctrl2_x,
+                ctrl2_y,
+                to_x,
+                to_y,
+                thickness,
+            } => CustomElement::Bezier {
+                from_x: r(from_x),
+                from_y: r(from_y),
+                ctrl1_x: r(ctrl1_x),
+                ctrl1_y: r(ctrl1_y),
+                ctrl2_x: r(ctrl2_x),
+                ctrl2_y: r(ctrl2_y),
+                to_x: r(to_x),
+                to_y: r(to_y),
+                thickness: r(thickness),
+            },
+        }
+    }
+
+    /// Applies a single shape-config keyword (`` `from-x` ``, `` `radius` ``,
+    /// `` `thickness` ``, the `` `from` ``/`` `to` ``/`` `center` `` anchor
+    /// words, the `render-window` camera keywords, ...) to this spec. Keywords
+    /// that don't apply to the current variant are ignored.
+    fn apply_param(&mut self, key: &str, config: &Paragraph) {
+        // `render-window` camera keywords each set one `Option<DataSrc<f32>>`
+        // override.
+        if let CustomElementSpec::RenderWindow {
+            eye_x,
+            eye_y,
+            eye_z,
+            target_x,
+            target_y,
+            target_z,
+            up_x,
+            up_y,
+            up_z,
+            fov,
+            near,
+            far,
+            ortho_height,
+            ..
+        } = self
+        {
+            let slot: Option<&mut Option<DataSrc<f32>>> = match key {
+                "eye-x" => Some(eye_x),
+                "eye-y" => Some(eye_y),
+                "eye-z" => Some(eye_z),
+                "target-x" => Some(target_x),
+                "target-y" => Some(target_y),
+                "target-z" => Some(target_z),
+                "up-x" => Some(up_x),
+                "up-y" => Some(up_y),
+                "up-z" => Some(up_z),
+                "fov" => Some(fov),
+                "near" => Some(near),
+                "far" => Some(far),
+                "ortho-height" => Some(ortho_height),
+                _ => None,
+            };
+            if let Some(slot) = slot {
+                *slot = optional_arg::<f32>(config);
+            }
+            return;
+        }
+
+        // `from`/`to`/`center` take an anchor word and set an (x, y) pair.
+        if let Some(anchor) = anchor_fraction_arg(config) {
+            let pair: Option<(&mut DataSrc<f32>, &mut DataSrc<f32>)> = match (key, &mut *self) {
+                ("from", CustomElementSpec::Line { from_x, from_y, .. })
+                | ("from", CustomElementSpec::Bezier { from_x, from_y, .. }) => {
+                    Some((from_x, from_y))
+                }
+                ("to", CustomElementSpec::Line { to_x, to_y, .. })
+                | ("to", CustomElementSpec::Bezier { to_x, to_y, .. }) => Some((to_x, to_y)),
+                ("center", CustomElementSpec::Arc {
+                    center_x, center_y, ..
+                }) => Some((center_x, center_y)),
+                _ => None,
+            };
+            if let Some((x, y)) = pair {
+                *x = s(anchor.0);
+                *y = s(anchor.1);
+            }
+            return;
+        }
+
+        let Some(value) = optional_arg::<f32>(config) else {
+            return;
+        };
+        let field: Option<&mut DataSrc<f32>> = match (key, &mut *self) {
+            // `thickness` (and its `width` back-compat alias) applies to every
+            // stroked shape.
+            ("thickness" | "width", CustomElementSpec::Line { thickness, .. })
+            | ("thickness" | "width", CustomElementSpec::Ring { thickness, .. })
+            | ("thickness" | "width", CustomElementSpec::Arc { thickness, .. })
+            | ("thickness" | "width", CustomElementSpec::Bezier { thickness, .. }) => Some(thickness),
+
+            ("from-x", CustomElementSpec::Line { from_x, .. })
+            | ("from-x", CustomElementSpec::Bezier { from_x, .. }) => Some(from_x),
+            ("from-y", CustomElementSpec::Line { from_y, .. })
+            | ("from-y", CustomElementSpec::Bezier { from_y, .. }) => Some(from_y),
+            ("to-x", CustomElementSpec::Line { to_x, .. })
+            | ("to-x", CustomElementSpec::Bezier { to_x, .. }) => Some(to_x),
+            ("to-y", CustomElementSpec::Line { to_y, .. })
+            | ("to-y", CustomElementSpec::Bezier { to_y, .. }) => Some(to_y),
+
+            ("ctrl1-x", CustomElementSpec::Bezier { ctrl1_x, .. }) => Some(ctrl1_x),
+            ("ctrl1-y", CustomElementSpec::Bezier { ctrl1_y, .. }) => Some(ctrl1_y),
+            ("ctrl2-x", CustomElementSpec::Bezier { ctrl2_x, .. }) => Some(ctrl2_x),
+            ("ctrl2-y", CustomElementSpec::Bezier { ctrl2_y, .. }) => Some(ctrl2_y),
+
+            ("center-x", CustomElementSpec::Arc { center_x, .. }) => Some(center_x),
+            ("center-y", CustomElementSpec::Arc { center_y, .. }) => Some(center_y),
+            ("radius", CustomElementSpec::Arc { radius, .. }) => Some(radius),
+            ("start-angle", CustomElementSpec::Arc { start_angle, .. }) => Some(start_angle),
+            ("end-angle", CustomElementSpec::Arc { end_angle, .. }) => Some(end_angle),
+            _ => None,
+        };
+        if let Some(field) = field {
+            *field = value;
+        }
+    }
+}
+
+/// Every config keyword handled by [`CustomElementSpec::apply_param`] - the
+/// shape-only keywords `process_configs` forwards to the current custom element
+/// instead of turning into a [`Config`].
+const SHAPE_PARAM_KEYWORDS: &[&str] = &[
+    "center", "center-x", "center-y", "ctrl1-x", "ctrl1-y", "ctrl2-x", "ctrl2-y", "end-angle",
+    "eye-x", "eye-y", "eye-z", "far", "fov", "from", "from-x", "from-y", "near", "ortho-height",
+    "radius", "start-angle", "target-x", "target-y", "target-z", "thickness", "to", "to-x", "to-y",
+    "up-x", "up-y", "up-z", "width",
+];
+
+/// Reads a `` `from` ``/`` `to` ``/`` `center` `` anchor argument - one of the
+/// nine words `attatch-parent` accepts - into a normalised `(x, y)` fraction of
+/// the bounding box. `None` if the argument isn't one of those words.
+fn anchor_fraction_arg(config: &Paragraph) -> Option<(f32, f32)> {
+    let word = match config.children.get(1) {
+        Some(Node::Text(text)) => text.value.trim(),
+        _ => return None,
+    };
+    if word == "center" {
+        return Some((0.5, 0.5));
+    }
+    let (vy, vx) = word.split_once('-')?;
+    let x = match vx {
+        "left" => 0.0,
+        "center" => 0.5,
+        "right" => 1.0,
+        _ => return None,
+    };
+    let y = match vy {
+        "top" => 0.0,
+        "center" => 0.5,
+        "bottom" => 1.0,
+        _ => return None,
+    };
+    Some((x, y))
 }
 
 /// Implemented by an application struct (normally via
@@ -620,25 +983,32 @@ pub struct ParsedLayout {
 /// `height`, and the alignment/attach-point value words) are deliberately *not*
 /// in this list.
 const LEADING_KEYWORDS: &[&str] = &[
-    "align", "align-children-x", "align-children-y", "aspect-ratio", "attach-root", "attach-self",
-    "attatch-parent", "border-all", "border-bottom", "border-color", "border-in-between",
-    "border-left", "border-right", "border-top", "child-gap", "circle", "clip-to-parent", "color",
-    "config", "declarations", "element", "fit", "fixed-square", "floating",
+    "align", "align-children-x", "align-children-y", "arc", "aspect-ratio", "attach-root",
+    "attach-self", "attatch-parent", "bezier", "border-all", "border-bottom", "border-color",
+    "border-in-between", "border-left", "border-right", "border-top", "center", "center-x",
+    "center-y", "child-gap", "circle", "clip-to-parent", "color", "config", "ctrl1-x", "ctrl1-y",
+    "ctrl2-x", "ctrl2-y", "declarations", "element", "end-angle", "eye-x", "eye-y", "eye-z", "far",
+    "fit", "fixed-square", "floating",
     "floating-dimensions-height", "floating-dimensions-width",
-    "fn", "focus", "focused", "font-color", "font-id", "font-size", "get-bool", "get-color",
+    "fn", "focus", "focused", "font-color", "font-id", "font-size", "fov", "from", "from-x",
+    "from-y", "get-bool", "get-color",
     "get-event", "get-image", "get-numeric", "get-text", "grow", "height-fit", "height-fit-max",
     "height-fit-min", "height-fixed", "height-grow", "height-grow-max", "height-grow-min",
     "height-percent", "horizontal", "hover", "hovered", "id-indexed", "if",
     "if-index", "if-index-not", "if-not", "image", "item", "key-event", "left-clicked",
     "left-dbl-clicked",
     "left-down", "left-pressed", "left-released", "left-tpl-clicked", "letter-spacing", "line",
-    "line-height", "list", "load", "no-clip", "offset-x", "offset-y", "padding-all",
+    "line-height", "list", "load", "near", "no-clip", "offset-x", "offset-y", "ortho-height",
+    "padding-all",
     "padding-bottom", "padding-left", "padding-right", "padding-top", "pointer", "pointer-capture",
-    "pointer-pass-through", "radius-all", "radius-bottom-left", "radius-bottom-right",
-    "radius-top-left", "radius-top-right", "right-clicked", "right-down", "right-pressed",
-    "right-released", "scroll-horizontal", "scroll-vertical", "set-bool", "set-color", "set-event",
-    "set-image", "set-numeric",
-    "set-text", "text", "unfocused", "unhovered", "use", "vertical", "width",
+    "pointer-pass-through", "radius", "radius-all", "radius-bottom-left", "radius-bottom-right",
+    "radius-top-left", "radius-top-right", "render-window", "right-clicked", "right-down",
+    "right-pressed",
+    "right-released", "ring", "scroll-horizontal", "scroll-vertical", "set-bool", "set-color",
+    "set-event", "set-image", "set-numeric",
+    "set-text", "start-angle", "target-x", "target-y", "target-z", "text", "thickness", "to", "to-x",
+    "to-y", "unfocused", "unhovered", "up-x", "up-y", "up-z",
+    "use", "vertical", "width",
     "width-fit", "width-fit-max", "width-fit-min", "width-fixed", "width-grow", "width-grow-max",
     "width-grow-min", "width-percent", "wrap", "z-index",
 ];
@@ -904,6 +1274,62 @@ fn is_declarations_block(node: &Node) -> bool {
     }
 }
 
+/// Emits the layout commands for a drawn-shape element (`` `circle` ``,
+/// `` `ring` ``, `` `line` ``, `` `arc` ``, `` `bezier` ``). Same structure as
+/// the `` `element` `` arm - open, optional id, run the `config` block (with
+/// `spec` threaded through so the shape-only keywords land on it), then any
+/// child elements, close. `spec` starts as the bare-keyword default and
+/// `process_configs` mutates it in place.
+///
+/// A shape can nest children (each their own element with its own bounding box
+/// and, if it wants, its own custom shape) - the layout engine treats a custom
+/// element as an ordinary container. Stacking arcs this way draws an RPM-gauge
+/// style dial: several concentric sweeps sharing one box.
+fn process_shape(
+    element: &ListItem,
+    element_declaration: &Paragraph,
+    mut spec: CustomElementSpec,
+) -> Vec<Layout> {
+    let mut layout_commands: Vec<Layout> = Vec::new();
+    layout_commands.push(Layout::Element(Element::ElementOpened { id: None }));
+    layout_commands.push(Layout::Element(Element::ConfigOpened));
+    if let Some(element_name) = element_declaration.children.get(1)
+        && let Node::Text(element_name) = element_name
+    {
+        let name = element_name.value.trim();
+        layout_commands.push(Layout::Config(Config::Id(DataSrc::Static(name.to_string()))));
+        // A `render-window`'s camera is its element name (un-named -> `default`).
+        if let CustomElementSpec::RenderWindow { camera, .. } = &mut spec {
+            *camera = GlobalSymbol::new(name);
+        }
+    }
+    if let Some(config) = element.children.get(1)
+        && let Node::List(configs) = config
+        && let Some(configs) = configs.children.first()
+        && let Node::ListItem(configs) = configs
+        && let Some(configs) = configs.children.get(1)
+        && let Node::List(config_commands) = configs
+    {
+        let mut layout_config_commands = process_configs(config_commands, &mut Some(&mut spec));
+        layout_commands.append(&mut layout_config_commands);
+    }
+    layout_commands.push(Layout::Config(Config::CustomElement(spec)));
+    layout_commands.push(Layout::Element(Element::ConfigClosed));
+
+    // Child elements sit after the `config` block, same as `element`.
+    if let Some(child_elements) = element.children.get(1)
+        && let Node::List(child_elements) = child_elements
+    {
+        for child_element in child_elements.children.iter().skip(1) {
+            let mut child_element = process_element(child_element);
+            layout_commands.append(&mut child_element);
+        }
+    }
+
+    layout_commands.push(Layout::Element(Element::ElementClosed));
+    layout_commands
+}
+
 fn process_element(element: &Node) -> Vec<Layout> {
     let mut layout_commands: Vec<Layout> = Vec::new();
 
@@ -959,59 +1385,36 @@ fn process_element(element: &Node) -> Vec<Layout> {
 
                 layout_commands.push(Layout::Element(Element::ElementClosed));
             }
-            "circle" => {
-                layout_commands.push(Layout::Element(Element::CircleOpened { id: None }));
-                layout_commands.push(Layout::Element(Element::ConfigOpened));
-                if let Some(element_name) = element_declaration.children.get(1)
-                    && let Node::Text(element_name) = element_name
-                {
-                    layout_commands.push(Layout::Config(Config::Id(DataSrc::Static(
-                        element_name.value.trim().to_string(),
-                    ))));
-                }
-                if let Some(config) = element.children.get(1)
-                    && let Node::List(configs) = config
-                    && let Some(configs) = configs.children.first()
-                    && let Node::ListItem(configs) = configs
-                    && let Some(configs) = configs.children.get(1)
-                    && let Node::List(config_commands) = configs
-                {
-                    let mut custom_element = CustomElement::Circle;
-                    let mut layout_config_commands =
-                        process_configs(config_commands, &mut Some(&mut custom_element));
-                    layout_commands.append(&mut layout_config_commands);
-                    layout_commands.push(Layout::Config(Config::CustomElement(custom_element)));
-                }
-                layout_commands.push(Layout::Element(Element::ConfigClosed));
-                layout_commands.push(Layout::Element(Element::CircleClosed));
-            }
-            "line" => {
-                layout_commands.push(Layout::Element(Element::LineOpened { id: None }));
-                layout_commands.push(Layout::Element(Element::ConfigOpened));
-                if let Some(element_name) = element_declaration.children.get(1)
-                    && let Node::Text(element_name) = element_name
-                {
-                    layout_commands.push(Layout::Config(Config::Id(DataSrc::Static(
-                        element_name.value.trim().to_string(),
-                    ))));
-                }
-                if let Some(config) = element.children.get(1)
-                    && let Node::List(configs) = config
-                    && let Some(configs) = configs.children.first()
-                    && let Node::ListItem(configs) = configs
-                    && let Some(configs) = configs.children.get(1)
-                    && let Node::List(config_commands) = configs
-                {
-                    let line_config = LineConfig::default();
-                    let mut custom_element = CustomElement::Line(line_config);
-                    let mut layout_config_commands =
-                        process_configs(config_commands, &mut Some(&mut custom_element));
-                    layout_commands.append(&mut layout_config_commands);
-                    layout_commands.push(Layout::Config(Config::CustomElement(custom_element)));
-                }
-                layout_commands.push(Layout::Element(Element::ConfigClosed));
-                layout_commands.push(Layout::Element(Element::LineClosed));
-            }
+            "circle" => layout_commands.append(&mut process_shape(
+                element,
+                element_declaration,
+                CustomElementSpec::Circle,
+            )),
+            "ring" => layout_commands.append(&mut process_shape(
+                element,
+                element_declaration,
+                CustomElementSpec::ring(),
+            )),
+            "line" => layout_commands.append(&mut process_shape(
+                element,
+                element_declaration,
+                CustomElementSpec::line(),
+            )),
+            "arc" => layout_commands.append(&mut process_shape(
+                element,
+                element_declaration,
+                CustomElementSpec::arc(),
+            )),
+            "bezier" => layout_commands.append(&mut process_shape(
+                element,
+                element_declaration,
+                CustomElementSpec::bezier(),
+            )),
+            "render-window" => layout_commands.append(&mut process_shape(
+                element,
+                element_declaration,
+                CustomElementSpec::render_window(),
+            )),
             "grow" => {
                 layout_commands.push(Layout::Element(Element::ElementOpened { id: None }));
                 layout_commands.push(Layout::Element(Element::ConfigOpened));
@@ -1450,7 +1853,7 @@ struct SizingAccumulator {
 
 fn process_configs(
     configuration_set: &List,
-    custom_element: &mut Option<&mut CustomElement>,
+    custom_element: &mut Option<&mut CustomElementSpec>,
 ) -> Vec<Layout> {
     let mut configs = Vec::new();
     let mut sizing = SizingAccumulator::default();
@@ -1637,17 +2040,12 @@ fn process_configs(
                     }
                     _ => {}
                 },
-                "width" => {
-                    if let Some(custom_element) = custom_element
-                        && let CustomElement::Line(line_config) = custom_element
-                    {
-                        match parameter_check::<f32>(config) {
-                            AvailableParameters::SingleDynamic(a) => {
-                                line_config.width_source = Some(a)
-                            }
-                            AvailableParameters::SingleStatic(a) => line_config.width = a,
-                            _ => {}
-                        }
+                // Shape-only geometry keywords (`from`, `to`, `from-x`, `radius`,
+                // `thickness`, the `width` alias, ...) land on the current custom
+                // element instead of becoming a `Config`.
+                key if SHAPE_PARAM_KEYWORDS.contains(&key) => {
+                    if let Some(spec) = custom_element {
+                        spec.apply_param(key, config);
                     }
                 }
                 "radius-all" => match parameter_check::<f32>(config) {
@@ -2963,31 +3361,6 @@ where
                             api.l.close_element();
                         }
                     }
-                    Element::CircleOpened { id: _ } => {
-                        nesting_level += 1;
-                        if skip.is_none() {
-                            api.l.open_element();
-                        }
-                    }
-                    Element::CircleClosed => {
-                        nesting_level -= 1;
-                        if skip.is_none() {
-                            api.l.close_element();
-                        }
-                    }
-                    Element::LineOpened { id: _ } => {
-                        nesting_level += 1;
-                        if skip.is_none() {
-                            api.l.open_element();
-                        }
-                    }
-                    Element::LineClosed => {
-                        nesting_level -= 1;
-                        if skip.is_none() {
-                            api.l.close_element();
-                        }
-                    }
-
                     Element::ConfigOpened => {
                         nesting_level += 1;
                         if skip.is_none() {
@@ -3261,14 +3634,12 @@ fn execute_config<UserApp>(
             config.color(color);
         }
 
-        Config::CustomElement(custom_element) => {
-            if let CustomElement::Line(line) = custom_element
-                && let Some(source) = line.width_source
-                && let Some(width) = user_app.get_numeric(&source, list_data)
-            {
-                line.width = width;
-            }
-            config.custom_element(custom_element);
+        Config::CustomElement(spec) => {
+            // Resolve every `DataSrc<f32>` parameter for this frame and stash the
+            // plain `CustomElement` in `api`'s per-frame arena so its address
+            // stays put until the render pass reads it (same as `Config::Image`).
+            let resolved = spec.resolve(locals, user_app, list_data);
+            config.custom_element(api.stage_frame_shape(resolved));
         }
         Config::RadiusAll(radius) => {
             config.radius_all(f32::resolve_src(radius, locals, user_app, list_data));
@@ -3894,10 +4265,10 @@ mod tests {
         let mut depth: i32 = 0;
         for command in &body {
             if let Layout::Element(element) = command {
-                let name = format!("{element}");
-                if name.ends_with("Opened") {
+                let name = format!("{element:?}");
+                if name.contains("Opened") {
                     depth += 1;
-                } else if name.ends_with("Closed") {
+                } else if name.contains("Closed") {
                     depth -= 1;
                 }
             }
@@ -4002,6 +4373,274 @@ mod tests {
         )));
         assert!(has(&|c| matches!(c, Config::LetterSpacing(DataSrc::Static(2)))));
         assert!(has(&|c| matches!(c, Config::WrapNone)));
+    }
+
+    /// The drawn-shape elements (`line`/`arc`/`ring`/`bezier`) parse their
+    /// geometry keywords onto a `CustomElementSpec`, including the `from`/`to`
+    /// anchor words and a dynamic `*binding*` parameter.
+    #[test]
+    fn shape_elements_parse() {
+        let src = "\
+# root
+- `element`
+    - `config`
+        - `grow`
+    - `line`
+        - `config`
+            - `from` top-left
+            - `to` bottom-right
+            - `thickness` 3
+    - `arc`
+        - `config`
+            - `start-angle` 45
+            - `end-angle` 270
+            - `radius` 0.8
+            - `thickness` *stroke*
+    - `ring`
+    - `bezier`
+        - `config`
+            - `ctrl1-x` 0.1
+            - `to-y` 0.25
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+        let specs: Vec<&CustomElementSpec> = body
+            .iter()
+            .filter_map(|c| match c {
+                Layout::Config(Config::CustomElement(s)) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(specs.len(), 4, "one spec per shape element");
+
+        assert!(specs.iter().any(|s| matches!(
+            s,
+            CustomElementSpec::Line {
+                from_x: DataSrc::Static(fx),
+                from_y: DataSrc::Static(fy),
+                to_x: DataSrc::Static(tx),
+                to_y: DataSrc::Static(ty),
+                thickness: DataSrc::Static(t),
+            } if *fx == 0.0 && *fy == 0.0 && *tx == 1.0 && *ty == 1.0 && *t == 3.0
+        )));
+        assert!(specs.iter().any(|s| matches!(
+            s,
+            CustomElementSpec::Arc {
+                start_angle: DataSrc::Static(sa),
+                end_angle: DataSrc::Static(ea),
+                radius: DataSrc::Static(r),
+                thickness: DataSrc::Dynamic(_),
+                ..
+            } if *sa == 45.0 && *ea == 270.0 && *r == 0.8
+        )));
+        assert!(specs.iter().any(|s| matches!(
+            s,
+            CustomElementSpec::Ring {
+                thickness: DataSrc::Static(t)
+            } if *t == 1.0
+        )));
+        assert!(specs.iter().any(|s| matches!(
+            s,
+            CustomElementSpec::Bezier {
+                ctrl1_x: DataSrc::Static(c),
+                to_y: DataSrc::Static(ty),
+                ..
+            } if *c == 0.1 && *ty == 0.25
+        )));
+    }
+
+    /// A drawn shape can nest children - another shape, or a plain `element` -
+    /// each opened/closed like a normal container (an `arc` inside an `arc` is
+    /// how an RPM gauge is drawn).
+    #[test]
+    fn shape_elements_nest_children() {
+        let src = "\
+# root
+- `arc` outer
+    - `config`
+        - `grow`
+        - `end-angle` 300
+    - `arc` inner
+        - `config`
+            - `grow`
+            - `end-angle` 220
+        - `circle` hub
+            - `config`
+                - `fixed-square` 10
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+
+        // three shapes: outer arc, inner arc, hub circle
+        let specs: Vec<&CustomElementSpec> = body
+            .iter()
+            .filter_map(|c| match c {
+                Layout::Config(Config::CustomElement(s)) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(specs.len(), 3);
+        assert_eq!(
+            specs
+                .iter()
+                .filter(|s| matches!(s, CustomElementSpec::Arc { .. }))
+                .count(),
+            2
+        );
+        assert!(specs.iter().any(|s| matches!(s, CustomElementSpec::Circle)));
+
+        // balanced open/close, and the outer shape's `CustomElement` config is
+        // emitted before its children's opens (parent drawn first).
+        let kinds: Vec<&Layout> = body.iter().collect();
+        let outer_custom = kinds
+            .iter()
+            .position(|c| matches!(c, Layout::Config(Config::CustomElement(_))))
+            .unwrap();
+        let inner_open = kinds
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| matches!(c, Layout::Element(Element::ElementOpened { .. })))
+            .nth(1)
+            .map(|(i, _)| i)
+            .unwrap();
+        assert!(outer_custom < inner_open);
+        assert_eq!(
+            body.iter()
+                .filter(|c| matches!(c, Layout::Element(Element::ElementOpened { .. })))
+                .count(),
+            body.iter()
+                .filter(|c| matches!(c, Layout::Element(Element::ElementClosed)))
+                .count()
+        );
+    }
+
+    /// `render-window` parses like a shape: camera name = element name (un-named
+    /// -> `default`), and each camera keyword becomes an `Option<DataSrc<f32>>`
+    /// override (dynamic when written as `*field*`).
+    #[test]
+    fn render_window_parses() {
+        let src = "\
+# root
+- `render-window` cockpit
+    - `config`
+        - `grow`
+        - `eye-z` *cam_z*
+        - `fov` 60
+- `render-window`
+    - `config`
+        - `grow`
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+        let specs: Vec<&CustomElementSpec> = body
+            .iter()
+            .filter_map(|c| match c {
+                Layout::Config(Config::CustomElement(s)) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(specs.len(), 2);
+
+        assert!(specs.iter().any(|s| matches!(
+            s,
+            CustomElementSpec::RenderWindow {
+                camera,
+                eye_z: Some(DataSrc::Dynamic(_)),
+                fov: Some(DataSrc::Static(f)),
+                eye_x: None,
+                ..
+            } if camera.as_str() == "cockpit" && *f == 60.0
+        )));
+        // un-named render-window -> the shared `default` camera, no overrides
+        assert!(specs.iter().any(|s| matches!(
+            s,
+            CustomElementSpec::RenderWindow { camera, fov: None, .. }
+                if camera.as_str() == "default"
+        )));
+    }
+
+    /// The `shapes` example layout parses; its RPM-gauge cell nests an `arc`
+    /// (and a `circle` hub) inside an `arc`, so shape elements carry children.
+    #[test]
+    fn shapes_example_parses() {
+        let file = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/layouts/shapes.md"
+        ))
+        .unwrap();
+        // fully backticked already - the pre-pass must not touch it
+        assert_eq!(add_missing_keyword_backticks(&file), file);
+
+        let parsed = process_layout(file).expect("shapes.md should parse");
+        let specs: Vec<&CustomElementSpec> = parsed
+            .body
+            .iter()
+            .filter_map(|c| match c {
+                Layout::Config(Config::CustomElement(s)) => Some(s),
+                _ => None,
+            })
+            .collect();
+        let count = |pred: &dyn Fn(&CustomElementSpec) -> bool| {
+            specs.iter().filter(|s| pred(s)).count()
+        };
+        assert_eq!(count(&|s| matches!(s, CustomElementSpec::Line { .. })), 1);
+        assert_eq!(count(&|s| matches!(s, CustomElementSpec::Arc { .. })), 2, "gauge = arc-in-arc");
+        assert_eq!(count(&|s| matches!(s, CustomElementSpec::Ring { .. })), 1);
+        assert_eq!(count(&|s| matches!(s, CustomElementSpec::Bezier { .. })), 1);
+        assert_eq!(count(&|s| matches!(s, CustomElementSpec::Circle)), 2, "shape circle + gauge hub");
+        // the inner gauge arc's end-angle is bound to `*gauge_end*`
+        assert!(specs.iter().any(|s| matches!(
+            s,
+            CustomElementSpec::Arc { end_angle: DataSrc::Dynamic(_), .. }
+        )));
+
+        // The gauge arc's child render commands (inner arc, hub) sit between its
+        // own open and close - i.e. it is a container, not a leaf.
+        let opens = parsed
+            .body
+            .iter()
+            .filter(|c| matches!(c, Layout::Element(Element::ElementOpened { .. })))
+            .count();
+        let closes = parsed
+            .body
+            .iter()
+            .filter(|c| matches!(c, Layout::Element(Element::ElementClosed)))
+            .count();
+        assert_eq!(opens, closes);
+    }
+
+    /// The `scene` example layout (bare, non-backticked style) parses to two
+    /// `render-window` panes - `orbit` (app-driven) and `front` (layout keywords,
+    /// `eye-z` bound dynamically).
+    #[test]
+    fn scene_example_parses() {
+        let file = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/layouts/scene.md"
+        ))
+        .unwrap();
+        let parsed = process_layout(file).expect("scene.md should parse");
+        let windows: Vec<&CustomElementSpec> = parsed
+            .body
+            .iter()
+            .filter_map(|c| match c {
+                Layout::Config(Config::CustomElement(s @ CustomElementSpec::RenderWindow { .. })) => {
+                    Some(s)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(windows.len(), 2);
+        assert!(windows.iter().any(|s| matches!(
+            s,
+            CustomElementSpec::RenderWindow { camera, .. } if camera.as_str() == "orbit"
+        )));
+        assert!(windows.iter().any(|s| matches!(
+            s,
+            CustomElementSpec::RenderWindow {
+                camera,
+                eye_z: Some(DataSrc::Dynamic(_)),
+                ortho_height: Some(DataSrc::Static(_)),
+                ..
+            } if camera.as_str() == "front"
+        )));
     }
 
     /// `parse_uv_rect` accepts a bracketed 4-float list with arbitrary spacing

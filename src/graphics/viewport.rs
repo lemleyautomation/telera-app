@@ -5,9 +5,7 @@ use symbol_table::GlobalSymbol;
 use winit::window::Window;
 use winit::{dpi::PhysicalSize, event::KeyEvent};
 
-use crate::graphics::{
-    depth_texture::DepthTexture, multi_sample_texture::MultiSampleTexture, ui_surface::UiSurface,
-};
+use crate::graphics::textures::{DepthTexture, MultiSampleTexture, UiSurface};
 
 /// Default gap the animation / continuous-render path paces to: 30 fps. Apps
 /// override per window with `API::set_viewport_frame_interval`.
@@ -275,20 +273,14 @@ impl Viewport {
             ));
         }
     }
-    pub fn get_current_texture(&self) -> wgpu::SurfaceTexture {
-        self.surface
-            .get_current_texture()
-            .expect("Failed to acquire next swap chain texture")
-    }
-
-    /// Width / height of the current surface, for the 3D camera's projection.
-    /// Falls back to `1.0` when the window has zero height (e.g. minimized) so
-    /// the perspective matrix never sees a NaN.
-    pub fn aspect(&self) -> f32 {
-        if self.surface_config.height == 0 {
-            1.0
-        } else {
-            self.surface_config.width as f32 / self.surface_config.height as f32
+    /// The swapchain texture to draw this frame into, or `None` if the surface
+    /// couldn't hand one over (timeout, occluded, outdated, lost) - the caller
+    /// skips the frame in that case.
+    pub fn get_current_texture(&self) -> Option<wgpu::SurfaceTexture> {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(texture)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
+            _ => None,
         }
     }
 }

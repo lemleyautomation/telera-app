@@ -461,17 +461,6 @@ pub fn field_access(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     .into()
 }
 
-#[proc_macro_derive(App)]
-pub fn app(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let ast: syn::DeriveInput = syn::parse(item).unwrap();
-    let struct_name = ast.ident.clone();
-
-    quote::quote! {
-        impl App for #struct_name {}
-    }
-    .into()
-}
-
 /// `#[telera_app]` goes on an application's inherent `impl` block and writes
 /// its [`LayoutReflector`] impl for it, wiring each method tagged with a
 /// marker attribute into the right dispatcher:

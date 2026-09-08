@@ -11,7 +11,7 @@ use cgmath::{Deg, Matrix4, Rotation3, Vector4};
 use gltf::Gltf;
 use wgpu::util::DeviceExt;
 
-use crate::texture::Texture;
+use crate::graphics::textures::Texture;
 
 #[repr(C)]
 #[derive(

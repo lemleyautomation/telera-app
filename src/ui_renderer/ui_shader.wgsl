@@ -12,7 +12,7 @@ struct Vertex {
 struct VertexPayload {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec3<f32>,
-    @location(1) texture: u32,
+    @location(1) @interpolate(flat) texture: u32,
     @location(3) tex_coords: vec2<f32>
 };
 
