@@ -547,7 +547,64 @@ fn update(&mut self, api: &mut API) {
 }
 ```
 
-### 4.9 `api.l` — the layout engine
+### 4.9 `api.canvas` — pan/zoom surfaces
+
+A `` `canvas` `` element (see `tml-spec.md` §`canvas`) is a clipped container
+that pans and zooms a named [`Canvas`](#canvas-re-exported). The framework only
+*stores* that state - the app drives it, the same way `api.camera` drives a
+scene camera.
+
+| method | effect |
+|---|---|
+| `add_canvas(name)` | create a `Canvas` (zoom `1.0`, pan `0`) if absent; use it in `onload` to set limits before the first frame |
+| `remove_canvas(name)` | drop it (a `canvas` element on a live page re-creates it next frame) |
+| `canvas(name) -> Option<&mut Canvas>` | app-side pan/zoom control |
+| `canvas_rect(name) -> Option<(f32,f32,f32,f32)>` | the canvas element's on-screen rect `(x,y,w,h)` in **physical px** (same space as `mouse_position`), as of the last frame it was drawn (one frame old) |
+
+#### `Canvas` (re-exported)
+
+**Units:** everything you touch here is in **physical px** - the space of
+`api.mouse_position` / `api.mouse_delta` - so `pan_by` takes a raw mouse delta
+and `zoom_at_screen` a raw cursor position, at any DPI. `world` coords are
+logical units (the numbers you write in TML: `offset-x 300`, ...).
+
+Fields `zoom`, `pan_x`, `pan_y`, `min_zoom`, `max_zoom`,
+`world_width: Option<f32>`, `world_height: Option<f32>`, `screen_rect` (physical
+px). The runner keeps `screen_rect` and the DPI up to date. Methods (all `f32`,
+all chain):
+
+| method | does |
+|---|---|
+| `set_zoom(z)` / `zoom_by(factor)` | set / multiply zoom; clamped to `min_zoom..=max_zoom` |
+| `zoom_around(factor, world_x, world_y)` | zoom keeping that **world** point under the same screen pixel |
+| `zoom_at_screen(factor, screen_x, screen_y)` | same, anchored on a **physical** screen pixel - pass `api.mouse_position()` (needs `screen_rect`, so accurate from frame 2) |
+| `pan_by(dx, dy)` / `set_pan(x, y)` | move / set the pan - pass `api.mouse_delta()`; unclamped |
+| `reset()` | zoom `1.0`, pan `0` |
+| `set_zoom_limits(min, max)` / `set_world_size(w, h)` | set the clamp / world size |
+| `world_to_screen(wx, wy)` / `screen_to_world(sx, sy)` | convert between world and physical screen px |
+
+```rust
+fn onload(&mut self, api: &mut API) {
+    api.add_canvas("board");
+    if let Some(c) = api.canvas("board") { c.set_zoom_limits(0.35, 4.0); }
+}
+
+fn update(&mut self, viewport: Option<&str>, api: &mut API) {
+    if viewport.is_none() { return; }                 // 2nd update carries input
+    let (mx, my) = api.mouse_position();
+    let (_, wheel) = api.scroll_delta();
+    let panning = api.right_mouse_down();
+    let (dx, dy) = api.mouse_delta();
+    if let Some(c) = api.canvas("board") {
+        if wheel != 0.0 { c.zoom_at_screen(1.15_f32.powf(wheel), mx, my); }
+        if panning { c.pan_by(dx, dy); }
+    }
+}
+```
+
+See `examples/canvas.rs`.
+
+### 4.10 `api.l` — the layout engine
 
 `api.l` (`pub l: LayoutEngine<...>`) is the low-level layout builder. Markdown
 apps rarely touch it; you need it for `#[layout_element]` methods,
@@ -669,7 +726,7 @@ pub struct EventContext {
 | `winit` | `Window`, `WindowAttributes`, `WindowId`, `LogicalSize`, `KeyEvent`, `ElementState`, `Key`, `NamedKey`, `KeyCode`, `PhysicalKey`, `keyboard` |
 | `image` | `image` (the crate), `DynamicImage`, `load_from_memory` |
 | `cgmath` | `cgmath` (the crate) - for `Camera` / `Transform` vector math |
-| framework | `Color`, `ElementConfiguration`, `TextConfig`, `Camera`, `Transform`, `Quaternion`, `Euler`, `Model`, `BaseMesh`, `CustomElement`, `UIImageDescriptor`, `EventContext`, `symbol_table`, `rkyv` |
+| framework | `Color`, `ElementConfiguration`, `TextConfig`, `Camera`, `Canvas`, `Transform`, `Quaternion`, `Euler`, `Model`, `BaseMesh`, `CustomElement`, `UIImageDescriptor`, `EventContext`, `symbol_table`, `rkyv` |
 
 ---
 
@@ -679,4 +736,5 @@ pub struct EventContext {
 - `examples/` — `basic.rs` (imperative UI), `layout.rs` (markdown + events +
   list), `images.rs` (all three image paths), `scene.rs` (3D + cameras +
   `render-window`), `shapes.rs` (drawn shapes), `custom_element.rs`
-  (`#[layout_element]`), `stress.rs` (a large markdown dashboard).
+  (`#[layout_element]`), `canvas.rs` (a pannable / zoomable `canvas`),
+  `stress.rs` (a large markdown dashboard).

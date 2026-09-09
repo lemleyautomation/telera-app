@@ -259,6 +259,15 @@ pub enum Element {
         event: Option<DataSrc<GlobalSymbol>>,
     },
     RightClickedClosed,
+
+    /// Opens the zoom-bake scope for a `` `canvas` `` (`set_layout` pushes the
+    /// current `canvas_scale` and replaces it with `api.canvas_zoom(name)`).
+    /// Nesting-neutral (does not move `nesting_level`); always emitted paired
+    /// with [`Element::CanvasWorldClosed`].
+    CanvasWorldOpened {
+        name: GlobalSymbol,
+    },
+    CanvasWorldClosed,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -421,6 +430,28 @@ pub enum Config {
     WrapWords,
     WrapNewLines,
     WrapNone,
+
+    /// The `` `canvas` `` element's state config, emitted once on the outer clip
+    /// container. Seeds / updates the per-name [`Canvas`](crate::Canvas):
+    /// `world_*` and the zoom limits are static bounds re-applied every frame;
+    /// `initial_*` apply only the first time this canvas is laid out. Also
+    /// applies the clip and the pan `childOffset` every frame.
+    Canvas {
+        name: GlobalSymbol,
+        world_width: Option<DataSrc<f32>>,
+        world_height: Option<DataSrc<f32>>,
+        min_zoom: Option<DataSrc<f32>>,
+        max_zoom: Option<DataSrc<f32>>,
+        initial_zoom: Option<DataSrc<f32>>,
+        initial_pan_x: Option<DataSrc<f32>>,
+        initial_pan_y: Option<DataSrc<f32>>,
+    },
+    /// Sizes the `` `canvas` `` world wrapper: `world_size * canvas_scale`, with
+    /// `world_size` falling back to the canvas element's own laid-out size (else
+    /// [`Canvas::AUTO_WORLD`](crate::Canvas::AUTO_WORLD)).
+    CanvasWorldSize {
+        name: GlobalSymbol,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1304,7 +1335,8 @@ const LEADING_KEYWORDS: &[&str] = &[
     "attach-self", "attatch-parent",
     "bevel-highlight", "bevel-light-angle", "bevel-shade", "bevel-width",
     "bezier", "blur-radius", "blur-tint", "border-all", "border-bottom", "border-color",
-    "border-in-between", "border-left", "border-right", "border-top", "calc", "center", "center-x",
+    "border-in-between", "border-left", "border-right", "border-top", "calc", "canvas", "center",
+    "center-x",
     "center-y", "child-gap", "circle", "clip-to-parent", "color", "config", "ctrl1-x", "ctrl1-y",
     "ctrl2-x", "ctrl2-y", "declarations", "element", "end-angle", "eye-x", "eye-y", "eye-z", "far",
     "fit", "fixed-square", "floating",
@@ -1319,9 +1351,11 @@ const LEADING_KEYWORDS: &[&str] = &[
     "if-index", "if-index-not", "if-not", "image", "item", "key-event", "left-clicked",
     "left-dbl-clicked",
     "left-down", "left-pressed", "left-released", "left-tpl-clicked", "letter-spacing", "line",
-    "line-height", "list", "load", "near", "no-clip", "offset-x", "offset-y", "ortho-height",
+    "line-height", "list", "load", "max-zoom", "min-zoom", "near", "no-clip", "offset-x", "offset-y",
+    "ortho-height",
     "padding-all",
-    "padding-bottom", "padding-left", "padding-right", "padding-top", "pointer", "pointer-capture",
+    "padding-bottom", "padding-left", "padding-right", "padding-top", "pan-x", "pan-y", "pointer",
+    "pointer-capture",
     "pointer-pass-through", "radius", "radius-all", "radius-bottom-left", "radius-bottom-right",
     "radius-top-left", "radius-top-right", "render-window", "right-clicked", "right-down",
     "right-pressed",
@@ -1335,7 +1369,7 @@ const LEADING_KEYWORDS: &[&str] = &[
     "to-y", "unfocused", "unhovered", "up-x", "up-y", "up-z",
     "use", "vertical", "width",
     "width-fit", "width-fit-max", "width-fit-min", "width-fixed", "width-grow", "width-grow-max",
-    "width-grow-min", "width-percent", "wrap", "z-index",
+    "width-grow-min", "width-percent", "world-height", "world-width", "wrap", "z-index", "zoom",
 ];
 
 /// Pre-parsing pass: lets a layout file be written without the `` ` `` inline-code
@@ -1691,6 +1725,123 @@ fn process_shape(
     layout_commands
 }
 
+/// The `` `canvas` `` element: an infinitely pannable, zoomable surface.
+///
+/// Emits an **outer clip container** (carrying the user's own `config` plus the
+/// clip + pan `childOffset` from the named [`Canvas`](crate::Canvas)) wrapping a
+/// fixed-size **world wrapper** (sized `world-width`/`world-height`), inside
+/// which the body children are laid out. The `CanvasWorldOpened` /
+/// `CanvasWorldClosed` markers around the wrapper tell `set_layout` to multiply
+/// every spatial config in between by the canvas's `zoom`.
+///
+/// `canvas`-only config keywords (`world-width`, `world-height`, `min-zoom`,
+/// `max-zoom`, `zoom`, `pan-x`, `pan-y`) are pulled out here; everything else in
+/// the `config` block goes through `process_configs` onto the outer container.
+fn process_canvas(
+    element: &ListItem,
+    element_declaration: &Paragraph,
+    ctx: &mut CalcCtx,
+) -> Vec<Layout> {
+    let mut out: Vec<Layout> = Vec::new();
+
+    let name = element_declaration
+        .children
+        .get(1)
+        .and_then(|node| match node {
+            Node::Text(text) if !text.value.trim().is_empty() => Some(text.value.trim().to_string()),
+            _ => None,
+        });
+    let name_sym = GlobalSymbol::new(name.as_deref().unwrap_or("canvas"));
+
+    let body = element.children.get(1).and_then(|node| match node {
+        Node::List(list) => Some(list),
+        _ => None,
+    });
+    let config_list = body
+        .and_then(|list| list.children.first())
+        .filter(|first| is_config_block(first))
+        .and_then(|first| match first {
+            Node::ListItem(item) => item.children.get(1),
+            _ => None,
+        })
+        .and_then(|node| match node {
+            Node::List(list) => Some(list),
+            _ => None,
+        });
+    let has_config = config_list.is_some();
+
+    // Pull the canvas-only keywords out of the config block.
+    let mut world_width = None;
+    let mut world_height = None;
+    let mut min_zoom = None;
+    let mut max_zoom = None;
+    let mut initial_zoom = None;
+    let mut initial_pan_x = None;
+    let mut initial_pan_y = None;
+    if let Some(config_list) = config_list {
+        for item in &config_list.children {
+            let Some(Node::Paragraph(paragraph)) = item.children().and_then(|c| c.first()) else {
+                continue;
+            };
+            let Some(Node::InlineCode(keyword)) = paragraph.children.first() else {
+                continue;
+            };
+            let slot = match keyword.value.as_str() {
+                "world-width" => &mut world_width,
+                "world-height" => &mut world_height,
+                "min-zoom" => &mut min_zoom,
+                "max-zoom" => &mut max_zoom,
+                "zoom" => &mut initial_zoom,
+                "pan-x" => &mut initial_pan_x,
+                "pan-y" => &mut initial_pan_y,
+                _ => continue,
+            };
+            *slot = optional_arg::<f32>(paragraph);
+        }
+    }
+
+    // ---- outer clip container ---------------------------------------------
+    out.push(Layout::Element(Element::ElementOpened { id: None }));
+    out.push(Layout::Element(Element::ConfigOpened));
+    if let Some(name) = &name {
+        out.push(Layout::Config(Config::Id(DataSrc::Static(name.clone()))));
+    }
+    if let Some(config_list) = config_list {
+        // Non-canvas keywords (`color`, `padding`, `border`, `grow`, ...) land on
+        // the outer container. The canvas keywords fall through the `_ => {}`.
+        out.append(&mut process_configs(config_list, &mut None, ctx));
+    }
+    out.push(Layout::Config(Config::Canvas {
+        name: name_sym,
+        world_width,
+        world_height,
+        min_zoom,
+        max_zoom,
+        initial_zoom,
+        initial_pan_x,
+        initial_pan_y,
+    }));
+    out.push(Layout::Element(Element::ConfigClosed));
+
+    // ---- zoom-bake scope + world wrapper ---------------------------------
+    out.push(Layout::Element(Element::CanvasWorldOpened { name: name_sym }));
+    out.push(Layout::Element(Element::ElementOpened { id: None }));
+    out.push(Layout::Element(Element::ConfigOpened));
+    out.push(Layout::Config(Config::CanvasWorldSize { name: name_sym }));
+    out.push(Layout::Element(Element::ConfigClosed));
+
+    if let Some(body) = body {
+        for child in body.children.iter().skip(usize::from(has_config)) {
+            out.append(&mut process_element(child, ctx));
+        }
+    }
+
+    out.push(Layout::Element(Element::ElementClosed)); // world wrapper
+    out.push(Layout::Element(Element::CanvasWorldClosed));
+    out.push(Layout::Element(Element::ElementClosed)); // outer clip container
+    out
+}
+
 fn process_element(element: &Node, ctx: &mut CalcCtx) -> Vec<Layout> {
     let mut layout_commands: Vec<Layout> = Vec::new();
 
@@ -1795,6 +1946,9 @@ fn process_element(element: &Node, ctx: &mut CalcCtx) -> Vec<Layout> {
                 CustomElementSpec::render_window(),
                 ctx,
             )),
+            "canvas" => {
+                layout_commands.append(&mut process_canvas(element, element_declaration, ctx))
+            }
             "grow" => {
                 layout_commands.push(Layout::Element(Element::ElementOpened { id: None }));
                 layout_commands.push(Layout::Element(Element::ConfigOpened));
@@ -3502,6 +3656,7 @@ impl Binder {
             user_app,
             winit::window::CursorIcon::Default,
             &mut focus_target,
+            1.0,
         );
 
         if focusing {
@@ -3546,12 +3701,18 @@ fn set_layout<UserApp>(
     // (outermost first), so the last writer - the innermost / topmost hovered
     // named element - wins. `set_page` commits it to `api.set_focus` afterwards.
     focus_target: &mut Option<GlobalSymbol>,
+    // Multiplier applied to every spatial config (sizing, spacing, borders,
+    // radii, font size, ...) while walking the body of a `` `canvas` ``. `1.0`
+    // everywhere else. Pushed/popped by the `CanvasWorld*` markers.
+    canvas_scale: f32,
 ) -> winit::window::CursorIcon
 where
     UserApp: LayoutRunnerReflection + LayoutReflector,
 {
     let mut nesting_level: u32 = 0;
     let mut skip: Option<u32> = None;
+    let mut canvas_scale = canvas_scale;
+    let mut canvas_scale_stack: Vec<f32> = Vec::new();
     // Name of the element whose `config` block is currently open (its `` `element`
     // *name* `` -> `Config::Id`), or `None` for an unnamed element. Reset at each
     // `ConfigOpened`, read at `ConfigClosed` and by the `focus` gate.
@@ -3743,6 +3904,19 @@ where
                     }
                     Element::RightClickedClosed => event_gate_close!(),
 
+                    // Enter / leave a `canvas` world: bake the canvas's zoom into
+                    // every spatial config in between. Runs even under `skip` so
+                    // the stack always balances; `nesting_level` is untouched.
+                    Element::CanvasWorldOpened { name } => {
+                        canvas_scale_stack.push(canvas_scale);
+                        if skip.is_none() {
+                            canvas_scale = api.canvas_zoom(*name);
+                        }
+                    }
+                    Element::CanvasWorldClosed => {
+                        canvas_scale = canvas_scale_stack.pop().unwrap_or(1.0);
+                    }
+
                     Element::Pointer(new_pointer) => {
                         if skip.is_none() {
                             pointer = *new_pointer;
@@ -3778,6 +3952,7 @@ where
                                     user_app,
                                     pointer,
                                     focus_target,
+                                    canvas_scale,
                                 );
                             }
                         }
@@ -3810,6 +3985,7 @@ where
                                 user_app,
                                 pointer,
                                 focus_target,
+                                canvas_scale,
                             );
                         }
                     }
@@ -3858,6 +4034,21 @@ where
                         if skip.is_none() {
                             let text_content =
                                 String::resolve_src(content, locals, user_app, &list_data);
+                            // Inside a `canvas`, scale the whole text config by the
+                            // canvas zoom - font size, line height *and* letter
+                            // spacing together - so the (usually never-set,
+                            // defaults-to-14) line height tracks the font instead
+                            // of the lines scrunching / spreading as you zoom.
+                            if canvas_scale != 1.0 {
+                                let sc = |v: u16| {
+                                    ((v as f32) * canvas_scale)
+                                        .round()
+                                        .clamp(0.0, u16::MAX as f32) as u16
+                                };
+                                text_config.font_size = sc(text_config.font_size);
+                                text_config.line_height = sc(text_config.line_height);
+                                text_config.letter_spacing = sc(text_config.letter_spacing);
+                            }
                             // Copied into a frame arena: the resolved slice may
                             // borrow a per-list / per-reusable clone of the
                             // commands that is dropped before `end_layout` reads
@@ -3903,6 +4094,7 @@ where
                                     user_app,
                                     pointer,
                                     focus_target,
+                                    canvas_scale,
                                 );
                             }
                         }
@@ -3937,6 +4129,7 @@ where
                         &list_data,
                         api,
                         user_app,
+                        canvas_scale,
                     );
                 }
             }
@@ -3956,9 +4149,17 @@ fn execute_config<UserApp>(
     list_data: &Option<(GlobalSymbol, usize)>,
     api: &mut API,
     user_app: &UserApp,
+    // Spatial-config multiplier from the enclosing `` `canvas` `` (`1.0`
+    // otherwise). Applied to lengths only - never to ratios, percentages,
+    // z-index, colors or booleans.
+    canvas_scale: f32,
 ) where
     UserApp: LayoutRunnerReflection,
 {
+    // `s` scales an `f32` length; `su16` scales a `u16` length (padding, gap,
+    // border, font metrics) and rounds back.
+    let s = canvas_scale;
+    let su16 = |v: u16| ((v as f32) * s).round().clamp(0.0, u16::MAX as f32) as u16;
     match config_command {
         Config::Id(id) => {
             if let DataSrc::Static(id) = id {
@@ -3976,72 +4177,74 @@ fn execute_config<UserApp>(
             config.width_fit();
         }
         Config::FitXmin(min) => {
-            config.width_fit_min(f32::resolve_src(min, locals, user_app, list_data));
+            config.width_fit_min(f32::resolve_src(min, locals, user_app, list_data) * s);
         }
         Config::FitXmax(max) => {
-            config.width_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
+            config.width_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data) * s);
         }
         Config::FitXminmax { min, max } => {
             config.width_fit_min_max(
-                f32::resolve_src(min, locals, user_app, list_data),
-                f32::resolve_src(max, locals, user_app, list_data),
+                f32::resolve_src(min, locals, user_app, list_data) * s,
+                f32::resolve_src(max, locals, user_app, list_data) * s,
             );
         }
         Config::FitY => {
             config.height_fit();
         }
         Config::FitYmin(min) => {
-            config.height_fit_min(f32::resolve_src(min, locals, user_app, list_data));
+            config.height_fit_min(f32::resolve_src(min, locals, user_app, list_data) * s);
         }
         Config::FitYmax(max) => {
-            config.height_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
+            config.height_fit_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data) * s);
         }
         Config::FitYminmax { min, max } => {
             config.height_fit_min_max(
-                f32::resolve_src(min, locals, user_app, list_data),
-                f32::resolve_src(max, locals, user_app, list_data),
+                f32::resolve_src(min, locals, user_app, list_data) * s,
+                f32::resolve_src(max, locals, user_app, list_data) * s,
             );
         }
         Config::GrowX => {
             config.width_grow();
         }
         Config::GrowXmin(min) => {
-            config.width_grow_min(f32::resolve_src(min, locals, user_app, list_data));
+            config.width_grow_min(f32::resolve_src(min, locals, user_app, list_data) * s);
         }
         Config::GrowXmax(max) => {
-            config.width_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
+            config.width_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data) * s);
         }
         Config::GrowXminmax { min, max } => {
             config.width_grow_min_max(
-                f32::resolve_src(min, locals, user_app, list_data),
-                f32::resolve_src(max, locals, user_app, list_data),
+                f32::resolve_src(min, locals, user_app, list_data) * s,
+                f32::resolve_src(max, locals, user_app, list_data) * s,
             );
         }
         Config::GrowY => {
             config.height_grow();
         }
         Config::GrowYmin(min) => {
-            config.height_grow_min(f32::resolve_src(min, locals, user_app, list_data));
+            config.height_grow_min(f32::resolve_src(min, locals, user_app, list_data) * s);
         }
         Config::GrowYmax(max) => {
-            config.height_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data));
+            config.height_grow_min_max(0.0, f32::resolve_src(max, locals, user_app, list_data) * s);
         }
         Config::GrowYminmax { min, max } => {
             config.height_grow_min_max(
-                f32::resolve_src(min, locals, user_app, list_data),
-                f32::resolve_src(max, locals, user_app, list_data),
+                f32::resolve_src(min, locals, user_app, list_data) * s,
+                f32::resolve_src(max, locals, user_app, list_data) * s,
             );
         }
         Config::FixedX(size) => {
-            config.width_fixed(f32::resolve_src(size, locals, user_app, list_data));
+            config.width_fixed(f32::resolve_src(size, locals, user_app, list_data) * s);
         }
         Config::FixedY(size) => {
-            config.height_fixed(f32::resolve_src(size, locals, user_app, list_data));
+            config.height_fixed(f32::resolve_src(size, locals, user_app, list_data) * s);
         }
         Config::PercentX(size) => {
+            // not scaled: a fraction of the (already-scaled) parent.
             config.width_percent(f32::resolve_src(size, locals, user_app, list_data));
         }
         Config::PercentY(size) => {
+            // not scaled: a fraction of the (already-scaled) parent.
             config.height_percent(f32::resolve_src(size, locals, user_app, list_data));
         }
         Config::GrowAll => {
@@ -4051,34 +4254,35 @@ fn execute_config<UserApp>(
             config.fit();
         }
         Config::AspectRatio(ratio) => {
+            // not scaled: a ratio.
             config.aspect_ratio(f32::resolve_src(ratio, locals, user_app, list_data));
         }
         Config::FixedSquare(size) => {
-            config.fixed_square(f32::resolve_src(size, locals, user_app, list_data));
+            config.fixed_square(f32::resolve_src(size, locals, user_app, list_data) * s);
         }
         Config::Horizontal => {
             config.horizontal();
         }
         Config::PaddingAll(padding) => {
-            config.padding_all(u16::resolve_src(padding, locals, user_app, list_data));
+            config.padding_all(su16(u16::resolve_src(padding, locals, user_app, list_data)));
         }
         Config::PaddingTop(padding) => {
-            config.padding_top(u16::resolve_src(padding, locals, user_app, list_data));
+            config.padding_top(su16(u16::resolve_src(padding, locals, user_app, list_data)));
         }
         Config::PaddingBottom(padding) => {
-            config.padding_bottom(u16::resolve_src(padding, locals, user_app, list_data));
+            config.padding_bottom(su16(u16::resolve_src(padding, locals, user_app, list_data)));
         }
         Config::PaddingLeft(padding) => {
-            config.padding_left(u16::resolve_src(padding, locals, user_app, list_data));
+            config.padding_left(su16(u16::resolve_src(padding, locals, user_app, list_data)));
         }
         Config::PaddingRight(padding) => {
-            config.padding_right(u16::resolve_src(padding, locals, user_app, list_data));
+            config.padding_right(su16(u16::resolve_src(padding, locals, user_app, list_data)));
         }
         Config::Vertical => {
             config.vertical();
         }
         Config::ChildGap(gap) => {
-            config.child_gap(u16::resolve_src(gap, locals, user_app, list_data));
+            config.child_gap(su16(u16::resolve_src(gap, locals, user_app, list_data)));
         }
         Config::ChildAlignmentXLeft => {
             config.align_children_x_left();
@@ -4107,7 +4311,18 @@ fn execute_config<UserApp>(
             // Resolve every `DataSrc<f32>` parameter for this frame and stash the
             // plain `CustomElement` in `api`'s per-frame arena so its address
             // stays put until the render pass reads it (same as `Config::Image`).
-            let resolved = spec.resolve(locals, user_app, list_data);
+            let mut resolved = spec.resolve(locals, user_app, list_data);
+            if s != 1.0 {
+                // Stroke widths are logical px; the 0..1 positional fields track
+                // the (already-scaled) bounding box, so only `thickness` scales.
+                match &mut resolved {
+                    CustomElement::Ring { thickness }
+                    | CustomElement::Line { thickness, .. }
+                    | CustomElement::Arc { thickness, .. }
+                    | CustomElement::Bezier { thickness, .. } => *thickness *= s,
+                    _ => {}
+                }
+            }
             config.custom_element(api.stage_frame_shape(resolved));
         }
         Config::Shaders(specs) => {
@@ -4123,40 +4338,40 @@ fn execute_config<UserApp>(
             );
         }
         Config::RadiusAll(radius) => {
-            config.radius_all(f32::resolve_src(radius, locals, user_app, list_data));
+            config.radius_all(f32::resolve_src(radius, locals, user_app, list_data) * s);
         }
         Config::RadiusTopLeft(radius) => {
-            config.radius_top_left(f32::resolve_src(radius, locals, user_app, list_data));
+            config.radius_top_left(f32::resolve_src(radius, locals, user_app, list_data) * s);
         }
         Config::RadiusTopRight(radius) => {
-            config.radius_top_right(f32::resolve_src(radius, locals, user_app, list_data));
+            config.radius_top_right(f32::resolve_src(radius, locals, user_app, list_data) * s);
         }
         Config::RadiusBottomRight(radius) => {
-            config.radius_bottom_right(f32::resolve_src(radius, locals, user_app, list_data));
+            config.radius_bottom_right(f32::resolve_src(radius, locals, user_app, list_data) * s);
         }
         Config::RadiusBottomLeft(radius) => {
-            config.radius_bottom_left(f32::resolve_src(radius, locals, user_app, list_data));
+            config.radius_bottom_left(f32::resolve_src(radius, locals, user_app, list_data) * s);
         }
         Config::BorderColor(color) => {
             config.border_color(Color::resolve_src(color, locals, user_app, list_data));
         }
         Config::BorderAll(border) => {
-            config.border_all(u16::resolve_src(border, locals, user_app, list_data));
+            config.border_all(su16(u16::resolve_src(border, locals, user_app, list_data)));
         }
         Config::BorderTop(border) => {
-            config.border_top(u16::resolve_src(border, locals, user_app, list_data));
+            config.border_top(su16(u16::resolve_src(border, locals, user_app, list_data)));
         }
         Config::BorderBottom(border) => {
-            config.border_bottom(u16::resolve_src(border, locals, user_app, list_data));
+            config.border_bottom(su16(u16::resolve_src(border, locals, user_app, list_data)));
         }
         Config::BorderLeft(border) => {
-            config.border_left(u16::resolve_src(border, locals, user_app, list_data));
+            config.border_left(su16(u16::resolve_src(border, locals, user_app, list_data)));
         }
         Config::BorderRight(border) => {
-            config.border_right(u16::resolve_src(border, locals, user_app, list_data));
+            config.border_right(su16(u16::resolve_src(border, locals, user_app, list_data)));
         }
         Config::BorderBetweenChildren(border) => {
-            config.border_in_between(u16::resolve_src(border, locals, user_app, list_data));
+            config.border_in_between(su16(u16::resolve_src(border, locals, user_app, list_data)));
         }
         Config::Clip {
             vertical,
@@ -4169,6 +4384,66 @@ fn execute_config<UserApp>(
                     bool::resolve_src(horizontal, locals, user_app, list_data),
                 )
                 .scroll_child_offset(offset.x, offset.y);
+        }
+        Config::Canvas {
+            name,
+            world_width,
+            world_height,
+            min_zoom,
+            max_zoom,
+            initial_zoom,
+            initial_pan_x,
+            initial_pan_y,
+        } => {
+            let resolve_opt = |src: &Option<DataSrc<f32>>| {
+                src.as_ref()
+                    .map(|v| f32::resolve_src(v, locals, user_app, list_data))
+            };
+            let ww = resolve_opt(world_width);
+            let wh = resolve_opt(world_height);
+            let lo = resolve_opt(min_zoom);
+            let hi = resolve_opt(max_zoom);
+            let iz = resolve_opt(initial_zoom);
+            let ipx = resolve_opt(initial_pan_x);
+            let ipy = resolve_opt(initial_pan_y);
+
+            let canvas = api.canvas_entry(*name);
+            // Static bounds - safe to re-apply every frame.
+            if let Some(w) = ww {
+                canvas.world_width = Some(w);
+            }
+            if let Some(h) = wh {
+                canvas.world_height = Some(h);
+            }
+            if lo.is_some() || hi.is_some() {
+                canvas.set_zoom_limits(
+                    lo.unwrap_or(canvas.min_zoom),
+                    hi.unwrap_or(canvas.max_zoom),
+                );
+            }
+            // `zoom` / `pan-*` are a one-time seed: applied the first time this
+            // `canvas` element is laid out (even if app code pre-created the
+            // `Canvas` in `onload` to set limits), never again - after that the
+            // app owns pan/zoom.
+            if !canvas.seeded {
+                canvas.seeded = true;
+                if let Some(z) = iz {
+                    canvas.set_zoom(z);
+                }
+                if let Some(px) = ipx {
+                    canvas.pan_x = px;
+                }
+                if let Some(py) = ipy {
+                    canvas.pan_y = py;
+                }
+            }
+
+            let (px, py) = api.canvas_pan_logical(*name);
+            config.scroll(true, true).scroll_child_offset(px, py);
+        }
+        Config::CanvasWorldSize { name } => {
+            let (ww, wh) = api.canvas_world_or_default(*name);
+            config.width_fixed(ww * s).height_fixed(wh * s);
         }
         Config::Image { name } => {
             if let Some(image) = UIImageDescriptor::resolve_name(name, locals, user_app, list_data)
@@ -4199,17 +4474,18 @@ fn execute_config<UserApp>(
         }
         Config::FloatingOffset { x, y } => {
             config.floating_offset(
-                f32::resolve_src(x, locals, user_app, list_data),
-                f32::resolve_src(y, locals, user_app, list_data),
+                f32::resolve_src(x, locals, user_app, list_data) * s,
+                f32::resolve_src(y, locals, user_app, list_data) * s,
             );
         }
         Config::FloatingDimensions { width, height } => {
             config.floating_dimensions(
-                f32::resolve_src(width, locals, user_app, list_data),
-                f32::resolve_src(height, locals, user_app, list_data),
+                f32::resolve_src(width, locals, user_app, list_data) * s,
+                f32::resolve_src(height, locals, user_app, list_data) * s,
             );
         }
         Config::FloatingZIndex { z } => {
+            // not scaled: stacking order.
             config.floating_z_index(i16::resolve_src(z, locals, user_app, list_data));
         }
         Config::FloatingAttatchToParentAtTopLeft => {
@@ -4318,6 +4594,7 @@ fn execute_config<UserApp>(
                             list_data,
                             api,
                             user_app,
+                            s,
                         );
                     }
                 }
@@ -4340,6 +4617,9 @@ fn execute_config<UserApp>(
             text_config.font_color(Color::resolve_src(color, locals, user_app, list_data));
         }
         Config::FontSize(size) => {
+            // Canvas zoom is applied to the whole TextConfig at `TextElementClosed`
+            // (so the never-explicitly-set `line_height` default scales too), not
+            // here.
             text_config.font_size(u16::resolve_src(size, locals, user_app, list_data));
         }
         Config::LineHeight(height) => {
@@ -4735,6 +5015,125 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `canvas` lowers to: an outer clip container carrying the user's own
+    /// config + one `Config::Canvas`, then a `CanvasWorldOpened` ..
+    /// `CanvasWorldClosed` pair wrapping a fixed-size world element
+    /// (`Config::CanvasWorldSize`) that holds the body children. Canvas-only
+    /// keywords are pulled onto `Config::Canvas`; every other keyword stays on
+    /// the outer container.
+    #[test]
+    fn canvas_parses() {
+        let src = "\
+# root
+- `canvas` board
+    - `config`
+        - `world-width` 4000
+        - `world-height` 3000
+        - `min-zoom` 0.25
+        - `max-zoom` 8
+        - `zoom` 2
+        - `pan-x` 15
+        - `color` grey
+    - `element` node
+        - `config`
+            - `width-fixed` 120
+"
+        .to_string();
+        let ParsedLayout { body, .. } = process_layout(src).expect("canvas should parse");
+
+        // exactly one Config::Canvas, fully populated
+        let canvas = body
+            .iter()
+            .find_map(|c| match c {
+                Layout::Config(cfg @ Config::Canvas { .. }) => Some(cfg.clone()),
+                _ => None,
+            })
+            .expect("a Config::Canvas");
+        let Config::Canvas {
+            name,
+            world_width,
+            world_height,
+            min_zoom,
+            max_zoom,
+            initial_zoom,
+            initial_pan_x,
+            initial_pan_y,
+        } = canvas
+        else {
+            unreachable!()
+        };
+        assert_eq!(name, GlobalSymbol::new("board"));
+        assert_eq!(world_width, Some(DataSrc::Static(4000.0)));
+        assert_eq!(world_height, Some(DataSrc::Static(3000.0)));
+        assert_eq!(min_zoom, Some(DataSrc::Static(0.25)));
+        assert_eq!(max_zoom, Some(DataSrc::Static(8.0)));
+        assert_eq!(initial_zoom, Some(DataSrc::Static(2.0)));
+        assert_eq!(initial_pan_x, Some(DataSrc::Static(15.0)));
+        assert_eq!(initial_pan_y, None);
+
+        // the plain `color` keyword still reached the outer container
+        assert!(body.iter().any(|c| matches!(c, Layout::Config(Config::Color(_)))));
+
+        // world-wrapper scaffolding, correctly paired and nested
+        let world_open = body
+            .iter()
+            .position(|c| matches!(c, Layout::Element(Element::CanvasWorldOpened { .. })))
+            .unwrap();
+        let world_close = body
+            .iter()
+            .position(|c| matches!(c, Layout::Element(Element::CanvasWorldClosed)))
+            .unwrap();
+        assert!(world_open < world_close);
+        assert!(body[world_open..world_close]
+            .iter()
+            .any(|c| matches!(c, Layout::Config(Config::CanvasWorldSize { .. }))));
+        // the `node` child's config sits inside the world scope
+        let node_fixed = body
+            .iter()
+            .position(|c| matches!(c, Layout::Config(Config::FixedX(_))))
+            .unwrap();
+        assert!(world_open < node_fixed && node_fixed < world_close);
+
+        // well-nested overall
+        let mut depth = 0i32;
+        for c in &body {
+            if let Layout::Element(e) = c {
+                let n = format!("{e:?}");
+                if n.contains("Opened") {
+                    depth += 1;
+                } else if n.contains("Closed") {
+                    depth -= 1;
+                }
+            }
+            assert!(depth >= 0);
+        }
+        assert_eq!(depth, 0);
+    }
+
+    /// A bare `` `canvas` `` (no config block) still emits the full scaffolding
+    /// with an all-`None` `Config::Canvas`.
+    #[test]
+    fn canvas_bare_parses() {
+        let src = "\
+# root
+- `canvas` board
+    - `element` node
+"
+        .to_string();
+        let ParsedLayout { body, .. } = process_layout(src).unwrap();
+        assert!(body.iter().any(|c| matches!(
+            c,
+            Layout::Config(Config::Canvas {
+                world_width: None,
+                initial_zoom: None,
+                ..
+            })
+        )));
+        assert!(body
+            .iter()
+            .any(|c| matches!(c, Layout::Element(Element::CanvasWorldOpened { .. }))));
+    }
 
     /// The parser should turn `examples/layouts/Main.md` into a non-empty,
     /// flattened command stream without panicking or erroring.

@@ -1,0 +1,156 @@
+#### TML 1.0
+
+# root
+
+- `element`
+    - `config`
+        - `grow`
+        - `vertical`
+        - `color` rgb(18,18,24)
+        - `align-children-x` center
+        - `align-children-y` center
+        - `child-gap` 14
+        - `padding-all` 32
+
+    - `canvas` board
+        - `config`
+            - `width-fixed` 780
+            - `height-fixed` 520
+            - `color` rgb(28,28,38)
+            - `radius-all` 14
+            - `border-all` 2
+            - `border-color` rgb(70,70,92)
+            - `world-width` 1600
+            - `world-height` 1100
+            - `min-zoom` 0.35
+            - `max-zoom` 4
+            - `zoom` 1
+            - `pan-x` 40
+            - `pan-y` 40
+
+        - `element` sidebar
+            - `config`
+                - `width-fixed` 250
+                - `height-fit`
+                - `vertical`
+                - `child-gap` 12
+                - `padding-all` 20
+                - `color` rgb(38,38,52)
+                - `radius-all` 10
+            - `text`
+                - `config`
+                    - `font-size` 21
+                    - `line-height` 26
+                    - `font-color` rgb(236,236,246)
+                - Checklist
+            - `text`
+                - `config`
+                    - `font-size` 15
+                    - `line-height` 20
+                    - `font-color` rgb(198,203,220)
+                - •  Sketch the layout
+            - `text`
+                - `config`
+                    - `font-size` 15
+                    - `line-height` 20
+                    - `font-color` rgb(198,203,220)
+                - •  Wire pan and zoom
+            - `text`
+                - `config`
+                    - `font-size` 15
+                    - `line-height` 20
+                    - `font-color` rgb(198,203,220)
+                - •  Clip to the frame
+            - `text`
+                - `config`
+                    - `font-size` 15
+                    - `line-height` 20
+                    - `font-color` rgb(198,203,220)
+                - •  Ship the example
+
+        - `element` card-a
+            - `config`
+                - `floating`
+                    - `attatch-parent` top-left
+                    - `offset-x` 330
+                    - `offset-y` 40
+                - `clip-to-parent`
+                - `width-fixed` 230
+                - `height-fixed` 130
+                - `vertical`
+                - `child-gap` 8
+                - `padding-all` 16
+                - `color` rgb(46,110,140)
+                - `radius-all` 12
+            - `text`
+                - `config`
+                    - `font-size` 17
+                    - `line-height` 22
+                    - `font-color` white
+                - Card A
+            - `text`
+                - `config`
+                    - `font-size` 14
+                    - `line-height` 18
+                    - `font-color` rgb(220,235,240)
+                - floating, clipped to the frame
+
+        - `element` card-b
+            - `config`
+                - `floating`
+                    - `attatch-parent` top-left
+                    - `offset-x` 360
+                    - `offset-y` 250
+                - `clip-to-parent`
+                - `width-fixed` 220
+                - `height-fixed` 120
+                - `vertical`
+                - `child-gap` 8
+                - `padding-all` 16
+                - `color` rgb(150,90,60)
+                - `radius-all` 12
+            - `text`
+                - `config`
+                    - `font-size` 17
+                    - `line-height` 22
+                    - `font-color` white
+                - Card B
+            - `text`
+                - `config`
+                    - `font-size` 14
+                    - `line-height` 18
+                    - `font-color` rgb(245,230,222)
+                - right-drag to pan
+
+        - `element` card-c
+            - `config`
+                - `floating`
+                    - `attatch-parent` top-left
+                    - `offset-x` 120
+                    - `offset-y` 430
+                - `clip-to-parent`
+                - `width-fixed` 250
+                - `height-fixed` 120
+                - `vertical`
+                - `child-gap` 8
+                - `padding-all` 16
+                - `color` rgb(96,80,150)
+                - `radius-all` 12
+            - `text`
+                - `config`
+                    - `font-size` 17
+                    - `line-height` 22
+                    - `font-color` white
+                - Card C
+            - `text`
+                - `config`
+                    - `font-size` 14
+                    - `line-height` 18
+                    - `font-color` rgb(228,224,245)
+                - scroll wheel to zoom
+
+    - `text`
+        - `config`
+            - `font-size` 13
+            - `font-color` rgb(150,150,166)
+        - *hint*

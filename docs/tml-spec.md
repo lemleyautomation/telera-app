@@ -511,6 +511,86 @@ was removed: drive cameras from `update()` or from these keywords.
 
 See `examples/scene.rs` + `examples/layouts/scene.md`.
 
+### `canvas`
+
+An infinitely pannable, zoomable surface to lay UI elements on. It is an
+ordinary container element that (a) **clips its content by default** and (b)
+carries a named pan/zoom state - a `Canvas` (see [`telera_api.md`](telera_api.md)
+§`api.canvas`), addressed by the element's name (an un-named `canvas` uses the
+name `canvas`).
+
+```markdown
+- `canvas` board
+    - `config`
+        - `width-fixed` 780
+        - `height-fixed` 520
+        - `world-width` 1600
+        - `world-height` 1100
+        - `min-zoom` 0.35
+        - `max-zoom` 4
+    - `element` sidebar          # a normal flow child, clipped to the frame
+        - `config`
+            - `width-fixed` 250
+            - `vertical`
+        - `text`
+            - •  a checklist item
+    - `element` card             # positioned freely in world space
+        - `config`
+            - `floating`
+                - `attatch-parent` top-left
+                - `offset-x` 320
+                - `offset-y` 40
+            - `clip-to-parent`   # REQUIRED so the card clips to the frame
+            - `width-fixed` 230
+            - `height-fixed` 130
+        - `text`
+            - a floating card
+```
+
+How it works:
+
+- **Zoom is baked into the layout.** Every spatial config inside the canvas
+  (`width-fixed`/`height-fixed`, the `grow`/`fit` clamps, `padding-*`,
+  `child-gap`, `border-*`, `radius-*`, `fixed-square`, floating `offset-*` /
+  `floating-dimensions-*`, a drawn shape's `thickness`, and every `text`
+  element's whole style - `font-size`, `line-height` *and* `letter-spacing`
+  together, so line spacing tracks the font instead of scrunching as you zoom)
+  is multiplied by the current zoom as the tree is walked. Text and shapes
+  therefore re-rasterize crisply at every zoom - it is not a scaled bitmap.
+  Ratios and fractions (`aspect-ratio`, `width-percent` / `height-percent`,
+  `z-index`) are left alone, and **shader effect sizes do not currently scale**
+  with zoom (a known limitation).
+- **Pan** is the frame's clip child-offset and is **not clamped** - the surface
+  is effectively infinite. The `Canvas` pan/zoom API works in physical px (the
+  space of `api.mouse_position` / `api.mouse_delta`); the runner converts to the
+  layout engine's logical px itself.
+- A fixed-size **world wrapper** the size of `world-width` x `world-height`
+  (times zoom) sits between the frame and the body, so `grow` / `fit` /
+  `width-percent` children have a definite parent size. When unset it falls
+  back to the canvas's own on-screen size, so give it explicit `world-width` /
+  `world-height` whenever the body uses `grow` / `fit` / percent sizing.
+- Freely positioned children use `floating` + `offset-x`/`offset-y` (world
+  units). A `floating` element does **not** inherit the frame's clip by
+  default, so add `clip-to-parent` to every floating child you want clipped to
+  the frame.
+- **Input is API-only.** The framework only *stores* the pan/zoom; nothing
+  intercepts the wheel or drag. Drive it from `App::update` through
+  `api.canvas("name")` (`zoom_by` / `zoom_at_screen` / `pan_by` / `reset` / the
+  `zoom` / `pan_x` / `pan_y` fields). TML `zoom` / `pan-x` / `pan-y` are only a
+  one-time seed applied when the canvas is first created; `world-*` /
+  `min-zoom` / `max-zoom` are re-applied every frame.
+
+Canvas-only config keywords:
+
+| Keyword | Value | Meaning |
+|---|---|---|
+| `world-width` / `world-height` | number (logical units) | size of the world wrapper `grow`/`fit`/percent children resolve against; default = the canvas's own size |
+| `min-zoom` / `max-zoom` | number | zoom clamp, re-applied every frame |
+| `zoom` | number | initial zoom, applied once the first time the canvas is laid out |
+| `pan-x` / `pan-y` | number (physical px) | initial pan, applied once |
+
+See `examples/canvas.rs` + `examples/layouts/Canvas.md`.
+
 ### `list` / `item`
 
 `list` iterates a `Vec<T>` field the whole way, once per element, laying out
@@ -640,6 +720,7 @@ member folds them into a single sizing rule.
 | `border-top`/`-left`/`-bottom`/`-right` | single (number) | border width, one side |
 | `border-in-between` | single (number) | border drawn between children |
 | `scroll-horizontal` / `scroll-vertical` | none | enables clipping/scrolling on that axis; use both keywords for both axes. The child offset is driven automatically from the layout engine's scroll state each frame. |
+| `world-width` / `world-height` / `min-zoom` / `max-zoom` / `zoom` / `pan-x` / `pan-y` | single (number) | **`canvas` only** - see [`canvas`](#canvas). Every other spatial config value on an element *inside* a `canvas` is multiplied by the canvas's zoom at layout time. |
 | `id-indexed` | single (name) | like an `element` id, but folds the current `list`/`item` iteration index into the hash so each row gets a distinct id (no-op outside a list) |
 | `image` *name* / `image` name | single (name), emphasised or bare | resolve `name` to a `UIImageDescriptor` - a `set-image` declaration first, then the app's `get_image` (see [Images](#images)) |
 | `image` *atlas* `[u1, v1, u2, v2]` | name then a bracketed 4-float UV rect | an inline literal descriptor - no lookup; `atlas` is a name a `load` directive or the app staged |
@@ -877,6 +958,11 @@ working:
 - `CustomElement::RenderWindow` - a valid custom-element payload the
   renderer knows how to draw, but `process_element` never produces it (only
   `circle` and `line` map to a `CustomElement` from TML).
+- `canvas` zoom does not scale `` `shader` `` effect sizes (`shadow-blur`,
+  `glow-spread`, `blur-radius`, `bevel-width`, ...) - `ResolvedShader` packs
+  them as a flat parameter array with per-effect meaning, so a zoom multiply
+  needs per-effect handling that isn't wired yet. Every other spatial config
+  inside a `canvas` scales.
 - `calc` expressions are only accepted as a `` `set-numeric` `` value. There
   is no `calc-color`, and no inline `calc(...)` directly on a config line -
   compute the value in a `` `set-numeric` `` and reference it by name.

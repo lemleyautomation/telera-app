@@ -25,6 +25,7 @@ pub use graphics::model::{
     BaseMesh, Euler, Model, Quaternion, Transform, TransformMatrix, load_model_gltf,
 };
 pub use graphics::camera::Camera;
+pub use ui_renderer::canvas::Canvas;
 use graphics::{
     scene_renderer::SceneRenderer,
     textures::{DepthTexture, MultiSampleTexture},
@@ -196,6 +197,11 @@ pub struct API {
     /// matching [`Viewport`], so layout code and event handlers transparently
     /// see only the input for the window they're building.
     active_window: Option<WindowId>,
+
+    /// Per-`canvas`-element pan/zoom state, keyed by the element's name (or by
+    /// `api.canvas("name")`). Auto-created the first frame a `canvas` of that
+    /// name is laid out; never auto-removed.
+    canvases: HashMap<symbol_table::GlobalSymbol, Canvas>,
 }
 
 /// Per-window input accessors. Each reads the [`Viewport`] named by
@@ -220,9 +226,11 @@ impl API {
     pub fn dpi_scale(&self) -> f32 {
         self.active_viewport().map_or(1.0, |v| v.dpi_scale)
     }
+    /// Cursor position in physical px, window-relative.
     pub fn mouse_position(&self) -> (f32, f32) {
         self.active_viewport().map_or((0.0, 0.0), |v| v.mouse_position)
     }
+    /// Total cursor movement (physical px) since this window's previous redraw.
     pub fn mouse_delta(&self) -> (f32, f32) {
         self.active_viewport().map_or((0.0, 0.0), |v| v.mouse_delta)
     }
@@ -475,6 +483,9 @@ impl API {
             }
             let (commands, ui_renderer) = self.l.end_layout();
             render_commands = commands;
+            // Canvas pan/zoom control and the world-size auto fallback want this
+            // frame's on-screen rect for every `canvas` element the walk touched.
+            self.refresh_canvas_rects();
             render_windows = ui_renderer::ui_renderer::collect_render_windows(
                 &render_commands,
                 ui_renderer.dpi_scale,
@@ -914,6 +925,111 @@ impl API {
             .camera_mut(symbol_table::GlobalSymbol::new(name))
     }
 
+    /// Registers a [`Canvas`] (pan/zoom state) under `name` at zoom `1.0` /
+    /// pan `0` unless one already exists. A `` `canvas` `` element whose name is
+    /// `name` reads its pan/zoom from here every frame; a `canvas` also
+    /// auto-creates its own on first layout, so calling this is only needed to
+    /// set limits in `onload` before the first frame.
+    pub fn add_canvas(&mut self, name: &str) {
+        self.canvases
+            .entry(symbol_table::GlobalSymbol::new(name))
+            .or_default();
+    }
+
+    /// Removes the [`Canvas`] `name`. A `canvas` element still on a page will
+    /// re-create it (back at the default framing) next frame.
+    pub fn remove_canvas(&mut self, name: &str) {
+        self.canvases.remove(&symbol_table::GlobalSymbol::new(name));
+    }
+
+    /// Mutable access to a canvas's pan/zoom for app-driven control - its
+    /// `zoom` / `pan_x` / `pan_y` fields or the `zoom_by` / `zoom_at_screen` /
+    /// `pan_by` / `reset` methods:
+    ///
+    /// ```ignore
+    /// fn update(&mut self, _v: Option<&str>, api: &mut API) {
+    ///     let (mx, my) = api.mouse_position();
+    ///     let (_, wheel) = api.scroll_delta();
+    ///     if let Some(c) = api.canvas("board") {
+    ///         if wheel != 0.0 { c.zoom_at_screen(1.0 + wheel * 0.1, mx, my); }
+    ///         if api.right_mouse_down() {
+    ///             let (dx, dy) = api.mouse_delta();
+    ///             c.pan_by(dx, dy);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// `None` if no canvas of that name has been created or laid out yet.
+    pub fn canvas(&mut self, name: &str) -> Option<&mut Canvas> {
+        self.canvases.get_mut(&symbol_table::GlobalSymbol::new(name))
+    }
+
+    /// The canvas element's on-screen rect `(x, y, w, h)` in **physical px**
+    /// (same space as `mouse_position`), as of the last frame it was laid out
+    /// (one frame old, like reading a camera before a redraw). `None` if the
+    /// canvas is unknown or not yet drawn.
+    pub fn canvas_rect(&self, name: &str) -> Option<(f32, f32, f32, f32)> {
+        self.canvases
+            .get(&symbol_table::GlobalSymbol::new(name))
+            .map(|c| c.screen_rect)
+    }
+
+    // --- canvas: layout-runner-facing helpers -------------------------------
+
+    /// The canvas `name`, creating it at the default framing if absent. Used by
+    /// the layout runner while walking a `` `canvas` `` element.
+    pub(crate) fn canvas_entry(&mut self, name: symbol_table::GlobalSymbol) -> &mut Canvas {
+        self.canvases.entry(name).or_default()
+    }
+
+    /// Current zoom of canvas `name` (`1.0` if unknown).
+    pub(crate) fn canvas_zoom(&self, name: symbol_table::GlobalSymbol) -> f32 {
+        self.canvases.get(&name).map_or(1.0, |c| c.zoom)
+    }
+
+    /// Pan of canvas `name` in the layout engine's logical px (its
+    /// `clip.childOffset`), `(0, 0)` if unknown.
+    pub(crate) fn canvas_pan_logical(&self, name: symbol_table::GlobalSymbol) -> (f32, f32) {
+        self.canvases.get(&name).map_or((0.0, 0.0), |c| c.pan_logical())
+    }
+
+    /// World size for canvas `name` in **logical** px (what `width_fixed` wants):
+    /// its configured `world-width`/`world-height` if set, else the canvas
+    /// element's own laid-out size, else [`Canvas::AUTO_WORLD`].
+    pub(crate) fn canvas_world_or_default(&self, name: symbol_table::GlobalSymbol) -> (f32, f32) {
+        let c = match self.canvases.get(&name) {
+            Some(c) => c,
+            None => return (Canvas::AUTO_WORLD, Canvas::AUTO_WORLD),
+        };
+        let dpi = if c.dpi > 1e-4 { c.dpi } else { 1.0 };
+        // `screen_rect` is physical; the world wrapper is sized in logical px.
+        let fallback = |v: f32| if v > dpi { v / dpi } else { Canvas::AUTO_WORLD };
+        (
+            c.world_width.unwrap_or_else(|| fallback(c.screen_rect.2)),
+            c.world_height.unwrap_or_else(|| fallback(c.screen_rect.3)),
+        )
+    }
+
+    /// After a layout pass, refresh every known canvas's `dpi` + `screen_rect`
+    /// (physical px) from the finished Clay tree so cursor-anchored zoom and the
+    /// world-size auto fallback have this frame's geometry.
+    fn refresh_canvas_rects(&mut self) {
+        let dpi = self.dpi_scale();
+        let names: Vec<symbol_table::GlobalSymbol> = self.canvases.keys().copied().collect();
+        for name in names {
+            let id = self.l.get_element_id(name.as_str());
+            let bb = self.l.bounding_box(id);
+            if let Some(canvas) = self.canvases.get_mut(&name) {
+                canvas.dpi = dpi;
+                if let Some(bb) = bb {
+                    canvas.screen_rect =
+                        (bb.x * dpi, bb.y * dpi, bb.width * dpi, bb.height * dpi);
+                }
+            }
+        }
+    }
+
     /// Reads and parses a single markdown layout file (see
     /// `process_layout`) and registers it - along with any reusable snippets
     /// it defines - as the page named after the file itself (its name with
@@ -1311,6 +1427,7 @@ where
                                     viewport_lookup,
                                     viewports,
                                     active_window: None,
+                                    canvases: HashMap::new(),
                                 };
 
                                 // `API` reads and parses the layout files itself - the
@@ -1428,8 +1545,13 @@ where
                 } => {
                     if let Some(viewport) = api.viewports.get_mut(&window_id) {
                         let position: (f32, f32) = position.into();
-                        viewport.mouse_delta.0 = position.0 - viewport.mouse_position.0;
-                        viewport.mouse_delta.1 = position.1 - viewport.mouse_position.1;
+                        // Accumulate over every move since the last frame (cleared
+                        // in `end_frame`), not just the last segment - several
+                        // `CursorMoved` events routinely arrive between two
+                        // (frame-paced) redraws, and a drag handler that read only
+                        // the final hop would lag the pointer.
+                        viewport.mouse_delta.0 += position.0 - viewport.mouse_position.0;
+                        viewport.mouse_delta.1 += position.1 - viewport.mouse_position.1;
                         viewport.mouse_position = position;
                     }
                 }
