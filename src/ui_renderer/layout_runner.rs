@@ -45,6 +45,7 @@ use markdown::mdast::{List, ListItem, Node, Paragraph};
 use symbol_table::GlobalSymbol;
 use telera_layout::{Color, ElementConfiguration, TextConfig};
 
+use super::calc;
 use crate::{API, CustomElement, EffectKind, ResolvedShader, UIImageDescriptor};
 
 const DEFAULT_TEXT: &str = ":(";
@@ -1222,6 +1223,81 @@ pub struct ParsedLayout {
     pub shader_loads: Vec<ShaderLoad>,
 }
 
+/// Parse-time environment for compile-time `` `calc` `` expressions: the file's
+/// `` `calc` `` functions plus a stack of in-scope static numeric declarations
+/// (innermost scope last). A `` `set-numeric` `` whose value is an expression is
+/// evaluated against this the moment its line is read, so it only ever sees
+/// declarations written textually before it.
+struct CalcCtx {
+    fns: HashMap<String, calc::CalcFn>,
+    scope: Vec<HashMap<String, f32>>,
+}
+
+impl CalcCtx {
+    fn new(fns: HashMap<String, calc::CalcFn>) -> Self {
+        // One frame for the page body; `list` / `use` push their own.
+        CalcCtx {
+            fns,
+            scope: vec![HashMap::new()],
+        }
+    }
+
+    fn eval_str(&self, src: &str) -> Result<f32, calc::CalcError> {
+        calc::eval(&calc::parse_expr(src)?, &self.scope, &self.fns, 0)
+    }
+
+    /// Records a resolved static numeric so later expressions in the same (or a
+    /// nested) scope can reference it by name.
+    fn bind(&mut self, name: &str, value: f32) {
+        if let Some(frame) = self.scope.last_mut() {
+            frame.insert(name.to_string(), value);
+        }
+    }
+}
+
+/// Scans a parsed markdown document for `` - `calc` `name(args) = expr` ``
+/// items under the `#### TML ...` header and builds the function table. Runs
+/// before the main walk so a `` `set-numeric` `` expression anywhere in the
+/// file can call a function regardless of where the header sits.
+fn collect_calc_fns(root: &Node) -> HashMap<String, calc::CalcFn> {
+    let mut fns = HashMap::new();
+    let Some(nodes) = root.children() else {
+        return fns;
+    };
+
+    let mut in_header = false;
+    for node in nodes {
+        match node {
+            Node::Heading(h) => {
+                in_header = h.depth == 4
+                    && matches!(h.children.first(), Some(Node::Text(t)) if t.value.trim().starts_with("TML"));
+            }
+            Node::List(list) if in_header => {
+                for item in &list.children {
+                    if let Node::ListItem(item) = item
+                        && let Some(Node::Paragraph(p)) = item.children.first()
+                        && let Some(Node::InlineCode(keyword)) = p.children.first()
+                        && keyword.value == "calc"
+                        && let Some(Node::InlineCode(spec)) =
+                            p.children.iter().skip(1).find(|n| matches!(n, Node::InlineCode(_)))
+                    {
+                        match calc::parse_fn(spec.value.trim()) {
+                            Ok((name, func)) => {
+                                fns.insert(name, func);
+                            }
+                            Err(error) => {
+                                eprintln!("TML calc: `calc` `{}`: {error}", spec.value.trim());
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fns
+}
+
 /// Every keyword the grammar looks for as the *first token* of a list item -
 /// element, config, declaration and header directives. **Sorted** (binary
 /// searched by [`add_missing_keyword_backticks`]).
@@ -1239,7 +1315,7 @@ const LEADING_KEYWORDS: &[&str] = &[
     "attach-self", "attatch-parent",
     "bevel-highlight", "bevel-light-angle", "bevel-shade", "bevel-width",
     "bezier", "blur-radius", "blur-tint", "border-all", "border-bottom", "border-color",
-    "border-in-between", "border-left", "border-right", "border-top", "center", "center-x",
+    "border-in-between", "border-left", "border-right", "border-top", "calc", "center", "center-x",
     "center-y", "child-gap", "circle", "clip-to-parent", "color", "config", "ctrl1-x", "ctrl1-y",
     "ctrl2-x", "ctrl2-y", "declarations", "element", "end-angle", "eye-x", "eye-y", "eye-z", "far",
     "fit", "fixed-square", "floating",
@@ -1387,6 +1463,7 @@ pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
     if let Ok(m) = markdown::to_mdast(&file, &markdown::ParseOptions::default())
         && let Some(nodes) = m.children()
     {
+        let mut calc_ctx = CalcCtx::new(collect_calc_fns(&m));
         for node in nodes {
             match node {
                 Node::Heading(h) => {
@@ -1435,7 +1512,7 @@ pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
                     }
                     ParsingMode::ReusableElements => {
                         for node in &list.children {
-                            let element = process_element(node);
+                            let element = process_element(node, &mut calc_ctx);
                             reusables.insert(open_reuseable_name.clone(), element);
                         }
                     }
@@ -1444,7 +1521,7 @@ pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
                             winit::window::CursorIcon::Default,
                         )));
                         for node in &list.children {
-                            let mut element = process_element(node);
+                            let mut element = process_element(node, &mut calc_ctx);
                             body.append(&mut element);
                         }
                     }
@@ -1565,6 +1642,7 @@ fn process_shape(
     element: &ListItem,
     element_declaration: &Paragraph,
     mut spec: CustomElementSpec,
+    ctx: &mut CalcCtx,
 ) -> Vec<Layout> {
     let mut layout_commands: Vec<Layout> = Vec::new();
     layout_commands.push(Layout::Element(Element::ElementOpened { id: None }));
@@ -1597,7 +1675,7 @@ fn process_shape(
         && let Node::List(child_elements) = child_elements
     {
         for child_element in child_elements.children.iter().skip(1) {
-            let mut child_element = process_element(child_element);
+            let mut child_element = process_element(child_element, ctx);
             layout_commands.append(&mut child_element);
         }
     }
@@ -1606,7 +1684,7 @@ fn process_shape(
     layout_commands
 }
 
-fn process_element(element: &Node) -> Vec<Layout> {
+fn process_element(element: &Node, ctx: &mut CalcCtx) -> Vec<Layout> {
     let mut layout_commands: Vec<Layout> = Vec::new();
 
     if let Node::ListItem(element) = element
@@ -1621,7 +1699,10 @@ fn process_element(element: &Node) -> Vec<Layout> {
                     && let Node::List(declarations) = declarations
                 {
                     for declaration in declarations.children.iter() {
-                        if let Some((name, value)) = process_variable(declaration) {
+                        if let Some((name, value)) = process_variable(declaration, ctx) {
+                            if let DataSrc::Static(Declaration::Numeric(number)) = value {
+                                ctx.bind(&name, number);
+                            }
                             let name = GlobalSymbol::new(name);
                             layout_commands.push(Layout::Declaration { name, value });
                         }
@@ -1654,7 +1735,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                     && let Node::List(child_elements) = child_elements
                 {
                     for child_element in child_elements.children.iter().skip(1) {
-                        let mut child_element = process_element(child_element);
+                        let mut child_element = process_element(child_element, ctx);
                         layout_commands.append(&mut child_element);
                     }
                 }
@@ -1665,31 +1746,37 @@ fn process_element(element: &Node) -> Vec<Layout> {
                 element,
                 element_declaration,
                 CustomElementSpec::Circle,
+                ctx,
             )),
             "ring" => layout_commands.append(&mut process_shape(
                 element,
                 element_declaration,
                 CustomElementSpec::ring(),
+                ctx,
             )),
             "line" => layout_commands.append(&mut process_shape(
                 element,
                 element_declaration,
                 CustomElementSpec::line(),
+                ctx,
             )),
             "arc" => layout_commands.append(&mut process_shape(
                 element,
                 element_declaration,
                 CustomElementSpec::arc(),
+                ctx,
             )),
             "bezier" => layout_commands.append(&mut process_shape(
                 element,
                 element_declaration,
                 CustomElementSpec::bezier(),
+                ctx,
             )),
             "render-window" => layout_commands.append(&mut process_shape(
                 element,
                 element_declaration,
                 CustomElementSpec::render_window(),
+                ctx,
             )),
             "grow" => {
                 layout_commands.push(Layout::Element(Element::ElementOpened { id: None }));
@@ -1750,8 +1837,12 @@ fn process_element(element: &Node) -> Vec<Layout> {
                 {
                     let src = GlobalSymbol::new(reusable_name.value.trim());
                     layout_commands.push(Layout::Element(Element::UseOpened));
+                    ctx.scope.push(HashMap::new());
                     for input_variable in &input_variables.children {
-                        if let Some((name, declaration)) = process_variable(input_variable) {
+                        if let Some((name, declaration)) = process_variable(input_variable, ctx) {
+                            if let DataSrc::Static(Declaration::Numeric(number)) = declaration {
+                                ctx.bind(&name, number);
+                            }
                             let name = GlobalSymbol::new(name);
                             layout_commands.push(Layout::Declaration {
                                 name,
@@ -1759,6 +1850,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                             });
                         }
                     }
+                    ctx.scope.pop();
                     layout_commands.push(Layout::Element(Element::UseClosed(src)));
                 }
             }
@@ -1770,6 +1862,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                 {
                     let mut formatted_list = Vec::<Layout>::new();
                     formatted_list.push(Layout::Element(Element::ListOpened));
+                    ctx.scope.push(HashMap::new());
 
                     // A leading `declarations` block is optional - only skip
                     // it as the first body item if it's actually there, or
@@ -1787,7 +1880,10 @@ fn process_element(element: &Node) -> Vec<Layout> {
                         && let Node::List(declarations) = declarations
                     {
                         for declaration in &declarations.children {
-                            if let Some((name, declaration)) = process_variable(declaration) {
+                            if let Some((name, declaration)) = process_variable(declaration, ctx) {
+                                if let DataSrc::Static(Declaration::Numeric(number)) = declaration {
+                                    ctx.bind(&name, number);
+                                }
                                 let src = GlobalSymbol::new(name);
                                 formatted_list.push(Layout::Declaration {
                                     name: src,
@@ -1799,9 +1895,11 @@ fn process_element(element: &Node) -> Vec<Layout> {
 
                     let skip_count = if has_declarations { 1 } else { 0 };
                     for li in list_content.children.iter().skip(skip_count) {
-                        let mut list_item = process_element(li);
+                        let mut list_item = process_element(li, ctx);
                         formatted_list.append(&mut list_item);
                     }
+
+                    ctx.scope.pop();
 
                     let src = field_symbol(list_src.value.trim());
                     formatted_list.push(Layout::Element(Element::ListClosed(src)));
@@ -1826,7 +1924,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                             && let Node::List(body) = body
                         {
                             for item in &body.children {
-                                let mut item = process_element(item);
+                                let mut item = process_element(item, ctx);
                                 layout_commands.append(&mut item);
                             }
                         }
@@ -1849,7 +1947,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                     formatted_element.push(Layout::Element(Element::IfOpened { condition: src }));
 
                     for conditional_element in &conditional_elements.children {
-                        let mut conditional_element = process_element(conditional_element);
+                        let mut conditional_element = process_element(conditional_element, ctx);
                         formatted_element.append(&mut conditional_element);
                     }
 
@@ -1870,7 +1968,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                         .push(Layout::Element(Element::IfNotOpened { condition: src }));
 
                     for conditional_element in &conditional_elements.children {
-                        let mut conditional_element = process_element(conditional_element);
+                        let mut conditional_element = process_element(conditional_element, ctx);
                         formatted_element.append(&mut conditional_element);
                     }
 
@@ -1890,7 +1988,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                     formatted_element.push(Layout::Element(Element::IfIndexOpened { index }));
 
                     for conditional_element in &conditional_elements.children {
-                        let mut conditional_element = process_element(conditional_element);
+                        let mut conditional_element = process_element(conditional_element, ctx);
                         formatted_element.append(&mut conditional_element);
                     }
 
@@ -1910,7 +2008,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                     formatted_element.push(Layout::Element(Element::IfIndexNotOpened { index }));
 
                     for conditional_element in &conditional_elements.children {
-                        let mut conditional_element = process_element(conditional_element);
+                        let mut conditional_element = process_element(conditional_element, ctx);
                         formatted_element.append(&mut conditional_element);
                     }
 
@@ -1982,7 +2080,23 @@ fn optional_arg<T: FromStr>(config: &Paragraph) -> Option<DataSrc<T>> {
     }
 }
 
-fn process_variable(declaration: &Node) -> Option<(String, DataSrc<Declaration>)> {
+/// The value of a `declarations` binding - the run after the `*name*`. Usually
+/// plain text (`` `set-numeric` *a* 5 ``); for the backtick form
+/// (`` `set-numeric` *a* `scale(w, 2)` ``, needed whenever the value contains a
+/// `*` or `_` that Markdown would eat as emphasis) it is the code span. `None`
+/// when the item carries no value at all.
+fn declaration_value_str(paragraph: &Paragraph) -> Option<&str> {
+    paragraph.children.iter().skip(3).find_map(|node| match node {
+        Node::InlineCode(code) => Some(code.value.as_str()),
+        Node::Text(text) if !text.value.trim().is_empty() => Some(text.value.as_str()),
+        _ => None,
+    })
+}
+
+fn process_variable(
+    declaration: &Node,
+    ctx: &CalcCtx,
+) -> Option<(String, DataSrc<Declaration>)> {
     if let Node::ListItem(declaration) = declaration
         && let Some(declaration) = declaration.children.first()
         && let Node::Paragraph(declaration) = declaration
@@ -1992,53 +2106,46 @@ fn process_variable(declaration: &Node) -> Option<(String, DataSrc<Declaration>)
         && let Node::Emphasis(declaration_name) = declaration_name
         && let Some(declaration_name) = declaration_name.children.first()
         && let Node::Text(variable_name) = declaration_name
-        && let Some(declaration_value) = declaration.children.get(3)
-        && let Node::Text(variable_value) = declaration_value
     {
+        let raw_value = declaration_value_str(declaration).map(str::trim);
+        let name = || normalize_field_symbol(variable_name.value.trim());
         match variable_type.value.as_str() {
             "get-bool" | "get-numeric" | "get-text" | "get-event" | "get-image" | "get-color" => {
-                let value = field_symbol(variable_value.value.trim());
-                Some((
-                    normalize_field_symbol(variable_name.value.trim()),
-                    DataSrc::<Declaration>::Dynamic(value),
-                ))
+                let value = field_symbol(raw_value?);
+                Some((name(), DataSrc::<Declaration>::Dynamic(value)))
             }
-            "set-bool" => bool::from_str(variable_value.value.trim())
+            "set-bool" => bool::from_str(raw_value?)
                 .ok()
-                .map(|value| {
-                    (
-                        normalize_field_symbol(variable_name.value.trim()),
-                        DataSrc::<Declaration>::Static(Declaration::Bool(value)),
-                    )
-                }),
-            "set-numeric" => f32::from_str(variable_value.value.trim())
-                .ok()
-                .map(|value| {
-                    (
-                        normalize_field_symbol(variable_name.value.trim()),
-                        DataSrc::<Declaration>::Static(Declaration::Numeric(value)),
-                    )
-                }),
+                .map(|value| (name(), DataSrc::<Declaration>::Static(Declaration::Bool(value)))),
+            // A literal number, or - failing that - a compile-time `calc`
+            // expression over `calc` functions and earlier static declarations.
+            "set-numeric" => {
+                let raw = raw_value?;
+                let value = match f32::from_str(raw) {
+                    Ok(value) => Some(value),
+                    Err(_) => match ctx.eval_str(raw) {
+                        Ok(value) => Some(value),
+                        Err(error) => {
+                            eprintln!("TML calc: `set-numeric` *{}*: {error}", name());
+                            None
+                        }
+                    },
+                };
+                value.map(|value| {
+                    (name(), DataSrc::<Declaration>::Static(Declaration::Numeric(value)))
+                })
+            }
             "set-text" => Some((
-                normalize_field_symbol(variable_name.value.trim()),
-                DataSrc::<Declaration>::Static(Declaration::Text(
-                    variable_value.value.trim().to_string(),
-                )),
+                name(),
+                DataSrc::<Declaration>::Static(Declaration::Text(raw_value?.to_string())),
             )),
             "set-event" => Some((
-                normalize_field_symbol(variable_name.value.trim()),
-                DataSrc::<Declaration>::Static(Declaration::Event(GlobalSymbol::new(
-                    variable_value.value.trim(),
-                ))),
+                name(),
+                DataSrc::<Declaration>::Static(Declaration::Event(GlobalSymbol::new(raw_value?))),
             )),
-            "set-color" => Color::from_str(variable_value.value.trim())
+            "set-color" => Color::from_str(raw_value?)
                 .ok()
-                .map(|value| {
-                    (
-                        normalize_field_symbol(variable_name.value.trim()),
-                        DataSrc::<Declaration>::Static(Declaration::Color(value)),
-                    )
-                }),
+                .map(|value| (name(), DataSrc::<Declaration>::Static(Declaration::Color(value)))),
             // `` `set-image` *name* *atlas* [u1, v1, u2, v2] `` - the atlas name
             // is a second emphasis span (children[4]); the UV rect is optional
             // trailing text (children[5]) and defaults to the whole image.
@@ -4606,6 +4713,121 @@ mod tests {
             assert!(depth >= 0, "command stream closed more than it opened");
         }
         assert_eq!(depth, 0, "command stream left something unclosed");
+
+        // `*pad*` in Main.md is `scale(base, base)` with `base = 4` and the
+        // header `calc` `scale(a, b) = a * b`, so it must fold to 16.
+        let pad = GlobalSymbol::new("pad");
+        assert!(body.iter().any(|command| matches!(
+            command,
+            Layout::Declaration { name, value: DataSrc::Static(Declaration::Numeric(v)) }
+                if *name == pad && *v == 16.0
+        )));
+    }
+
+    /// Pulls the value bound to a `set-numeric` declaration named `name` out of
+    /// a parsed body, or `None` if the declaration was dropped.
+    fn declared_number(body: &[Layout], name: &str) -> Option<f32> {
+        let want = GlobalSymbol::new(name);
+        body.iter().find_map(|command| match command {
+            Layout::Declaration {
+                name,
+                value: DataSrc::Static(Declaration::Numeric(v)),
+            } if *name == want => Some(*v),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn set_numeric_expression_folds_to_constant() {
+        let src = "\
+# root
+- `declarations`
+    - `set-numeric` *a* 5
+    - `set-numeric` *b* 2
+    - `set-numeric` *c* `(a + b) * 3`
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+        assert_eq!(declared_number(&body, "c"), Some(21.0));
+        // a plain literal still works, backticked or not
+        assert_eq!(declared_number(&body, "a"), Some(5.0));
+    }
+
+    #[test]
+    fn calc_fn_from_header_is_callable() {
+        let src = "\
+#### TML 1.0
+- `calc` `scale(a, b) = a * b`
+
+# root
+- `declarations`
+    - `set-numeric` *x* `scale(3, 4)`
+    - `set-numeric` *y* `scale(scale(1, 1), 3)`
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+        assert_eq!(declared_number(&body, "x"), Some(12.0));
+        assert_eq!(declared_number(&body, "y"), Some(3.0));
+    }
+
+    #[test]
+    fn header_after_body_still_provides_calc_fns() {
+        // `collect_calc_fns` pre-scans, so header position doesn't matter.
+        let src = "\
+# root
+- `declarations`
+    - `set-numeric` *x* `dbl(21)`
+
+#### TML 1.0
+- `calc` `dbl(n) = n * 2`
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+        assert_eq!(declared_number(&body, "x"), Some(42.0));
+    }
+
+    #[test]
+    fn forward_and_runtime_references_are_dropped() {
+        let src = "\
+# root
+- `declarations`
+    - `set-numeric` *forward* `later + 1`
+    - `set-numeric` *later* 2
+    - `get-numeric` *runtime* some_field
+    - `set-numeric` *bad* `runtime * 2`
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+        assert_eq!(declared_number(&body, "forward"), None);
+        assert_eq!(declared_number(&body, "later"), Some(2.0));
+        assert_eq!(declared_number(&body, "bad"), None);
+    }
+
+    #[test]
+    fn recursive_calc_fn_is_dropped_not_hung() {
+        let src = "\
+#### TML 1.0
+- `calc` `r(n) = r(n)`
+
+# root
+- `declarations`
+    - `set-numeric` *x* `r(1)`
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+        assert_eq!(declared_number(&body, "x"), None);
+    }
+
+    #[test]
+    fn calc_scope_is_per_list() {
+        // A `list` gets its own frame; its leading declarations don't leak out,
+        // but they do see the enclosing page scope.
+        let src = "\
+# root
+- `declarations`
+    - `set-numeric` *page_base* 10
+- `list` rows
+    - `declarations`
+        - `set-numeric` *row_pad* `page_base + 2`
+    - `element`
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+        assert_eq!(declared_number(&body, "row_pad"), Some(12.0));
     }
 
     /// Every config keyword added to expose an `ElementConfiguration` /

@@ -1,6 +1,6 @@
 #### TML 1.0
 - `font` [1](examples/fonts/TwemojiMozilla.ttf)
-
+- `calc` `scale(a, b) = a * b`
 
 ## layout expand
 - `width-grow`
@@ -47,13 +47,15 @@
 # root
 - `declarations`
     - `set-color` *content background color* rgb(90,90,90)
+    - `set-numeric` *base* 4
+    - `set-numeric` *pad* `scale(base, base)`
 - `element` outer container
     - `config`
         - `use` layout expand
         - `color` rgb(43,41,51)
         - `vertical`
-        - `padding-all` 16
-        - `child-gap` 16
+        - `padding-all` *pad*
+        - `child-gap` *pad*
     - `element` header bar
         - `config`
             - `color` *content background color*
@@ -131,21 +133,21 @@
                 - `width-fixed` 250
                 - `height-grow`
                 - `radius-all` 8
-            - element search box
-              - config
-                - color white
-                - radius-all 10
-                - padding-all 12
-                - padding-left 6
-                - width-grow
-                - height-fixed 40
-                - border-all 4
-                - border-color black
-                - focus
-                  - border-color blue
-                - key-event key_event
-                - scroll-horizontal
-              - text
+            - `element` search box
+              - `config`
+                - `color` white
+                - `radius-all` 10
+                - `padding-all` 12
+                - `padding-left` 6
+                - `width-grow`
+                - `height-fixed` 40
+                - `border-all` 4
+                - `border-color` black
+                - `focus`
+                  - `border-color` blue
+                - `key-event` key_event
+                - `scroll-horizontal`
+              - `text`
                 - `config`
                   - `font-size` 24
                   - `color` black

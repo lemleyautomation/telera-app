@@ -397,7 +397,6 @@ impl API {
     where
         UserApp: App,
     {
-        let dt = Instant::now();
         // Everything from here to `end_frame` builds and draws *this* window;
         // the input accessors read the viewport named here.
         self.active_window = Some(window_id);
@@ -470,7 +469,6 @@ impl API {
         } else {
             None
         };
-        println!("render_time: {:?}", dt.elapsed().as_secs_f64());
 
         if let Some(mut ui_renderer) = ui_renderer {
             if let Some(viewport) = self.viewports.get_mut(&window_id)

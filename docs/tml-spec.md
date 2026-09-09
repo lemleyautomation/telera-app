@@ -27,13 +27,19 @@ A TML file is a Markdown document read by the `markdown` crate into an AST
 - **A level-4 heading whose text starts with `TML`** (`#### TML 1.0`) opens
   the **preamble block**: the list under it is a flat sequence of directives
   that run once, when the file is parsed or its page replaced, before any
-  layout. Three directives exist: `` - `load` [atlas](path) `` (an image, see
-  [Images](#images)); `` - `font` [id](path) `` - loads a `.ttf`/`.otf`,
-  selected by `` `font-id` `` `id` and also added to the fallback chain (so a
-  loaded emoji/symbol font is used automatically); and
+  layout. Four directives exist. Three are file-loading and share the
+  `` `keyword` [text](path) `` Markdown-link shape: `` - `load` [atlas](path) ``
+  (an image, see [Images](#images)); `` - `font` [id](path) `` - loads a
+  `.ttf`/`.otf`, selected by `` `font-id` `` `id` and also added to the
+  fallback chain (so a loaded emoji/symbol font is used automatically); and
   `` - `shader` [name](path.wgsl) `` - loads a custom UI effect shader,
   applied with the `` `shader` `` config keyword (see [Effects](#effects)).
-  All paths are relative to the process's working directory.
+  All paths are relative to the process's working directory. The fourth,
+  `` - `calc` `name(a, b) = a * b` ``, defines a pure compile-time function -
+  its argument is a backtick code span, not a link (see
+  [Compile-time expressions](#compile-time-expressions-calc)). Unlike the
+  file-loading directives, `` `calc` `` is collected regardless of where the
+  header sits, so a function may be defined after the page that uses it.
 - **A level-1 heading** (`# anything`) marks the start of the page body. The
   heading text itself is ignored - `# root` is the convention, but the page
   is actually named by whoever loads the file (`Binder::load_layout`/`API`
@@ -109,7 +115,10 @@ Caveats, both a consequence of the pass running with no grammar context:
 - Only the **leading** keyword is touched. Every config keyword takes at most a
   single plain-text (or `*dynamic*`) value now, so the rest of the line is left
   alone; a UV rect like `` `image` *atlas* `[0,0,1,1]` `` still needs its own
-  backticks around the bracketed list.
+  backticks around the bracketed list, and a `` `set-numeric` `` /
+  `` `calc` `` expression that contains a `*` or `_` needs its own backticks
+  around the expression (see
+  [Compile-time expressions](#compile-time-expressions-calc)).
 - A plain-text line that *happens* to start with a keyword word (a `text`
   element whose content begins with `color`, `image`, `if`, `line`, ...) will
   be turned into a config or element. Write that line's backticks yourself,
@@ -193,7 +202,7 @@ into two families:
 | `get-image` | plain text | same, via `get_image` |
 | `get-event` | plain text | same, via `get_event` |
 | `set-bool` | plain text, parsed as `bool` | binds `name` to a literal `true`/`false` fixed in the layout itself |
-| `set-numeric` | plain text, parsed as `f32` | binds `name` to a literal number |
+| `set-numeric` | plain text parsed as `f32`, **or** a backtick expression (`` `scale(w, 2) + 4` ``) | binds `name` to a number - a literal, or a [compile-time expression](#compile-time-expressions-calc) folded to a constant once, when the file is parsed |
 | `set-text` | plain text | binds `name` to a literal string |
 | `set-color` | plain text, parsed as a `Color` | binds `name` to a literal color |
 | `set-event` | plain text | binds `name` to a literal handler name (looked up later via `LayoutReflector::dispatch_event`) |
@@ -253,6 +262,83 @@ name(&mut self, context: Option<EventContext>, api: &mut API)`) or
 `#[layout_element]` (`fn name(&mut self, api: &mut API, mt: &mut MT)`) and
 generates the `LayoutReflector::dispatch_event`/`dispatch_custom_element`
 match arms that route a name straight to that method.
+
+### Compile-time expressions (`calc`)
+
+A `` `set-numeric` `` whose value is a backtick code span is an **expression
+evaluated once, while the file is parsed**, and folded to a constant. It has
+no runtime cost and no runtime surface - the result lands in the declaration
+as an ordinary static number, indistinguishable from a literal.
+
+```markdown
+#### TML 1.0
+- `calc` `scale(a, b) = a * b`
+- `calc` `golden(x) = x * 1618 / 1000`
+
+# root
+- `declarations`
+    - `set-numeric` *base* 4
+    - `set-numeric` *pad* `scale(base, base)`
+    - `set-numeric` *panel_w* `golden(base) + 200`
+- `element`
+    - `config`
+        - `padding-all` *pad*
+        - `width-fixed` *panel_w*
+```
+
+**Why the backticks are required.** A bare `*` or `_` is Markdown emphasis, so
+`2 * 45 / 34 * (56 + n)` would be mangled into `<em>` runs before the parser
+ever sees it. Wrapping the expression in a `` `code span` `` (the same rule a
+UV rect follows) keeps it verbatim. A value with no such characters
+(`scale(a, 4)`, `base / 8`) also works un-backticked, but backticking every
+expression is the convention.
+
+**Grammar.** Arithmetic only - there are no built-in functions; `min`,
+`clamp`, ... are whatever the file defines with `` `calc` ``.
+
+```text
+expr    := term (('+' | '-') term)*
+term    := unary (('*' | '/' | '%') unary)*
+unary   := '-' unary | primary
+primary := number | ident | ident '(' (expr (',' expr)*)? ')' | '(' expr ')'
+```
+
+| Operators | Precedence | Associativity |
+|---|---|---|
+| unary `-` | highest | - |
+| `*` `/` `%` | middle | left |
+| `+` `-` | lowest | left |
+
+`%` is float remainder. Division or remainder by zero is an error (not folded
+to `inf`/`NaN`).
+
+**Functions.** `` - `calc` `name(p1, p2) = <expr>` `` in the `#### TML` header
+defines a pure function: its body sees only its own parameters (never the
+caller's declarations) and may call other `` `calc` `` functions. Header
+position does not matter - functions are collected before any page is walked.
+A cyclic definition trips a recursion limit and the offending value is
+dropped.
+
+**What an expression may reference.** Numeric literals; `` `calc` ``
+functions; and other `` `set-numeric` `` bindings **declared textually earlier
+in the same or an enclosing scope**. It may **not** reference `get-*`
+bindings, application fields, `list`/`item` fields, or `use` parameters -
+those resolve at render time, and using one is an error. An identifier is
+matched case-insensitively, but **`-` inside an expression is always
+subtraction** - a declaration whose name has spaces or hyphens
+(`*content background width*`) must be referenced by its normalized form with
+underscores (`content_background_width`).
+
+**Scope.** Same frames as declarations: page body, a `list`'s leading
+`declarations`, and `set-numeric` `use` parameters each add a frame; forward
+references within a frame fail. Inside a `##`/`###` reusable snippet only
+functions and literals are visible (a snippet has no single compile-time
+value for its call-site locals).
+
+**Errors.** Any failure - syntax, unknown name, arity, divide-by-zero,
+recursion, a runtime reference - prints a `TML calc:` line to stderr and
+drops that one binding; the file still loads. A dropped `` `set-numeric` ``
+leaves `*name*` resolving to `0.0` (the normal "missing numeric" fallback).
 
 ## 4. Elements
 
@@ -758,3 +844,10 @@ working:
 - `CustomElement::RenderWindow` - a valid custom-element payload the
   renderer knows how to draw, but `process_element` never produces it (only
   `circle` and `line` map to a `CustomElement` from TML).
+- `calc` expressions are only accepted as a `` `set-numeric` `` value. There
+  is no `calc-color`, and no inline `calc(...)` directly on a config line -
+  compute the value in a `` `set-numeric` `` and reference it by name.
+- A `calc` expression sees only declarations written textually before it; a
+  forward reference, or one across sibling `declarations` blocks, fails.
+- A `calc` expression inside a `##`/`###` reusable snippet cannot see any
+  declaration - only `` `calc` `` functions and literals.
