@@ -1,0 +1,176 @@
+#### TML 1.0
+- `shader` [glass](examples/shaders/glass.wgsl)
+- `shader` [neon](examples/shaders/neon.wgsl)
+
+# root
+
+- `element` root
+  - `config`
+    - `grow`
+    - `color` rgb(24,24,30)
+    - `vertical`
+    - `padding-all` 48
+    - `child-gap` 40
+    - `align-children-x` center
+    - `align-children-y` center
+
+  - `element` builtin row
+    - `config`
+      - `horizontal`
+      - `child-gap` 48
+      - `align-children-y` center
+
+    - `element` drop shadow card
+      - `config`
+        - `width-fixed` 180
+        - `height-fixed` 120
+        - `color` rgb(210,90,70)
+        - `radius-all` 16
+        - `shader` *drop-shadow*
+        - `shadow-offset-y` 6
+        - `shadow-blur` *shadow_blur*
+        - `shadow-spread` 1
+        - `shadow-color` rgba(0,0,0,0.55)
+      - `text`
+        - `config`
+          - `font-size` 16
+          - `color` white
+        - drop shadow
+
+    - `element` raised edge card
+      - `config`
+        - `width-fixed` 180
+        - `height-fixed` 120
+        - `color` rgb(70,110,190)
+        - `radius-all` 16
+        - `shader` *raised-edge*
+        - `bevel-width` 16
+        - `bevel-light-angle` *bevel_angle*
+        - `bevel-highlight` 0.9
+        - `bevel-shade` 0.6
+      - `text`
+        - `config`
+          - `font-size` 16
+          - `color` white
+        - raised edge
+
+    - `element` inner glow card
+      - `config`
+        - `width-fixed` 180
+        - `height-fixed` 120
+        - `color` rgb(40,44,54)
+        - `radius-all` 16
+        - `shader` *inner-glow*
+        - `glow-blur` 22
+        - `glow-color` rgba(120,220,255,0.82)
+      - `text`
+        - `config`
+          - `font-size` 16
+          - `color` white
+        - inner glow
+
+  - `element` custom row
+    - `config`
+      - `horizontal`
+      - `child-gap` 48
+      - `align-children-y` center
+
+    - `element` glass card
+      - `config`
+        - `width-fixed` 180
+        - `height-fixed` 120
+        - `color` rgba(90,140,180,0.86)
+        - `radius-all` 16
+        - `shader` *glass*
+        - `shader-param-1` 1.0
+        - `shader-param-2` 2.0
+        - `shader-param-3` *sheen_phase*
+      - `text`
+        - `config`
+          - `font-size` 16
+          - `color` white
+        - custom: glass
+
+    - `element` neon card
+      - `config`
+        - `width-fixed` 180
+        - `height-fixed` 120
+        - `color` rgb(20,18,32)
+        - `radius-all` 16
+        - `shader` *neon*
+        - `shader-param-1` 7
+        - `shader-param-2` *neon_glow*
+      - `text`
+        - `config`
+          - `font-size` 16
+          - `color` rgb(120,240,255)
+        - custom: neon
+
+    - `circle` shadowed circle
+      - `config`
+        - `width-fixed` 120
+        - `height-fixed` 120
+        - `color` rgb(240,200,90)
+        - `shader` *drop-shadow*
+        - `shadow-offset-y` 6
+        - `shadow-blur` *shadow_blur*
+        - `shadow-color` rgba(0,0,0,0.55)
+
+  - `element` stacked + blur row
+    - `config`
+      - `horizontal`
+      - `child-gap` 48
+      - `align-children-y` center
+
+    - `element` stacked card
+      - `config`
+        - `width-fixed` 180
+        - `height-fixed` 120
+        - `color` rgb(150,90,200)
+        - `radius-all` 16
+        - `shader` *drop-shadow*
+        - `shadow-offset-y` 8
+        - `shadow-blur` *shadow_blur*
+        - `shadow-color` rgba(0,0,0,0.6)
+        - `shader` *raised-edge*
+        - `bevel-width` 12
+        - `bevel-light-angle` *bevel_angle*
+        - `shader` *inner-glow*
+        - `glow-blur` 18
+        - `glow-color` rgba(255,220,180,0.5)
+      - `text`
+        - `config`
+          - `font-size` 15
+          - `color` white
+        - shadow + bevel + glow
+
+    - `element` frosted card
+      - `config`
+        - `width-fixed` 220
+        - `height-fixed` 130
+        - `color` rgb(28,30,40)
+        - `radius-all` 18
+        - `padding-all` 16
+        - `child-gap` 12
+        - `align-children-y` center
+        - `shader` *blur*
+        - `blur-radius` *shadow_blur*
+        - `blur-tint` rgba(190,210,255,0.08)
+      - `element`
+        - `config`
+          - `color` rgb(240,120,90)
+          - `width-fixed` 46
+          - `height-fixed` 46
+          - `radius-all` 10
+      - `element`
+        - `config`
+          - `color` rgb(90,200,160)
+          - `width-fixed` 60
+          - `height-fixed` 34
+          - `radius-all` 8
+      - `element`
+        - `config`
+          - `color` rgb(120,150,240)
+          - `width-fixed` 30
+          - `height-fixed` 70
+          - `radius-all` 8

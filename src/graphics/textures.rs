@@ -219,9 +219,9 @@ impl MultiSampleTexture {
 }
 
 /// A window's cached UI layer: the offscreen colour texture the UI is drawn
-/// into, its depth companion (the UI pipeline and glyphon's text renderer both
-/// declare a depth attachment), and the bind group used to composite it back
-/// over the 3D scene each frame.
+/// into, its depth companion (the UI pipeline depth-tests every quad, glyphs
+/// included), and the bind group used to composite it back over the 3D scene
+/// each frame.
 ///
 /// It lives on the [`Viewport`](super::viewport::Viewport) and is rebuilt
 /// whenever the window resizes. `last_fingerprint` is the hash of the render
@@ -230,11 +230,16 @@ impl MultiSampleTexture {
 /// composite runs.
 #[derive(Debug)]
 pub struct UiSurface {
-    #[allow(dead_code)]
     pub color: wgpu::Texture,
     pub color_view: wgpu::TextureView,
     pub depth_view: wgpu::TextureView,
     pub composite_bind_group: wgpu::BindGroup,
+    /// A copy of `color` taken just before the backdrop-`blur` sub-pass runs, so
+    /// that sub-pass can sample the un-blurred UI layer while writing back into
+    /// `color`. Bound through `blur_bind_group` (same layout as the composite
+    /// one: texture + sampler).
+    pub blur_src: wgpu::Texture,
+    pub blur_bind_group: wgpu::BindGroup,
     pub width: u32,
     pub height: u32,
     /// `None` forces a render on the next frame (freshly created / resized).
@@ -264,10 +269,24 @@ impl UiSurface {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let blur_src = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ui_surface_blur_src"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let blur_src_view = blur_src.create_view(&wgpu::TextureViewDescriptor::default());
 
         let depth = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ui_surface_depth"),
@@ -296,11 +315,28 @@ impl UiSurface {
             ],
         });
 
+        let blur_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui_surface_blur_bind_group"),
+            layout: composite_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&blur_src_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(composite_sampler),
+                },
+            ],
+        });
+
         Self {
             color,
             color_view,
             depth_view,
             composite_bind_group,
+            blur_src,
+            blur_bind_group,
             width,
             height,
             last_fingerprint: None,

@@ -128,7 +128,7 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
             let Some(field_ident) = &field.ident else {
                 continue;
             };
-            let field_name = field_ident.to_string();
+            let field_name = field_ident.to_string().to_lowercase();
             let Some(kind) = classify_field_type(&field.ty) else {
                 continue;
             };
@@ -136,38 +136,38 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
             match kind {
                 FieldKind::Bool => {
                     plain_bool.push(quote::quote! {
-                        #field_name => return Some(self.#field_ident),
+                        if *name == symbol_table::static_symbol!(#field_name) { return Some(self.#field_ident); }
                     });
                 }
                 FieldKind::Numeric => {
                     plain_numeric.push(quote::quote! {
-                        #field_name => return Some(self.#field_ident as f32),
+                        if *name == symbol_table::static_symbol!(#field_name) { return Some(self.#field_ident as f32); }
                     });
                 }
                 FieldKind::Text => {
                     plain_text.push(quote::quote! {
-                        #field_name => return Some(&self.#field_ident),
+                        if *name == symbol_table::static_symbol!(#field_name) { return Some(&self.#field_ident); }
                     });
                 }
                 FieldKind::Color => {
                     plain_color.push(quote::quote! {
-                        #field_name => return Some(&self.#field_ident),
+                        if *name == symbol_table::static_symbol!(#field_name) { return Some(&self.#field_ident); }
                     });
                 }
                 FieldKind::Image => {
                     plain_image.push(quote::quote! {
-                        #field_name => return Some(&self.#field_ident),
+                        if *name == symbol_table::static_symbol!(#field_name) { return Some(&self.#field_ident); }
                     });
                 }
                 FieldKind::List(element_kind) => {
                     plain_list_length.push(quote::quote! {
-                        #field_name => Some(self.#field_ident.len()),
+                        if *name == symbol_table::static_symbol!(#field_name) { return Some(self.#field_ident.len()); }
                     });
 
                     if let Some(attr) = find_attr(&field.attrs, "list_click_event") {
                         let handler_name = attr_ident_arg(attr).to_string();
                         list_event.push(quote::quote! {
-                            if list_key == #field_name && key == "clicked" {
+                            if *list_symbol == symbol_table::static_symbol!(#field_name) && *name == symbol_table::static_symbol!("clicked") {
                                 return Some(symbol_table::GlobalSymbol::new(#handler_name));
                             }
                         });
@@ -181,35 +181,35 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                             // value, so any lookup name inside the list resolves to
                             // it. No `T: FieldAccess` bound needed.
                             Some(FieldKind::Text) => list_text.push(quote::quote! {
-                                if list_key == #field_name
+                                if *list_symbol == symbol_table::static_symbol!(#field_name)
                                     && let Some(item) = self.#field_ident.get(*index)
                                 {
                                     return Some(item);
                                 }
                             }),
                             Some(FieldKind::Bool) => list_bool.push(quote::quote! {
-                                if list_key == #field_name
+                                if *list_symbol == symbol_table::static_symbol!(#field_name)
                                     && let Some(item) = self.#field_ident.get(*index)
                                 {
                                     return Some(*item);
                                 }
                             }),
                             Some(FieldKind::Numeric) => list_numeric.push(quote::quote! {
-                                if list_key == #field_name
+                                if *list_symbol == symbol_table::static_symbol!(#field_name)
                                     && let Some(item) = self.#field_ident.get(*index)
                                 {
                                     return Some(*item as f32);
                                 }
                             }),
                             Some(FieldKind::Color) => list_color.push(quote::quote! {
-                                if list_key == #field_name
+                                if *list_symbol == symbol_table::static_symbol!(#field_name)
                                     && let Some(item) = self.#field_ident.get(*index)
                                 {
                                     return Some(item);
                                 }
                             }),
                             Some(FieldKind::Image) => list_image.push(quote::quote! {
-                                if list_key == #field_name
+                                if *list_symbol == symbol_table::static_symbol!(#field_name)
                                     && let Some(item) = self.#field_ident.get(*index)
                                 {
                                     return Some(item);
@@ -219,7 +219,7 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                             // through `T: FieldAccess` (normally `#[derive(FieldAccess)]`).
                             _ => {
                                 list_bool.push(quote::quote! {
-                                    if list_key == #field_name
+                                    if *list_symbol == symbol_table::static_symbol!(#field_name)
                                         && let Some(item) = self.#field_ident.get(*index)
                                         && let Some(value) = telera_app::FieldAccess::field_bool(item, name)
                                     {
@@ -227,7 +227,7 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                                     }
                                 });
                                 list_numeric.push(quote::quote! {
-                                    if list_key == #field_name
+                                    if *list_symbol == symbol_table::static_symbol!(#field_name)
                                         && let Some(item) = self.#field_ident.get(*index)
                                         && let Some(value) = telera_app::FieldAccess::field_numeric(item, name)
                                     {
@@ -235,7 +235,7 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                                     }
                                 });
                                 list_text.push(quote::quote! {
-                                    if list_key == #field_name
+                                    if *list_symbol == symbol_table::static_symbol!(#field_name)
                                         && let Some(item) = self.#field_ident.get(*index)
                                         && let Some(value) = telera_app::FieldAccess::field_text(item, name)
                                     {
@@ -243,7 +243,7 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                                     }
                                 });
                                 list_color.push(quote::quote! {
-                                    if list_key == #field_name
+                                    if *list_symbol == symbol_table::static_symbol!(#field_name)
                                         && let Some(item) = self.#field_ident.get(*index)
                                         && let Some(value) = telera_app::FieldAccess::field_color(item, name)
                                     {
@@ -251,7 +251,7 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
                                     }
                                 });
                                 list_image.push(quote::quote! {
-                                    if list_key == #field_name
+                                    if *list_symbol == symbol_table::static_symbol!(#field_name)
                                         && let Some(item) = self.#field_ident.get(*index)
                                         && let Some(value) = telera_app::FieldAccess::field_image(item, name)
                                     {
@@ -272,26 +272,16 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
         impl LayoutRunnerReflection for #struct_name {
             #[allow(unused_variables)]
             fn get_bool(&self, name: &symbol_table::GlobalSymbol, list_data: &Option<(symbol_table::GlobalSymbol, usize)>) -> Option<bool> {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_bool)*
-                    _ => {}
-                }
+                #(#plain_bool)*
                 if let Some((list_symbol, index)) = list_data {
-                    let list_key = telera_app::normalize_field_symbol(list_symbol.as_str());
                     #(#list_bool)*
                 }
                 None
             }
             #[allow(unused_variables)]
             fn get_numeric(&self, name: &symbol_table::GlobalSymbol, list_data: &Option<(symbol_table::GlobalSymbol, usize)>) -> Option<f32> {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_numeric)*
-                    _ => {}
-                }
+                #(#plain_numeric)*
                 if let Some((list_symbol, index)) = list_data {
-                    let list_key = telera_app::normalize_field_symbol(list_symbol.as_str());
                     #(#list_numeric)*
                 }
                 None
@@ -301,13 +291,8 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
             where
                 'application: 'render_pass,
             {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_text)*
-                    _ => {}
-                }
+                #(#plain_text)*
                 if let Some((list_symbol, index)) = list_data {
-                    let list_key = telera_app::normalize_field_symbol(list_symbol.as_str());
                     #(#list_text)*
                 }
                 None
@@ -317,13 +302,8 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
             where
                 'application: 'render_pass,
             {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_color)*
-                    _ => {}
-                }
+                #(#plain_color)*
                 if let Some((list_symbol, index)) = list_data {
-                    let list_key = telera_app::normalize_field_symbol(list_symbol.as_str());
                     #(#list_color)*
                 }
                 None
@@ -333,13 +313,8 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
             where
                 'application: 'render_pass,
             {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_image)*
-                    _ => {}
-                }
+                #(#plain_image)*
                 if let Some((list_symbol, index)) = list_data {
-                    let list_key = telera_app::normalize_field_symbol(list_symbol.as_str());
                     #(#list_image)*
                 }
                 None
@@ -349,20 +324,15 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
             where
                 'application: 'render_pass,
             {
-                let key = telera_app::normalize_field_symbol(name.as_str());
                 if let Some((list_symbol, index)) = list_data {
-                    let list_key = telera_app::normalize_field_symbol(list_symbol.as_str());
                     #(#list_event)*
                 }
                 None
             }
             #[allow(unused_variables)]
             fn get_list_length(&self, name: &symbol_table::GlobalSymbol, list_data: &Option<(symbol_table::GlobalSymbol, usize)>) -> Option<usize> {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_list_length)*
-                    _ => None,
-                }
+                #(#plain_list_length)*
+                None
             }
         }
     }.into()
@@ -390,22 +360,22 @@ pub fn field_access(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
             let Some(field_ident) = &field.ident else {
                 continue;
             };
-            let field_name = field_ident.to_string();
+            let field_name = field_ident.to_string().to_lowercase();
             match classify_field_type(&field.ty) {
                 Some(FieldKind::Bool) => plain_bool.push(quote::quote! {
-                    #field_name => return Some(self.#field_ident),
+                    if *name == symbol_table::static_symbol!(#field_name) { return Some(self.#field_ident); }
                 }),
                 Some(FieldKind::Numeric) => plain_numeric.push(quote::quote! {
-                    #field_name => return Some(self.#field_ident as f32),
+                    if *name == symbol_table::static_symbol!(#field_name) { return Some(self.#field_ident as f32); }
                 }),
                 Some(FieldKind::Text) => plain_text.push(quote::quote! {
-                    #field_name => return Some(&self.#field_ident),
+                    if *name == symbol_table::static_symbol!(#field_name) { return Some(&self.#field_ident); }
                 }),
                 Some(FieldKind::Color) => plain_color.push(quote::quote! {
-                    #field_name => return Some(&self.#field_ident),
+                    if *name == symbol_table::static_symbol!(#field_name) { return Some(&self.#field_ident); }
                 }),
                 Some(FieldKind::Image) => plain_image.push(quote::quote! {
-                    #field_name => return Some(&self.#field_ident),
+                    if *name == symbol_table::static_symbol!(#field_name) { return Some(&self.#field_ident); }
                 }),
                 Some(FieldKind::List(_)) | None => {}
             }
@@ -418,43 +388,28 @@ pub fn field_access(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
         impl telera_app::FieldAccess for #struct_name {
             #[allow(unused_variables)]
             fn field_bool(&self, name: &symbol_table::GlobalSymbol) -> Option<bool> {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_bool)*
-                    _ => None,
-                }
+                #(#plain_bool)*
+                None
             }
             #[allow(unused_variables)]
             fn field_numeric(&self, name: &symbol_table::GlobalSymbol) -> Option<f32> {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_numeric)*
-                    _ => None,
-                }
+                #(#plain_numeric)*
+                None
             }
             #[allow(unused_variables)]
             fn field_text(&self, name: &symbol_table::GlobalSymbol) -> Option<&String> {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_text)*
-                    _ => None,
-                }
+                #(#plain_text)*
+                None
             }
             #[allow(unused_variables)]
             fn field_color(&self, name: &symbol_table::GlobalSymbol) -> Option<&telera_app::Color> {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_color)*
-                    _ => None,
-                }
+                #(#plain_color)*
+                None
             }
             #[allow(unused_variables)]
             fn field_image(&self, name: &symbol_table::GlobalSymbol) -> Option<&telera_app::UIImageDescriptor> {
-                let key = telera_app::normalize_field_symbol(name.as_str());
-                match key.as_str() {
-                    #(#plain_image)*
-                    _ => None,
-                }
+                #(#plain_image)*
+                None
             }
         }
     }

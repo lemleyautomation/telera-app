@@ -19,6 +19,11 @@ use telera_app::*;
 // default doesn't print anything - the whole layout is replaced by a red
 // "Layout elements exceeded" message - so the count here is set to land at
 // ~8100 (≈ 99% of the cap) and left there.
+/// Target render period: `set_viewport_frame_interval` paces the redraw loop to
+/// this, and `update` regenerates the dataset + ticks the fps counter on the
+/// same cadence.
+const FRAME: f64 = 1.0 / 144.0;
+
 const PILLS: usize = 12;
 const CANDLES: usize = 1010;
 const WATCH: usize = 88;
@@ -346,16 +351,17 @@ impl App for Nocturne {
         self.regen();
         // hammer it: rebuild + re-render every frame.
         api.set_viewport_continuous("Dashboard", true);
-        api.set_viewport_frame_interval("Dashboard", Duration::from_secs_f64(1./30.));
+        api.set_viewport_frame_interval("Dashboard", Duration::from_secs_f64(FRAME));
     }
 
     fn update(&mut self, _api: &mut API) {
         // `update` runs once per event-loop wake, which (Wayland frame callback +
         // the pacing timer) is a few times per rendered frame. Only rebuild the
-        // ~8k data points at roughly the render cadence.
+        // ~8k data points (and tick the fps counter) at roughly the render
+        // cadence - same period as the frame interval above.
         let now = Instant::now();
         let dt = self.frame_t.map(|p| now.duration_since(p).as_secs_f32());
-        if matches!(dt, Some(d) if d < 0.030) {
+        if matches!(dt, Some(d) if (d as f64) < FRAME * 0.9) {
             return;
         }
         if let Some(d) = dt {

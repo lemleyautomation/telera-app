@@ -35,14 +35,16 @@ const MULTI_SAMPLE_COUNT: u32 = 1;
 mod ui_renderer;
 pub use ui_renderer::layout_runner::{
     Binder, Config, CustomElementSpec, DataSrc, Declaration, Element, EventContext, FieldAccess,
-    ImageLoad, Layout, LayoutReflector, LayoutRunnerReflection, ParsedLayout, normalize_field_symbol,
-    process_layout,
+    FontLoad, ImageLoad, Layout, LayoutReflector, LayoutRunnerReflection, LayoutResources,
+    ParsedLayout, ShaderLoad, ShaderSpec, normalize_field_symbol, process_layout,
 };
 pub use ui_renderer::telera_layout::{Color, ElementConfiguration, TextConfig};
-pub use ui_renderer::ui_renderer::{CustomElement, UIImageDescriptor};
+pub use ui_renderer::ui_renderer::{
+    CustomElement, CustomLayoutSettings, EffectKind, ResolvedShader, UIImageDescriptor,
+};
 use ui_renderer::{
-    telera_layout::LayoutEngine, ui_renderer::CustomLayoutSettings,
-    ui_renderer::commands_fingerprint, ui_renderer::UIRenderer,
+    telera_layout::LayoutEngine, ui_renderer::commands_fingerprint, ui_renderer::effect_source,
+    ui_renderer::UIRenderer,
 };
 
 pub enum APIError {
@@ -152,10 +154,29 @@ pub struct API {
     /// it. Cleared at the start of every layout pass.
     #[allow(clippy::vec_box)] // stable element addresses are the whole point
     custom_shape_arena: Vec<Box<CustomElement>>,
+    /// Per-frame storage for the text of every `` `text` `` element, resolved
+    /// once here and handed to `add_text_element`. clay stores only a
+    /// `(ptr, len)` into the string and re-reads it (unchanged) all the way
+    /// through `end_layout`, so a resolved `&str` that borrows a per-list /
+    /// per-reusable *clone* of the layout commands (which is dropped when
+    /// `run_layout` returns) would dangle - hence a copy that lives as long as
+    /// the other frame arenas. Boxed for stable addresses; cleared each pass.
+    #[allow(clippy::vec_box)]
+    layout_text_arena: Vec<Box<str>>,
+    /// Per-frame storage for the `CustomLayoutSettings` a `` `shader` `` config
+    /// resolves to. Same rationale (and boxing) as the other frame arenas: the
+    /// layout engine holds a raw pointer to each until the render pass reads it.
+    #[allow(clippy::vec_box)]
+    custom_layout_settings_arena: Vec<Box<CustomLayoutSettings>>,
     /// Atlases loaded from `` `load` `` directives in layout files, keyed by
     /// atlas name -> source path, so re-parsing a file (hot reload) can tell an
     /// already-loaded image from a new one.
     loaded_layout_images: HashMap<String, String>,
+    /// `` `font` `` directive dedup: `font-id` -> source path already registered.
+    loaded_layout_fonts: HashMap<u16, String>,
+    /// `` `shader` `` directive dedup: shader name -> source path already
+    /// compiled.
+    loaded_layout_shaders: HashMap<String, String>,
     model_ids: HashMap<String, usize>,
     models: Vec<Model>,
 
@@ -376,6 +397,7 @@ impl API {
     where
         UserApp: App,
     {
+        let dt = Instant::now();
         // Everything from here to `end_frame` builds and draws *this* window;
         // the input accessors read the viewport named here.
         self.active_window = Some(window_id);
@@ -405,6 +427,9 @@ impl API {
             let mut ui_renderer = self.ui_renderer.take().unwrap();
             ui_renderer.dpi_scale = dpi_scale;
             ui_renderer.resize((size.0 as i32, size.1 as i32), &self.queue);
+            // Advance the text caches and drop stale shaped runs before this
+            // frame's layout pass fills them again.
+            ui_renderer.frame_tick();
 
             self.l.set_layout_dimensions(
                 ui_renderer.viewport_size.0 / ui_renderer.dpi_scale,
@@ -426,6 +451,8 @@ impl API {
             // drop them before this frame fills it again.
             self.image_frame_arena.clear();
             self.custom_shape_arena.clear();
+            self.layout_text_arena.clear();
+            self.custom_layout_settings_arena.clear();
             self.l.begin_layout(ui_renderer);
             match self.watch_path {
                 RunType::None => user_application.layout(&page, self),
@@ -443,6 +470,7 @@ impl API {
         } else {
             None
         };
+        println!("render_time: {:?}", dt.elapsed().as_secs_f64());
 
         if let Some(mut ui_renderer) = ui_renderer {
             if let Some(viewport) = self.viewports.get_mut(&window_id)
@@ -522,6 +550,50 @@ impl API {
                             &viewport.surface_config,
                         );
                         drop(ui_pass);
+
+                        // 1b. Backdrop `blur`: snapshot the freshly-drawn UI
+                        //     layer, then blur each `` `shader` *blur* `` region
+                        //     back into it. Part of the cached layer - only runs
+                        //     on a dirty frame.
+                        if ui_renderer.has_blur() {
+                            command_encoder.copy_texture_to_texture(
+                                ui_surface.color.as_image_copy(),
+                                ui_surface.blur_src.as_image_copy(),
+                                wgpu::Extent3d {
+                                    width: ui_surface.width,
+                                    height: ui_surface.height,
+                                    depth_or_array_layers: 1,
+                                },
+                            );
+                            let mut blur_pass = command_encoder.begin_render_pass(
+                                &wgpu::RenderPassDescriptor {
+                                    label: Some("UI Blur Pass"),
+                                    color_attachments: &[Some(
+                                        wgpu::RenderPassColorAttachment {
+                                            view: &ui_surface.color_view,
+                                            depth_slice: None,
+                                            resolve_target: None,
+                                            ops: wgpu::Operations {
+                                                load: wgpu::LoadOp::Load,
+                                                store: wgpu::StoreOp::Store,
+                                            },
+                                        },
+                                    )],
+                                    depth_stencil_attachment: None,
+                                    timestamp_writes: None,
+                                    occlusion_query_set: None,
+                                    multiview_mask: None,
+                                },
+                            );
+                            ui_renderer.render_blur(
+                                &mut blur_pass,
+                                &ui_surface.blur_bind_group,
+                                &self.device,
+                                &self.queue,
+                            );
+                            drop(blur_pass);
+                        }
+
                         ui_surface.last_fingerprint = Some(fingerprint);
                     }
 
@@ -651,7 +723,9 @@ impl API {
             viewport.end_frame();
         }
         self.active_window = None;
+
     }
+
 }
 
 /// public api functions
@@ -684,6 +758,17 @@ impl API {
         }
     }
 
+    /// Registers a font (`data` is the raw bytes of a `.ttf` / `.otf` file)
+    /// under `font_id`, so TML `` `font-id` `` / [`TextConfig::font_id`] selects
+    /// it for both measurement and drawing. Unregistered ids use the system
+    /// sans-serif. Call during [`App::initialize`]; a no-op if the renderer does
+    /// not exist yet.
+    pub fn load_font(&mut self, font_id: u16, data: Vec<u8>) {
+        if let Some(ui_renderer) = &mut self.ui_renderer {
+            ui_renderer.register_font(font_id, data);
+        }
+    }
+
     /// Boxes `descriptor` into the per-frame arena and hands back a reference
     /// that stays valid for the rest of the layout + render pass (see
     /// [`API::image_frame_arena`]).
@@ -695,12 +780,33 @@ impl API {
         self.image_frame_arena.last().unwrap()
     }
 
+    /// Copies `text` into the per-frame arena and adds it as a text element on
+    /// the currently open layout element. The copy is what keeps clay's
+    /// `(ptr, len)` valid through `end_layout` (see [`API::layout_text_arena`]).
+    pub(crate) fn add_layout_text(&mut self, text: &str, config: &TextConfig) {
+        self.layout_text_arena.push(text.into());
+        // `layout_text_arena` and `l` are disjoint fields, so this borrow is fine.
+        let stored: &str = self.layout_text_arena.last().unwrap();
+        self.l.add_text_element(stored, config, false);
+    }
+
     /// Boxes `shape` into the per-frame arena and hands back a reference that
     /// stays valid for the rest of the layout + render pass (see
     /// [`API::custom_shape_arena`]).
     pub(crate) fn stage_frame_shape(&mut self, shape: CustomElement) -> &CustomElement {
         self.custom_shape_arena.push(Box::new(shape));
         self.custom_shape_arena.last().unwrap()
+    }
+
+    /// Boxes a resolved `` `shader` `` effect into the per-frame arena and hands
+    /// back a reference that stays valid through the render pass (see
+    /// [`API::custom_layout_settings_arena`]).
+    pub(crate) fn stage_frame_layout_settings(
+        &mut self,
+        settings: CustomLayoutSettings,
+    ) -> &CustomLayoutSettings {
+        self.custom_layout_settings_arena.push(Box::new(settings));
+        self.custom_layout_settings_arena.last().unwrap()
     }
     pub fn set_viewport_title(&mut self, viewport: &str, title: &str) {
         if let Some(window_id) = self.viewport_lookup.get_by_left(viewport)
@@ -810,7 +916,12 @@ impl API {
             .to_string();
         let markdown = std::fs::read_to_string(path)
             .map_err(|error| format!("failed to read layout file {path:?}: {error}"))?;
-        let image_loads = self.binder.load_layout(&page_name, &markdown)?;
+        let resources = self.binder.load_layout(&page_name, &markdown)?;
+        let LayoutResources {
+            image_loads,
+            font_loads,
+            shader_loads,
+        } = resources;
 
         // Fulfil the file's `` `load` `` directives: decode each image once and
         // stage it under its atlas name. Re-parsing the same file (hot reload)
@@ -833,7 +944,77 @@ impl API {
             }
         }
 
+        // Same for `` `font` `` directives: read each `.ttf`/`.otf` once and
+        // register it (also skipped if the same path is already loaded for that
+        // id).
+        for load in font_loads {
+            if self.loaded_layout_fonts.get(&load.id) == Some(&load.path) {
+                continue;
+            }
+            match std::fs::read(&load.path) {
+                Ok(bytes) => {
+                    self.load_font(load.id, bytes);
+                    self.loaded_layout_fonts.insert(load.id, load.path.clone());
+                }
+                Err(error) => eprintln!(
+                    "layout {page_name:?}: failed to load font {:?} (id {}): {error}",
+                    load.path, load.id
+                ),
+            }
+        }
+
+        // `` `shader` `` directives: read each `.wgsl`, validate + compile it
+        // into an effect pipeline (skipped if the same path is already loaded
+        // for that name). A bad shader is logged and ignored - the element it
+        // would have styled just renders without the effect.
+        for load in shader_loads {
+            if self.loaded_layout_shaders.get(&load.name) == Some(&load.path) {
+                continue;
+            }
+            match std::fs::read_to_string(&load.path) {
+                Ok(source) => match self.register_ui_shader(&load.name, &source) {
+                    Ok(()) => {
+                        self.loaded_layout_shaders
+                            .insert(load.name.clone(), load.path.clone());
+                    }
+                    Err(error) => eprintln!(
+                        "layout {page_name:?}: shader {:?} ({}) failed: {error}",
+                        load.path, load.name
+                    ),
+                },
+                Err(error) => eprintln!(
+                    "layout {page_name:?}: failed to read shader {:?} ({}): {error}",
+                    load.path, load.name
+                ),
+            }
+        }
+
         Ok(page_name)
+    }
+
+    /// Validates a custom UI-shader body (naga parse + validate, after the
+    /// shared prelude is prepended) and compiles it into an effect pipeline
+    /// keyed by `name`. Returns an error string (never panics) on any WGSL
+    /// problem. Also reachable via a `` `shader` `` header directive.
+    pub fn register_ui_shader(&mut self, name: &str, wgsl_body: &str) -> Result<(), String> {
+        let full = effect_source(wgsl_body);
+
+        let module = wgpu::naga::front::wgsl::parse_str(&full)
+            .map_err(|e| e.emit_to_string(&full))?;
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .map_err(|e| e.emit_to_string(&full))?;
+
+        let sym = symbol_table::GlobalSymbol::new(normalize_field_symbol(name));
+        if let Some(ui_renderer) = &mut self.ui_renderer {
+            ui_renderer.compile_effect_shader(&self.device, sym, &full);
+        } else {
+            return Err("renderer not initialised".to_string());
+        }
+        Ok(())
     }
 
     /// Recursively loads every `.md` file under `dir` into the `Binder`
@@ -1106,7 +1287,11 @@ where
                                     l,
                                     image_frame_arena: Vec::new(),
                                     custom_shape_arena: Vec::new(),
+                                    layout_text_arena: Vec::new(),
+                                    custom_layout_settings_arena: Vec::new(),
                                     loaded_layout_images: HashMap::new(),
+                                    loaded_layout_fonts: HashMap::new(),
+                                    loaded_layout_shaders: HashMap::new(),
                                     model_ids: HashMap::new(),
                                     models: Vec::<Model>::new(),
                                     viewport_lookup,

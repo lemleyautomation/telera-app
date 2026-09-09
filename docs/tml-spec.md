@@ -27,7 +27,13 @@ A TML file is a Markdown document read by the `markdown` crate into an AST
 - **A level-4 heading whose text starts with `TML`** (`#### TML 1.0`) opens
   the **preamble block**: the list under it is a flat sequence of directives
   that run once, when the file is parsed or its page replaced, before any
-  layout. The only directive today is `load` (see [Images](#images)).
+  layout. Three directives exist: `` - `load` [atlas](path) `` (an image, see
+  [Images](#images)); `` - `font` [id](path) `` - loads a `.ttf`/`.otf`,
+  selected by `` `font-id` `` `id` and also added to the fallback chain (so a
+  loaded emoji/symbol font is used automatically); and
+  `` - `shader` [name](path.wgsl) `` - loads a custom UI effect shader,
+  applied with the `` `shader` `` config keyword (see [Effects](#effects)).
+  All paths are relative to the process's working directory.
 - **A level-1 heading** (`# anything`) marks the start of the page body. The
   heading text itself is ignored - `# root` is the convention, but the page
   is actually named by whoever loads the file (`Binder::load_layout`/`API`
@@ -570,6 +576,8 @@ member folds them into a single sizing rule.
 | `wrap` | plain text: `words`/`lines`/`none` | text: wrap on whitespace (`words`), only on explicit newlines (`lines`), or never (`none`) |
 | shape-config keywords (`thickness`/`width`, `from`/`to`/`center`, `from-x`, `radius`, `start-angle`, ...) | single (number) or anchor word | geometry of a drawn shape - see [`circle` / `ring` / `line` / `arc` / `bezier`](#circle--ring--line--arc--bezier-drawn-shapes); ignored outside the shape they belong to |
 | camera keywords (`eye-x/-y/-z`, `target-x/-y/-z`, `up-x/-y/-z`, `fov`, `ortho-height`, `near`, `far`) | single (number) | position a `render-window`'s camera - see [`render-window`](#render-window); ignored elsewhere |
+| `shader` | single (name), emphasised or bare | attach a fragment effect (`drop-shadow`/`raised-edge`/`inner-glow`, or a custom shader) - see [Effects](#effects) |
+| effect keywords (`shadow-blur`, `shadow-color`, `shadow-offset-x/-y`, `shadow-spread`, `bevel-width`, `bevel-light-angle`, `bevel-highlight`, `bevel-shade`, `glow-blur`, `glow-spread`, `glow-color`, `blur-radius`, `blur-tint`, `shader-param-1`..`shader-param-8`) | single (number or color) | tune the open `shader` effect; ignored with no `shader` |
 
 *Marked keywords parse into real `Element` commands but never actually
 fire - see [Known incomplete paths](#known-incomplete-paths).
@@ -631,6 +639,51 @@ config at that atlas.
   - `config`
     - `image` *app_provided_field*
 ```
+
+### Effects
+
+The `` `shader` `` config keyword attaches a fragment-level effect to the
+element it sits on - any element with a background `color`, a border, an
+`image`, or a `circle`/`ring` shape (not `text`, not `line`/`arc`/`bezier`).
+
+Effects **stack**: repeat `` `shader` `` to add another; the tuning keywords
+that follow bind to the most recently opened one. `drop-shadow` and `blur` paint
+*behind* the element's fill, the rest *over* it (written order kept within each
+group).
+
+```markdown
+- `element` card
+  - `config`
+    - `color` rgb(150,90,200)
+    - `radius-all` 16
+    - `shader` *drop-shadow*
+    - `shadow-blur` *blur_amount*
+    - `shadow-offset-y` 6
+    - `shadow-color` rgba(0,0,0,0.55)
+    - `shader` *raised-edge*
+    - `bevel-width` 10
+```
+
+**Built-in effects.** `` `shader` `` takes the effect name (`*emphasised*` or
+bare); the tuning keywords that follow are each a literal or a `*binding*`:
+
+| `shader` | tuning keywords |
+|---|---|
+| `drop-shadow` (`shadow`) | `shadow-offset-x`, `shadow-offset-y`, `shadow-blur`, `shadow-spread`, `shadow-color` |
+| `raised-edge` (`bevel`) | `bevel-width`, `bevel-light-angle` (degrees), `bevel-highlight`, `bevel-shade` |
+| `inner-glow` (`glow`) | `glow-blur`, `glow-spread`, `glow-color` |
+| `blur` | `blur-radius`, `blur-tint` - frosts the element by blurring the UI layer behind it (not the 3D scene); keep its content beside/below it, not inside |
+
+Distances are logical px.
+
+**Custom shaders.** A `` - `shader` [name](path.wgsl) `` preamble directive
+loads a WGSL file that provides only `fs_main` (telera prepends the vertex
+stage, bind groups, the `VertexPayload` struct and an `sd_rounded_box` helper).
+Apply it the same way - `` `shader` *name* `` - and pass up to eight positional
+values with `` `shader-param-1` `` .. `` `shader-param-8` `` (the shader reads
+them as `in.params` / `in.params2`). A file that fails to load/validate is
+logged and the element just renders without the effect. See
+`examples/effects.rs` and `examples/shaders/glass.wgsl` / `neon.wgsl`.
 
 ## 6. Events
 

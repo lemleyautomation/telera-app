@@ -1,3 +1,6 @@
+#### TML 1.0
+- `font` [1](examples/fonts/TwemojiMozilla.ttf)
+
 
 ## layout expand
 - `width-grow`
@@ -157,6 +160,11 @@
                             - `left-clicked` document_clicked
                                 - `border-color` white
                                 - `border-all` 2
+                        - `text`
+                            - `config`
+                                - `font-size` 20
+                                - `color` black
+                            - 😂
                         - `text`
                             - `config`
                                 - `font-size` 20

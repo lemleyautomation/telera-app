@@ -82,7 +82,7 @@ What each piece does:
 | `impl App` + `initialize` | the one required method: hands back the first window and where the layout files live |
 | `App::update` | your per-frame logic - here it re-formats `label` from the click count |
 | `Startup::watch_path` | `RunType::Watch("layouts")` loads every `.md` under `layouts/` and hot-reloads on change; the page shown is `Main.md` (matches `window_name`) |
-| the `.md` file | one page. A leading `#### TML 1.0` header block is optional and only needed for `` `load` `` image directives (`tml-spec.md` §Images) |
+| the `.md` file | one page. A leading `#### TML 1.0` header block is optional and only needed for `` `load` `` (image) / `` `font` `` directives (`tml-spec.md` §Images) |
 | `run::<MyApp>(app)` | takes over the thread, opens the window, runs the event loop |
 
 That is the whole program - no manual render loop, no GPU setup, no event
@@ -394,7 +394,85 @@ fn onload(&mut self, api: &mut API) {
 }
 ```
 
-### 4.5 3D scene: models
+### 4.5 Fonts
+
+| method | effect |
+|---|---|
+| `load_font(font_id: u16, data: Vec<u8>)` | register a `.ttf`/`.otf`; `` `font-id` `` `font_id` selects it, and it also joins the fallback chain ahead of the platform defaults (so a loaded emoji/symbol font is used automatically) |
+
+Unregistered ids use the system sans-serif. A layout can load its own fonts from
+its `#### TML` header, no Rust needed - the link text is the numeric `font-id`:
+
+```
+#### TML 1.0
+- `font` [1](assets/Inter.ttf)
+- `font` [2](assets/TwemojiMozilla.ttf)
+```
+
+```rust
+fn onload(&mut self, api: &mut API) {
+    api.load_font(1, include_bytes!("Inter.ttf").to_vec());   // layout: `font-id` 1
+}
+```
+
+`examples/fonts/TwemojiMozilla.ttf` (bundled) is a ~1.5 MB COLRv0 colour-emoji
+font; loading it makes emoji render in colour everywhere.
+
+### 4.6 Effects & custom shaders
+
+Any element with a background `color` (or a border, an `image`, or a
+`circle`/`ring` shape) can carry one or more fragment-level effects via the
+`` `shader` `` config keyword (repeat it to stack). Four effects are built in;
+more come from your own WGSL. `drop-shadow`/`blur` render behind the fill, the
+rest over it.
+
+| method | effect |
+|---|---|
+| `register_ui_shader(name: &str, wgsl_body: &str) -> Result<(), String>` | validate (naga) + compile a custom fragment shader; `` `shader` *name* `` then applies it. Also reachable from a `#### TML` header directive. |
+
+```
+#### TML 1.0
+- `shader` [glass](shaders/glass.wgsl)
+
+# root
+- `element` card
+  - `config`
+    - `color` rgb(210,90,70)
+    - `radius-all` 16
+    - `shader` *drop-shadow*
+    - `shadow-blur` *blur_amount*
+    - `shadow-color` rgba(0,0,0,0.55)
+```
+
+**Built-in effects** (name plus alias, and their named parameter keywords -
+each a literal or a `*get-numeric*` / `*get-color*` binding):
+
+| `shader` | parameters |
+|---|---|
+| `drop-shadow` (`shadow`) | `shadow-offset-x`, `shadow-offset-y`, `shadow-blur`, `shadow-spread`, `shadow-color` |
+| `raised-edge` (`bevel`) | `bevel-width`, `bevel-light-angle` (deg), `bevel-highlight`, `bevel-shade` |
+| `inner-glow` (`glow`) | `glow-blur`, `glow-spread`, `glow-color` |
+| `blur` | `blur-radius`, `blur-tint` |
+
+Distances are logical px (dpi-scaled for you). Anything a value is bound to and
+animated repaints correctly (it is part of the UI-layer cache fingerprint).
+
+`blur` is a backdrop blur: it runs a small sub-pass after the UI is drawn that
+blurs the **UI layer** behind the element (not the 3D scene) and writes it back,
+tinted by `blur-tint`. Put a blur panel's label/content beside or below it, not
+inside - anything drawn into the UI before the sub-pass sits under the frost.
+
+**Custom shaders.** A `` - `shader` [name](path.wgsl) `` directive names a file
+that provides only `fs_main` - telera prepends a prelude with the vertex stage,
+bind groups, a `VertexPayload` (`in.color`, `in.uv`, `in.frag_px`,
+`in.rect_center`/`in.rect_half`/`in.radii` in px, `in.params` =
+`shader-param-1..4`, `in.params2` = `shader-param-5..8`) and an
+`sd_rounded_box(p, b, r4)` helper. Apply with `` `shader` *name* `` and tune
+with `` `shader-param-1` `` .. `` `shader-param-8` `` (positional). A shader
+that fails to read/parse/validate is logged and skipped - the element renders
+without the effect. See `examples/effects.rs` + `examples/shaders/*.wgsl`.
+
+### 4.7 3D scene: models
 
 The scene is global - one set of models shared by every window and every
 camera. `model_name` is your lookup key.
@@ -424,7 +502,7 @@ fn update(&mut self, api: &mut API) {
 }
 ```
 
-### 4.6 3D scene: cameras
+### 4.8 3D scene: cameras
 
 A `render-window` element (see `tml-spec.md` §`render-window`) draws the scene
 into a layout rectangle through a named `Camera`. Cameras also drive the
@@ -469,7 +547,7 @@ fn update(&mut self, api: &mut API) {
 }
 ```
 
-### 4.7 `api.l` — the layout engine
+### 4.9 `api.l` — the layout engine
 
 `api.l` (`pub l: LayoutEngine<...>`) is the low-level layout builder. Markdown
 apps rarely touch it; you need it for `#[layout_element]` methods,

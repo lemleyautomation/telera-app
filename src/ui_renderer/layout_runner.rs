@@ -45,7 +45,7 @@ use markdown::mdast::{List, ListItem, Node, Paragraph};
 use symbol_table::GlobalSymbol;
 use telera_layout::{Color, ElementConfiguration, TextConfig};
 
-use crate::{API, CustomElement, UIImageDescriptor};
+use crate::{API, CustomElement, EffectKind, ResolvedShader, UIImageDescriptor};
 
 const DEFAULT_TEXT: &str = ":(";
 
@@ -393,6 +393,12 @@ pub enum Config {
     FloatingAttachElementToRoot,
 
     CustomElement(CustomElementSpec),
+
+    /// One or more `` `shader` *name* `` per-element visual effects (drop
+    /// shadow, raised edge, inner glow, blur, custom loaded shaders), in written
+    /// order. Resolved to `ResolvedShader`s and carried on the element's clay
+    /// `userData`.
+    Shaders(Vec<ShaderSpec>),
 
     Use {
         name: GlobalSymbol,
@@ -786,6 +792,194 @@ const SHAPE_PARAM_KEYWORDS: &[&str] = &[
     "up-x", "up-y", "up-z", "width",
 ];
 
+/// Every keyword that tunes a `` `shader` `` effect - the built-in named
+/// parameters plus the positional `` `shader-param-1` `` .. `` `shader-param-8` ``
+/// a custom shader reads. `process_configs` forwards these to the current
+/// [`ShaderSpec`] instead of turning them into a [`Config`]. **Sorted** (a
+/// prefix of [`LEADING_KEYWORDS`]).
+const SHADER_PARAM_KEYWORDS: &[&str] = &[
+    "bevel-highlight", "bevel-light-angle", "bevel-shade", "bevel-width", "blur-radius", "blur-tint",
+    "glow-blur", "glow-color", "glow-spread", "shader-param-1", "shader-param-2", "shader-param-3",
+    "shader-param-4", "shader-param-5", "shader-param-6", "shader-param-7", "shader-param-8",
+    "shadow-blur", "shadow-color", "shadow-offset-x", "shadow-offset-y", "shadow-spread",
+];
+
+/// The parser-side, unresolved twin of [`ResolvedShader`]: an element's
+/// `` `shader` `` config. `name` selects the effect (a built-in alias or a
+/// custom-shader directive name); the rest are tunables, each a literal or a
+/// `get-numeric` / `get-color` binding. [`execute_config`] resolves one of
+/// these into a [`ResolvedShader`] each frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShaderSpec {
+    pub name: GlobalSymbol,
+    pub shadow_offset_x: DataSrc<f32>,
+    pub shadow_offset_y: DataSrc<f32>,
+    pub shadow_blur: DataSrc<f32>,
+    pub shadow_spread: DataSrc<f32>,
+    pub shadow_color: DataSrc<Color>,
+    pub bevel_width: DataSrc<f32>,
+    pub bevel_light_angle: DataSrc<f32>,
+    pub bevel_highlight: DataSrc<f32>,
+    pub bevel_shade: DataSrc<f32>,
+    pub glow_blur: DataSrc<f32>,
+    pub glow_spread: DataSrc<f32>,
+    pub glow_color: DataSrc<Color>,
+    pub blur_radius: DataSrc<f32>,
+    pub blur_tint: DataSrc<Color>,
+    pub custom: [DataSrc<f32>; 8],
+}
+
+impl ShaderSpec {
+    /// The effect with sensible defaults, before any parameter keyword.
+    pub fn with_name(name: GlobalSymbol) -> Self {
+        let black = Color { r: 0.0, g: 0.0, b: 0.0, a: 102.0 };
+        let white = Color { r: 255.0, g: 255.0, b: 255.0, a: 120.0 };
+        ShaderSpec {
+            name,
+            shadow_offset_x: s(0.0),
+            shadow_offset_y: s(2.0),
+            shadow_blur: s(8.0),
+            shadow_spread: s(0.0),
+            shadow_color: DataSrc::Static(black),
+            bevel_width: s(6.0),
+            bevel_light_angle: s(225.0),
+            bevel_highlight: s(0.9),
+            bevel_shade: s(0.6),
+            glow_blur: s(8.0),
+            glow_spread: s(0.0),
+            glow_color: DataSrc::Static(white),
+            blur_radius: s(8.0),
+            blur_tint: DataSrc::Static(Color { r: 255.0, g: 255.0, b: 255.0, a: 0.0 }),
+            custom: [s(0.0), s(0.0), s(0.0), s(0.0), s(0.0), s(0.0), s(0.0), s(0.0)],
+        }
+    }
+
+    /// The [`EffectKind`] this spec's `name` selects. Anything that isn't a
+    /// built-in alias is a custom shader.
+    fn kind(&self) -> EffectKind {
+        match self.name.as_str() {
+            "drop_shadow" | "shadow" => EffectKind::DropShadow,
+            "raised_edge" | "bevel" => EffectKind::RaisedEdge,
+            "inner_glow" | "glow" => EffectKind::InnerGlow,
+            "blur" => EffectKind::Blur,
+            _ => EffectKind::Custom,
+        }
+    }
+
+    fn apply_param(&mut self, key: &str, config: &Paragraph) {
+        if let Some(idx) = key
+            .strip_prefix("shader-param-")
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| (1..=8).contains(n))
+        {
+            if let Some(v) = optional_arg::<f32>(config) {
+                self.custom[idx - 1] = v;
+            }
+            return;
+        }
+        let num: Option<&mut DataSrc<f32>> = match key {
+            "shadow-offset-x" => Some(&mut self.shadow_offset_x),
+            "shadow-offset-y" => Some(&mut self.shadow_offset_y),
+            "shadow-blur" => Some(&mut self.shadow_blur),
+            "shadow-spread" => Some(&mut self.shadow_spread),
+            "bevel-width" => Some(&mut self.bevel_width),
+            "bevel-light-angle" => Some(&mut self.bevel_light_angle),
+            "bevel-highlight" => Some(&mut self.bevel_highlight),
+            "bevel-shade" => Some(&mut self.bevel_shade),
+            "glow-blur" => Some(&mut self.glow_blur),
+            "glow-spread" => Some(&mut self.glow_spread),
+            "blur-radius" => Some(&mut self.blur_radius),
+            _ => None,
+        };
+        if let Some(slot) = num {
+            if let Some(v) = optional_arg::<f32>(config) {
+                *slot = v;
+            }
+            return;
+        }
+        let col: Option<&mut DataSrc<Color>> = match key {
+            "shadow-color" => Some(&mut self.shadow_color),
+            "glow-color" => Some(&mut self.glow_color),
+            "blur-tint" => Some(&mut self.blur_tint),
+            _ => None,
+        };
+        if let Some(slot) = col
+            && let Some(v) = optional_arg::<Color>(config)
+        {
+            *slot = v;
+        }
+    }
+
+    /// Resolves every binding for this frame into the plain [`ResolvedShader`]
+    /// the renderer reads. `params` / `params2` are packed per [`EffectKind`];
+    /// for a custom shader they are `shader-param-1..8` verbatim.
+    pub fn resolve<UserApp>(
+        &self,
+        locals: Option<&HashMap<GlobalSymbol, &DataSrc<Declaration>>>,
+        user_app: &UserApp,
+        list_data: &Option<(GlobalSymbol, usize)>,
+    ) -> ResolvedShader
+    where
+        UserApp: LayoutRunnerReflection,
+    {
+        let r = |src: &DataSrc<f32>| f32::resolve_src(src, locals, user_app, list_data);
+        let rc = |src: &DataSrc<Color>| {
+            let c = Color::resolve_src(src, locals, user_app, list_data);
+            [c.r / 255.0, c.g / 255.0, c.b / 255.0, c.a / 255.0]
+        };
+        let kind = self.kind();
+        let (params, params2) = match kind {
+            EffectKind::DropShadow => (
+                [
+                    r(&self.shadow_offset_x),
+                    r(&self.shadow_offset_y),
+                    r(&self.shadow_blur),
+                    r(&self.shadow_spread),
+                ],
+                rc(&self.shadow_color),
+            ),
+            EffectKind::RaisedEdge => (
+                [
+                    r(&self.bevel_width),
+                    r(&self.bevel_light_angle).to_radians(),
+                    0.0,
+                    0.0,
+                ],
+                [r(&self.bevel_highlight), r(&self.bevel_shade), 0.0, 0.0],
+            ),
+            EffectKind::InnerGlow => (
+                [0.0, 0.0, r(&self.glow_blur), r(&self.glow_spread)],
+                rc(&self.glow_color),
+            ),
+            EffectKind::Blur => ([r(&self.blur_radius), 0.0, 0.0, 0.0], rc(&self.blur_tint)),
+            EffectKind::Custom => (
+                [
+                    r(&self.custom[0]),
+                    r(&self.custom[1]),
+                    r(&self.custom[2]),
+                    r(&self.custom[3]),
+                ],
+                [
+                    r(&self.custom[4]),
+                    r(&self.custom[5]),
+                    r(&self.custom[6]),
+                    r(&self.custom[7]),
+                ],
+            ),
+        };
+        ResolvedShader {
+            kind,
+            custom: if kind == EffectKind::Custom {
+                Some(self.name)
+            } else {
+                None
+            },
+            params,
+            params2,
+        }
+    }
+}
+
 /// Reads a `` `from` ``/`` `to` ``/`` `center` `` anchor argument - one of the
 /// nine words `attatch-parent` accepts - into a normalised `(x, y)` fraction of
 /// the bounding box. `None` if the argument isn't one of those words.
@@ -922,6 +1116,18 @@ pub fn normalize_field_symbol(name: &str) -> String {
         .collect()
 }
 
+/// Interns a markdown lookup name **already normalized** ([`normalize_field_symbol`]),
+/// so the derived `get_*` / `field_*` methods can match it with a plain
+/// `GlobalSymbol` equality check instead of re-normalizing (a `String` alloc)
+/// and string-comparing on every lookup, every frame. Use for every symbol that
+/// is later resolved against the app's fields / declarations - `*dynamic*`
+/// values, `list` / `item` / `if` names, `get-*` / `set-*` targets. Element,
+/// reusable-snippet, atlas and event-handler names stay raw (they're matched
+/// elsewhere, case-sensitively).
+fn field_symbol(raw: &str) -> GlobalSymbol {
+    GlobalSymbol::new(normalize_field_symbol(raw.trim()))
+}
+
 // ---------------------------------------------------------------------------
 // Markdown parser: turns a document into a flat Vec<Layout>
 // ---------------------------------------------------------------------------
@@ -955,6 +1161,50 @@ pub struct ImageLoad {
     pub path: String,
 }
 
+/// One font a layout file asked to be loaded, via a `` - `font` [id](path) ``
+/// directive in its `#### TML ...` header. Same lifecycle as [`ImageLoad`]:
+/// the parser only records the request; `API` reads the file and hands the
+/// bytes to the renderer ([`API::load_font`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontLoad {
+    /// The `` `font-id` `` this face is selected by. It is also added to the
+    /// global fallback chain (ahead of the platform defaults), so a loaded
+    /// emoji/symbol font is picked up automatically without setting `font-id`.
+    pub id: u16,
+    /// Path to the `.ttf` / `.otf` file, resolved like [`ImageLoad::path`].
+    pub path: String,
+}
+
+/// One custom UI shader a layout file asked to be loaded, via a
+/// `` - `shader` [name](path.wgsl) `` directive in its `#### TML ...` header.
+/// Same lifecycle as [`ImageLoad`] / [`FontLoad`]: the parser records the
+/// request; `API::load_layout_file` reads the file, naga-validates it and
+/// compiles it into a pipeline (see `API::register_ui_shader`). The layout then
+/// applies it with `` `shader` *name* ``.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShaderLoad {
+    /// Name `` `shader` *name* `` references it by (normalised like a field).
+    pub name: String,
+    /// Path to the `.wgsl` file, resolved like [`ImageLoad::path`].
+    pub path: String,
+}
+
+/// One parsed `#### TML ...` header directive.
+enum HeaderDirective {
+    Image(ImageLoad),
+    Font(FontLoad),
+    Shader(ShaderLoad),
+}
+
+/// The files a page's `#### TML ...` header asked to be loaded. Returned by
+/// [`Binder::load_layout`]; `API::load_layout_file` fulfils each.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct LayoutResources {
+    pub image_loads: Vec<ImageLoad>,
+    pub font_loads: Vec<FontLoad>,
+    pub shader_loads: Vec<ShaderLoad>,
+}
+
 /// A parsed page: its flattened layout commands, its table of reusable snippets
 /// (declared with `##`/`###` headings, referenced with `use`), and the images
 /// its `#### TML ...` header asked to be loaded.
@@ -968,6 +1218,8 @@ pub struct ParsedLayout {
     pub body: Vec<Layout>,
     pub reusables: HashMap<String, Vec<Layout>>,
     pub image_loads: Vec<ImageLoad>,
+    pub font_loads: Vec<FontLoad>,
+    pub shader_loads: Vec<ShaderLoad>,
 }
 
 /// Every keyword the grammar looks for as the *first token* of a list item -
@@ -984,15 +1236,19 @@ pub struct ParsedLayout {
 /// in this list.
 const LEADING_KEYWORDS: &[&str] = &[
     "align", "align-children-x", "align-children-y", "arc", "aspect-ratio", "attach-root",
-    "attach-self", "attatch-parent", "bezier", "border-all", "border-bottom", "border-color",
+    "attach-self", "attatch-parent",
+    "bevel-highlight", "bevel-light-angle", "bevel-shade", "bevel-width",
+    "bezier", "blur-radius", "blur-tint", "border-all", "border-bottom", "border-color",
     "border-in-between", "border-left", "border-right", "border-top", "center", "center-x",
     "center-y", "child-gap", "circle", "clip-to-parent", "color", "config", "ctrl1-x", "ctrl1-y",
     "ctrl2-x", "ctrl2-y", "declarations", "element", "end-angle", "eye-x", "eye-y", "eye-z", "far",
     "fit", "fixed-square", "floating",
     "floating-dimensions-height", "floating-dimensions-width",
-    "fn", "focus", "focused", "font-color", "font-id", "font-size", "fov", "from", "from-x",
+    "fn", "focus", "focused", "font", "font-color", "font-id", "font-size", "fov", "from", "from-x",
     "from-y", "get-bool", "get-color",
-    "get-event", "get-image", "get-numeric", "get-text", "grow", "height-fit", "height-fit-max",
+    "get-event", "get-image", "get-numeric", "get-text",
+    "glow-blur", "glow-color", "glow-spread",
+    "grow", "height-fit", "height-fit-max",
     "height-fit-min", "height-fixed", "height-grow", "height-grow-max", "height-grow-min",
     "height-percent", "horizontal", "hover", "hovered", "id-indexed", "if",
     "if-index", "if-index-not", "if-not", "image", "item", "key-event", "left-clicked",
@@ -1006,7 +1262,11 @@ const LEADING_KEYWORDS: &[&str] = &[
     "right-pressed",
     "right-released", "ring", "scroll-horizontal", "scroll-vertical", "set-bool", "set-color",
     "set-event", "set-image", "set-numeric",
-    "set-text", "start-angle", "target-x", "target-y", "target-z", "text", "thickness", "to", "to-x",
+    "set-text",
+    "shader", "shader-param-1", "shader-param-2", "shader-param-3", "shader-param-4",
+    "shader-param-5", "shader-param-6", "shader-param-7", "shader-param-8",
+    "shadow-blur", "shadow-color", "shadow-offset-x", "shadow-offset-y", "shadow-spread",
+    "start-angle", "target-x", "target-y", "target-z", "text", "thickness", "to", "to-x",
     "to-y", "unfocused", "unhovered", "up-x", "up-y", "up-z",
     "use", "vertical", "width",
     "width-fit", "width-fit-max", "width-fit-min", "width-fixed", "width-grow", "width-grow-max",
@@ -1121,6 +1381,8 @@ pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
     let mut open_reuseable_name = "".to_string();
     let mut reusables = HashMap::<String, Vec<Layout>>::new();
     let mut image_loads = Vec::<ImageLoad>::new();
+    let mut font_loads = Vec::<FontLoad>::new();
+    let mut shader_loads = Vec::<ShaderLoad>::new();
 
     if let Ok(m) = markdown::to_mdast(&file, &markdown::ParseOptions::default())
         && let Some(nodes) = m.children()
@@ -1157,8 +1419,11 @@ pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
                 Node::List(list) => match parsing_mode {
                     ParsingMode::Header => {
                         for item in &list.children {
-                            if let Some(load) = process_header_directive(item) {
-                                image_loads.push(load);
+                            match process_header_directive(item) {
+                                Some(HeaderDirective::Image(load)) => image_loads.push(load),
+                                Some(HeaderDirective::Font(load)) => font_loads.push(load),
+                                Some(HeaderDirective::Shader(load)) => shader_loads.push(load),
+                                None => {}
                             }
                         }
                     }
@@ -1192,16 +1457,23 @@ pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
             body,
             reusables,
             image_loads,
+            font_loads,
+            shader_loads,
         })
     } else {
         Err("failed to parse layout markdown".to_string())
     }
 }
 
-/// Parses one item of a `#### TML ...` header list. Today the only directive is
-/// `` - `load` [atlas](path) ``: an inline-code `load` keyword followed by a
-/// markdown link whose text is the atlas name and whose url is the file path.
-fn process_header_directive(item: &Node) -> Option<ImageLoad> {
+/// Parses one item of a `#### TML ...` header list:
+/// - `` - `load` [atlas](path) `` - an image, registered under the atlas name.
+/// - `` - `font` [id](path) `` - a `.ttf`/`.otf` selected by `` `font-id` `` `id`
+///   (also added to the fallback chain).
+/// - `` - `shader` [name](path.wgsl) `` - a custom UI effect shader, applied
+///   with `` `shader` *name* ``.
+///
+/// In every case the link text is the name/id and the link url is the file path.
+fn process_header_directive(item: &Node) -> Option<HeaderDirective> {
     let Node::ListItem(item) = item else {
         return None;
     };
@@ -1211,25 +1483,29 @@ fn process_header_directive(item: &Node) -> Option<ImageLoad> {
     let Some(Node::InlineCode(keyword)) = paragraph.children.first() else {
         return None;
     };
-    if keyword.value != "load" {
-        return None;
-    }
 
     let link = paragraph.children.iter().find_map(|node| match node {
         Node::Link(link) => Some(link),
         _ => None,
     })?;
-    let atlas = link.children.iter().find_map(|node| match node {
+    let name = link.children.iter().find_map(|node| match node {
         Node::Text(text) => Some(text.value.trim().to_string()),
         _ => None,
     })?;
-    if atlas.is_empty() || link.url.trim().is_empty() {
+    let path = link.url.trim().to_string();
+    if name.is_empty() || path.is_empty() {
         return None;
     }
-    Some(ImageLoad {
-        atlas,
-        path: link.url.trim().to_string(),
-    })
+
+    match keyword.value.as_str() {
+        "load" => Some(HeaderDirective::Image(ImageLoad { atlas: name, path })),
+        "font" => Some(HeaderDirective::Font(FontLoad {
+            id: name.parse().ok()?,
+            path,
+        })),
+        "shader" => Some(HeaderDirective::Shader(ShaderLoad { name, path })),
+        _ => None,
+    }
 }
 
 /// Parses a `[u1, v1, u2, v2]` bracketed list of four floats (the UV
@@ -1257,7 +1533,7 @@ fn parse_uv_rect(raw: &str) -> Option<[f32; 4]> {
 fn parse_index_arg(arg: &str) -> DataSrc<f32> {
     match arg.parse::<f32>() {
         Ok(value) => DataSrc::Static(value),
-        Err(_) => DataSrc::Dynamic(GlobalSymbol::new(arg)),
+        Err(_) => DataSrc::Dynamic(field_symbol(arg)),
     }
 }
 
@@ -1451,7 +1727,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                             if let Some(dynamic_text) = dynamic_text.children.first()
                                 && let Node::Text(dynamic_text) = dynamic_text
                             {
-                                let src = GlobalSymbol::new(dynamic_text.value.trim());
+                                let src = field_symbol(dynamic_text.value.trim());
                                 layout_commands.push(Layout::Element(Element::TextElementClosed(
                                     DataSrc::Dynamic(src),
                                 )));
@@ -1527,7 +1803,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                         formatted_list.append(&mut list_item);
                     }
 
-                    let src = GlobalSymbol::new(list_src.value.trim());
+                    let src = field_symbol(list_src.value.trim());
                     formatted_list.push(Layout::Element(Element::ListClosed(src)));
 
                     layout_commands.append(&mut formatted_list);
@@ -1541,7 +1817,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                     if let Some(list_name) = args.next()
                         && let Some(index_arg) = args.next()
                     {
-                        let list_symbol = GlobalSymbol::new(list_name);
+                        let list_symbol = field_symbol(list_name);
                         let index = parse_index_arg(index_arg);
 
                         layout_commands.push(Layout::Element(Element::ItemOpened));
@@ -1569,7 +1845,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                     && let Node::List(conditional_elements) = conditional_elements
                 {
                     let mut formatted_element = Vec::<Layout>::new();
-                    let src = GlobalSymbol::new(conditional.value.trim());
+                    let src = field_symbol(conditional.value.trim());
                     formatted_element.push(Layout::Element(Element::IfOpened { condition: src }));
 
                     for conditional_element in &conditional_elements.children {
@@ -1589,7 +1865,7 @@ fn process_element(element: &Node) -> Vec<Layout> {
                     && let Node::List(conditional_elements) = conditional_elements
                 {
                     let mut formatted_element = Vec::<Layout>::new();
-                    let src = GlobalSymbol::new(conditional.value.trim());
+                    let src = field_symbol(conditional.value.trim());
                     formatted_element
                         .push(Layout::Element(Element::IfNotOpened { condition: src }));
 
@@ -1684,7 +1960,7 @@ fn parameter_check<T: FromStr>(parameters: &Paragraph) -> AvailableParameters<T>
         && let Some(parameter) = parameter.children.first()
         && let Node::Text(parameter) = parameter
     {
-        AvailableParameters::SingleDynamic(GlobalSymbol::new(parameter.value.trim()))
+        AvailableParameters::SingleDynamic(field_symbol(parameter.value.trim()))
     } else if let Some(parameter) = parameters.children.get(1)
         && let Node::Text(parameter) = parameter
         && let Ok(parameter) = T::from_str(parameter.value.trim())
@@ -1721,9 +1997,9 @@ fn process_variable(declaration: &Node) -> Option<(String, DataSrc<Declaration>)
     {
         match variable_type.value.as_str() {
             "get-bool" | "get-numeric" | "get-text" | "get-event" | "get-image" | "get-color" => {
-                let value = GlobalSymbol::new(variable_value.value.trim());
+                let value = field_symbol(variable_value.value.trim());
                 Some((
-                    variable_name.value.trim().to_string(),
+                    normalize_field_symbol(variable_name.value.trim()),
                     DataSrc::<Declaration>::Dynamic(value),
                 ))
             }
@@ -1731,7 +2007,7 @@ fn process_variable(declaration: &Node) -> Option<(String, DataSrc<Declaration>)
                 .ok()
                 .map(|value| {
                     (
-                        variable_name.value.trim().to_string(),
+                        normalize_field_symbol(variable_name.value.trim()),
                         DataSrc::<Declaration>::Static(Declaration::Bool(value)),
                     )
                 }),
@@ -1739,18 +2015,18 @@ fn process_variable(declaration: &Node) -> Option<(String, DataSrc<Declaration>)
                 .ok()
                 .map(|value| {
                     (
-                        variable_name.value.trim().to_string(),
+                        normalize_field_symbol(variable_name.value.trim()),
                         DataSrc::<Declaration>::Static(Declaration::Numeric(value)),
                     )
                 }),
             "set-text" => Some((
-                variable_name.value.trim().to_string(),
+                normalize_field_symbol(variable_name.value.trim()),
                 DataSrc::<Declaration>::Static(Declaration::Text(
                     variable_value.value.trim().to_string(),
                 )),
             )),
             "set-event" => Some((
-                variable_name.value.trim().to_string(),
+                normalize_field_symbol(variable_name.value.trim()),
                 DataSrc::<Declaration>::Static(Declaration::Event(GlobalSymbol::new(
                     variable_value.value.trim(),
                 ))),
@@ -1759,7 +2035,7 @@ fn process_variable(declaration: &Node) -> Option<(String, DataSrc<Declaration>)
                 .ok()
                 .map(|value| {
                     (
-                        variable_name.value.trim().to_string(),
+                        normalize_field_symbol(variable_name.value.trim()),
                         DataSrc::<Declaration>::Static(Declaration::Color(value)),
                     )
                 }),
@@ -1787,7 +2063,7 @@ fn process_variable(declaration: &Node) -> Option<(String, DataSrc<Declaration>)
                     })
                     .unwrap_or([0.0, 0.0, 1.0, 1.0]);
                 Some((
-                    variable_name.value.trim().to_string(),
+                    normalize_field_symbol(variable_name.value.trim()),
                     DataSrc::<Declaration>::Static(Declaration::Image(UIImageDescriptor {
                         atlas: GlobalSymbol::new(atlas).as_str(),
                         u1,
@@ -1862,6 +2138,10 @@ fn process_configs(
     // across the whole config list and emit a single command at the end.
     let mut scroll_horizontal = false;
     let mut scroll_vertical = false;
+    // Each `shader` keyword opens a new effect on this element; the `shader-*` /
+    // `shadow-*` / `bevel-*` / `glow-*` / `blur-*` keywords tune the most
+    // recent one. Emitted as one `Config::Shaders` at the end, like `sizing`.
+    let mut shader_specs: Vec<ShaderSpec> = Vec::new();
 
     for configuration_item in &configuration_set.children {
         if let Some(config_elements) = configuration_item.children()
@@ -2040,6 +2320,34 @@ fn process_configs(
                     }
                     _ => {}
                 },
+                // Each `shader` opens a new effect on this element; the
+                // `shader-*` / `shadow-*` / `bevel-*` / `glow-*` / `blur-*`
+                // keywords tune the most recent one. Folded into one
+                // `Config::Shaders` at the end.
+                "shader" => {
+                    // The name is the first `*emphasis*` or non-blank text after
+                    // the `` `shader` `` keyword (`*drop-shadow*`, `bevel`,
+                    // `neon`, ...). Normalised like a field so `drop-shadow`
+                    // matches the `drop_shadow` built-in and a custom directive.
+                    let name = config.children.iter().skip(1).find_map(|node| match node {
+                        Node::Emphasis(e) => e.children.iter().find_map(|c| match c {
+                            Node::Text(t) => Some(t.value.trim().to_string()),
+                            _ => None,
+                        }),
+                        Node::Text(t) if !t.value.trim().is_empty() => {
+                            Some(t.value.trim().to_string())
+                        }
+                        _ => None,
+                    });
+                    if let Some(name) = name.filter(|n| !n.is_empty()) {
+                        shader_specs.push(ShaderSpec::with_name(field_symbol(&name)));
+                    }
+                }
+                key if SHADER_PARAM_KEYWORDS.contains(&key) => {
+                    if let Some(spec) = shader_specs.last_mut() {
+                        spec.apply_param(key, config);
+                    }
+                }
                 // Shape-only geometry keywords (`from`, `to`, `from-x`, `radius`,
                 // `thickness`, the `width` alias, ...) land on the current custom
                 // element instead of becoming a `Config`.
@@ -2859,6 +3167,9 @@ fn process_configs(
             height: floating_height.unwrap_or(DataSrc::Static(0.0)),
         }));
     }
+    if !shader_specs.is_empty() {
+        configs.push(Layout::Config(Config::Shaders(shader_specs)));
+    }
 
     configs
 }
@@ -2955,21 +3266,25 @@ impl Binder {
     /// This only parses `markdown_source` - reading it from disk (or
     /// embedding it with `include_str!`) is left to the caller.
     ///
-    /// Returns the images the document's `#### TML ...` header asked to be
-    /// loaded ([`ImageLoad`]); the caller (`API::load_layout_file`) reads those
-    /// files and stages them so the layout can reference their atlases. `Binder`
-    /// itself never touches the filesystem or the renderer.
+    /// Returns the [`LayoutResources`] the document's `#### TML ...` header
+    /// asked to be loaded (`load` / `font` / `shader`); the caller
+    /// (`API::load_layout_file`) reads those files and hands them to the
+    /// renderer. `Binder` itself never touches the filesystem or the renderer.
     pub fn load_layout(
         &mut self,
         name: &str,
         markdown_source: &str,
-    ) -> Result<Vec<ImageLoad>, String> {
+    ) -> Result<LayoutResources, String> {
         let parsed = process_layout(markdown_source.to_string())?;
         for (reusable_name, reusable) in parsed.reusables {
             self.add_reusable(&reusable_name, reusable);
         }
         self.add_page(name, parsed.body);
-        Ok(parsed.image_loads)
+        Ok(LayoutResources {
+            image_loads: parsed.image_loads,
+            font_loads: parsed.font_loads,
+            shader_loads: parsed.shader_loads,
+        })
     }
 
     /// Replaces an existing page, returning `false` (and leaving it
@@ -3393,7 +3708,11 @@ where
                         if skip.is_none() {
                             let text_content =
                                 String::resolve_src(content, locals, user_app, &list_data);
-                            api.l.add_text_element(text_content, text_config, false);
+                            // Copied into a frame arena: the resolved slice may
+                            // borrow a per-list / per-reusable clone of the
+                            // commands that is dropped before `end_layout` reads
+                            // clay's stored pointer.
+                            api.add_layout_text(text_content, text_config);
                         }
                     }
                     Element::TextConfigOpened => {
@@ -3640,6 +3959,18 @@ fn execute_config<UserApp>(
             // stays put until the render pass reads it (same as `Config::Image`).
             let resolved = spec.resolve(locals, user_app, list_data);
             config.custom_element(api.stage_frame_shape(resolved));
+        }
+        Config::Shaders(specs) => {
+            // Resolve this frame's effect params and stash the `ResolvedShader`
+            // list in `api`'s per-frame arena, carried on the element's clay
+            // `userData` (a different slot from `custom_element` above).
+            let resolved: Vec<ResolvedShader> = specs
+                .iter()
+                .map(|spec| spec.resolve(locals, user_app, list_data))
+                .collect();
+            config.custom_layout_settings(
+                api.stage_frame_layout_settings(crate::CustomLayoutSettings::Effects(resolved)),
+            );
         }
         Config::RadiusAll(radius) => {
             config.radius_all(f32::resolve_src(radius, locals, user_app, list_data));
@@ -4739,6 +5070,79 @@ mod tests {
         )));
     }
 
+    /// Dynamic names are interned already-normalized at parse time (spaces /
+    /// hyphens / case folded), so `get_*` can match them with a plain symbol
+    /// compare. A `set-color` target, its `color` reference, and a `list` name
+    /// written three different ways must all land on the same `GlobalSymbol`.
+    #[test]
+    fn dynamic_names_are_normalized_at_parse_time() {
+        let want = GlobalSymbol::new("content_background_color");
+        let src = "\
+# root
+- `declarations`
+    - `set-color` *Content Background Color* rgb(1,2,3)
+- `element`
+    - `config`
+        - `color` *content-background-color*
+- `list` Content-Background-Color
+    - `element`
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+
+        // the `set-color` declaration's own name
+        assert!(body.iter().any(|c| matches!(
+            c,
+            Layout::Declaration { name, .. } if *name == want
+        )));
+        // the `color` config that references it
+        assert!(body.iter().any(|c| matches!(
+            c,
+            Layout::Config(Config::Color(DataSrc::Dynamic(s))) if *s == want
+        )));
+        // the `list` name (written bare, still normalized)
+        assert!(body.iter().any(|c| matches!(
+            c,
+            Layout::Element(Element::ListClosed(s)) if *s == want
+        )));
+
+        // `parse_index_arg` (used by `if-index` / `item`) normalizes too.
+        assert!(matches!(
+            parse_index_arg("My Index"),
+            DataSrc::Dynamic(s) if s == GlobalSymbol::new("my_index")
+        ));
+    }
+
+    /// A `#### TML` header can mix `` `load` `` (image) and `` `font` ``
+    /// directives; the font directive's link text is the numeric `font-id`.
+    #[test]
+    fn font_and_image_header_directives_parse() {
+        let src = "\
+#### TML 1.0
+- `load` [pic](examples/pic.jpg)
+- `font` [1](examples/fonts/TwemojiMozilla.ttf)
+- `font` [42](fonts/Inter.otf)
+- `font` [not-a-number](ignored.ttf)
+
+# root
+- `element`
+";
+        let parsed = process_layout(src.to_string()).expect("should parse");
+        assert_eq!(
+            parsed.image_loads,
+            vec![ImageLoad {
+                atlas: "pic".to_string(),
+                path: "examples/pic.jpg".to_string(),
+            }]
+        );
+        assert_eq!(
+            parsed.font_loads,
+            vec![
+                FontLoad { id: 1, path: "examples/fonts/TwemojiMozilla.ttf".to_string() },
+                FontLoad { id: 42, path: "fonts/Inter.otf".to_string() },
+            ]
+        );
+    }
+
     /// The shipped `Image Viewer.md` example parses and exercises every image path.
     #[test]
     fn image_viewer_example_parses() {
@@ -4777,6 +5181,69 @@ mod tests {
     #[test]
     fn leading_keyword_list_stays_sorted() {
         assert!(LEADING_KEYWORDS.windows(2).all(|w| w[0] < w[1]));
+        assert!(SHADER_PARAM_KEYWORDS.windows(2).all(|w| w[0] < w[1]));
+        // Every shader-param keyword must also be a leading keyword (so the
+        // backtick pre-pass recognises it).
+        for k in SHADER_PARAM_KEYWORDS {
+            assert!(
+                LEADING_KEYWORDS.binary_search(k).is_ok(),
+                "{k} missing from LEADING_KEYWORDS"
+            );
+        }
+        assert!(LEADING_KEYWORDS.binary_search(&"shader").is_ok());
+    }
+
+    /// A `#### TML` header `` `shader` `` directive records a [`ShaderLoad`].
+    #[test]
+    fn shader_header_directive_parses() {
+        let src = "\
+#### TML 1.0
+- `shader` [glass](examples/shaders/glass.wgsl)
+- `shader` [neon](examples/shaders/neon.wgsl)
+
+# root
+- `element`
+";
+        let parsed = process_layout(src.to_string()).expect("should parse");
+        assert_eq!(
+            parsed.shader_loads,
+            vec![
+                ShaderLoad { name: "glass".to_string(), path: "examples/shaders/glass.wgsl".to_string() },
+                ShaderLoad { name: "neon".to_string(), path: "examples/shaders/neon.wgsl".to_string() },
+            ]
+        );
+    }
+
+    /// `` `shader` `` in a `config` block opens an effect; the `shadow-*` /
+    /// `shader-param-*` keywords tune it (static or `*bound*`). Stacking two
+    /// `` `shader` `` keywords gives two specs, each keeping its own params.
+    #[test]
+    fn shader_config_keyword_parses() {
+        let src = "\
+# root
+- `element`
+    - `config`
+        - `color` white
+        - `shader` *drop-shadow*
+        - `shadow-blur` 6
+        - `shadow-color` *tint*
+        - `shader` *raised-edge*
+        - `bevel-width` 4
+";
+        let parsed = process_layout(src.to_string()).expect("should parse");
+        let specs = parsed.body.iter().find_map(|c| match c {
+            Layout::Config(Config::Shaders(s)) => Some(s),
+            _ => None,
+        });
+        let specs = specs.expect("a Config::Shaders should be emitted");
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].name, GlobalSymbol::new("drop_shadow"));
+        assert_eq!(specs[0].shadow_blur, DataSrc::Static(6.0));
+        assert!(matches!(specs[0].shadow_color, DataSrc::Dynamic(s) if s == GlobalSymbol::new("tint")));
+        assert_eq!(specs[1].name, GlobalSymbol::new("raised_edge"));
+        assert_eq!(specs[1].bevel_width, DataSrc::Static(4.0));
+        // `bevel-width` after the second `shader` must not have touched the first.
+        assert_eq!(specs[0].bevel_width, DataSrc::Static(6.0));
     }
 
     /// The keyword-backtick pre-pass leaves an already-backticked line alone,

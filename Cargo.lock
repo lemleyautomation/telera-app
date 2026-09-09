@@ -1039,19 +1039,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glyphon"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faea0bba2b305a172098adfc17f1a34a30282361903957da8c7a51049b4fae7b"
-dependencies = [
- "cosmic-text",
- "etagere",
- "lru",
- "rustc-hash 2.1.3",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-allocator"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1448,12 +1435,6 @@ checksum = "0fae87c125b03c1d2c0150c90365d7d6bcc53fb73a9acaef207d2d065860f062"
 dependencies = [
  "imgref",
 ]
-
-[[package]]
-name = "lru"
-version = "0.16.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 
 [[package]]
 name = "lyon"
@@ -3114,8 +3095,9 @@ dependencies = [
  "bimap",
  "bytemuck",
  "cgmath",
+ "cosmic-text",
+ "etagere",
  "gltf",
- "glyphon",
  "image",
  "lyon",
  "markdown",
@@ -3125,6 +3107,7 @@ dependencies = [
  "symbol_table",
  "telera-layout",
  "telera_macros",
+ "unicode-script",
  "wgpu",
  "winit",
 ]
