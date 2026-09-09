@@ -52,7 +52,7 @@ impl App for EffectsApp {
         api.set_viewport_continuous("Effects", true);
     }
 
-    fn update(&mut self, _api: &mut API) {
+    fn update(&mut self, _viewport: Option<&str>, _api: &mut API) {
         let t = self.start.elapsed().as_secs_f32();
         let tri = |speed: f32| ((t * speed).fract() * 2.0 - 1.0).abs();
         self.shadow_blur = 4.0 + tri(0.35) * 14.0;

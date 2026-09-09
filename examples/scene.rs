@@ -53,7 +53,7 @@ impl App for MyApp {
         api.add_instance("container", "other", Some(transform));
     }
 
-    fn update(&mut self, api: &mut API) {
+    fn update(&mut self, _viewport: Option<&str>, api: &mut API) {
         let t = self.start.get_or_insert_with(Instant::now).elapsed().as_secs_f32();
 
         // `api.dt()` is 0 outside a redraw, so measure our own step.

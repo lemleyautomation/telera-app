@@ -198,17 +198,18 @@ fn lex(src: &str) -> Result<Vec<Tok>, CalcError> {
             }
             b'A'..=b'Z' | b'a'..=b'z' | b'_' => {
                 let start = i;
-                // `-` is always subtraction here, never part of a name, so a
-                // hyphenated declaration (`content-background-width`) must be
-                // referenced by its normalized `_` form inside an expression.
+                // `-` is always subtraction here, never part of a name, so an
+                // identifier in an expression can only use letters, digits and
+                // `_` - a declaration whose name has other characters can't be
+                // referenced from a `calc` expression.
                 while i < bytes.len()
                     && matches!(bytes[i], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
                 {
                     i += 1;
                 }
-                // Lowercased so identifiers match declaration names the same
-                // case-insensitive way the rest of TML does (`normalize_field_symbol`).
-                out.push(Tok::Ident(src[start..i].to_ascii_lowercase().into()));
+                // Interned verbatim - must match the `set-numeric` declaration
+                // (or `calc` function) name exactly, like every other TML name.
+                out.push(Tok::Ident(src[start..i].into()));
             }
             other => {
                 return Err(CalcError::Syntax(format!(
@@ -349,7 +350,7 @@ pub(crate) fn parse_expr(src: &str) -> Result<Expr, CalcError> {
 }
 
 /// Parses a `` `calc` `` header directive body: `name(p1, p2) = <expr>`.
-/// Returns the (raw, un-normalized) function name and its [`CalcFn`].
+/// Returns the (verbatim) function name and its [`CalcFn`].
 pub(crate) fn parse_fn(signature_and_body: &str) -> Result<(String, CalcFn), CalcError> {
     let (signature, body_src) = signature_and_body
         .split_once('=')
@@ -379,13 +380,12 @@ pub(crate) fn parse_fn(signature_and_body: &str) -> Result<(String, CalcFn), Cal
             if !is_ident(param) {
                 return Err(CalcError::Syntax(format!("`{param}` is not a valid parameter name")));
             }
-            // Lowercased to match how the lexer reads identifiers in the body.
-            params.push(param.to_ascii_lowercase().into());
+            params.push(param.into());
         }
     }
 
     let body = parse_expr(body_src.trim())?;
-    Ok((name.to_ascii_lowercase(), CalcFn { params, body }))
+    Ok((name.to_string(), CalcFn { params, body }))
 }
 
 fn is_ident(s: &str) -> bool {
@@ -574,15 +574,26 @@ mod tests {
     }
 
     #[test]
-    fn identifiers_and_calls_are_case_insensitive() {
+    fn identifiers_and_calls_are_case_sensitive() {
+        // Names are interned verbatim - `Scale` and `scale` are different.
         let (name, f) = parse_fn("Scale(A, b) = A * b").unwrap();
-        assert_eq!(name, "scale");
+        assert_eq!(name, "Scale");
         let mut fns = HashMap::new();
         fns.insert(name, f);
         let mut frame = HashMap::new();
         frame.insert("gap".to_string(), 4.0);
         let vars = vec![frame];
-        assert_eq!(eval_str("SCALE(Gap, 2)", &vars, &fns).unwrap(), 8.0);
+        // Exact spelling resolves.
+        assert_eq!(eval_str("Scale(gap, 2)", &vars, &fns).unwrap(), 8.0);
+        // A different case is an unknown identifier / function.
+        assert!(matches!(
+            eval_str("SCALE(gap, 2)", &vars, &fns),
+            Err(CalcError::UnknownFn(_))
+        ));
+        assert!(matches!(
+            eval_str("Scale(Gap, 2)", &vars, &fns),
+            Err(CalcError::UnknownIdent(_))
+        ));
     }
 
     #[test]

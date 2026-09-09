@@ -15,11 +15,10 @@ use syn::{GenericArgument, Ident, PathArguments, Type};
 //   UIImageDescriptor                   -> get_image    / field_image
 //   Vec<T>                              -> get_list_length (ParserDataAccess only)
 //
-// A markdown name is matched against a field's Rust name after normalizing
-// both sides the same way (see `normalize_field_symbol`): lowercase, with
-// spaces/hyphens folded to underscores. That lets `*content background
-// color*` match `content_background_color` and `file-menu-opened` match
-// `file_menu_open` without the field needing an un-idiomatic Rust name.
+// A markdown name is matched against a field's Rust name **exactly** - no
+// case folding, no space/hyphen/underscore equivalence. `*content_background_color*`
+// matches a `content_background_color` field; `*content background color*` or
+// `*Content-Background-Color*` do not. Write the Rust identifier verbatim.
 //
 // A `Vec<T>` field additionally participates in list lookups (`list Name`
 // in the markdown) three ways, controlled by attributes on the field:
@@ -28,9 +27,10 @@ use syn::{GenericArgument, Ident, PathArguments, Type};
 //                           looked up via `T: FieldAccess` - so `T` should
 //                           `#[derive(FieldAccess)]`, or this won't compile.
 //   #[no_field_access]      skip that - `get_list_length` only.
-//   #[list_click_event(name)]  `left-clicked *Clicked*` inside this list
-//                           resolves to the handler name `"name"`, dispatched
-//                           through `LayoutReflector::dispatch_event`.
+//   #[list_click_event(name)]  `left-clicked *clicked*` inside this list
+//                           (the arg spelled exactly `clicked`) resolves to the
+//                           handler name `"name"`, dispatched through
+//                           `LayoutReflector::dispatch_event`.
 //
 // Anything index-shaped - "is this the selected row", "show me item N's
 // fields outside of any list" - is a *markdown* concern, not a Rust one: see
@@ -128,7 +128,7 @@ pub fn parser_data_acces(item: proc_macro::TokenStream) -> proc_macro::TokenStre
             let Some(field_ident) = &field.ident else {
                 continue;
             };
-            let field_name = field_ident.to_string().to_lowercase();
+            let field_name = field_ident.to_string();
             let Some(kind) = classify_field_type(&field.ty) else {
                 continue;
             };
@@ -360,7 +360,7 @@ pub fn field_access(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
             let Some(field_ident) = &field.ident else {
                 continue;
             };
-            let field_name = field_ident.to_string().to_lowercase();
+            let field_name = field_ident.to_string();
             match classify_field_type(&field.ty) {
                 Some(FieldKind::Bool) => plain_bool.push(quote::quote! {
                     if *name == symbol_table::static_symbol!(#field_name) { return Some(self.#field_ident); }

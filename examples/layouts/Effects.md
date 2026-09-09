@@ -26,7 +26,7 @@
         - `height-fixed` 120
         - `color` rgb(210,90,70)
         - `radius-all` 16
-        - `shader` *drop-shadow*
+        - `shader` *drop_shadow*
         - `shadow-offset-y` 6
         - `shadow-blur` *shadow_blur*
         - `shadow-spread` 1
@@ -43,7 +43,7 @@
         - `height-fixed` 120
         - `color` rgb(70,110,190)
         - `radius-all` 16
-        - `shader` *raised-edge*
+        - `shader` *raised_edge*
         - `bevel-width` 16
         - `bevel-light-angle` *bevel_angle*
         - `bevel-highlight` 0.9
@@ -60,7 +60,7 @@
         - `height-fixed` 120
         - `color` rgb(40,44,54)
         - `radius-all` 16
-        - `shader` *inner-glow*
+        - `shader` *inner_glow*
         - `glow-blur` 22
         - `glow-color` rgba(120,220,255,0.82)
       - `text`
@@ -111,7 +111,7 @@
         - `width-fixed` 120
         - `height-fixed` 120
         - `color` rgb(240,200,90)
-        - `shader` *drop-shadow*
+        - `shader` *drop_shadow*
         - `shadow-offset-y` 6
         - `shadow-blur` *shadow_blur*
         - `shadow-color` rgba(0,0,0,0.55)
@@ -128,14 +128,14 @@
         - `height-fixed` 120
         - `color` rgb(150,90,200)
         - `radius-all` 16
-        - `shader` *drop-shadow*
+        - `shader` *drop_shadow*
         - `shadow-offset-y` 8
         - `shadow-blur` *shadow_blur*
         - `shadow-color` rgba(0,0,0,0.6)
-        - `shader` *raised-edge*
+        - `shader` *raised_edge*
         - `bevel-width` 12
         - `bevel-light-angle` *bevel_angle*
-        - `shader` *inner-glow*
+        - `shader` *inner_glow*
         - `glow-blur` 18
         - `glow-color` rgba(255,220,180,0.5)
       - `text`

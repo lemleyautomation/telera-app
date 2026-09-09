@@ -41,7 +41,7 @@ impl App for ShapesApp {
         api.set_viewport_continuous("shapes", true);
     }
 
-    fn update(&mut self, _api: &mut API) {
+    fn update(&mut self, _viewport: Option<&str>, _api: &mut API) {
         // `api.dt()` isn't meaningful outside a redraw, so drive the sweep
         // straight off a wall clock: a 0..1 triangle wave over the 280-degree
         // gauge span.

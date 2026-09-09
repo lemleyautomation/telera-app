@@ -162,9 +162,9 @@ type decides how it is exposed:
 | `Vec<T>` | `list Name` / `item Name` iteration |
 | anything else | ignored (fine to have) |
 
-Names are matched loosely: `*content background color*` ↔
-`content_background_color`, `file-menu-open` ↔ `file_menu_open` (lowercase,
-`-`/space → `_`).
+Names are matched **exactly** - `*content_background_color*` resolves the
+`content_background_color` field; `*content background color*` or a different
+case does not. Write the Rust identifier verbatim in the layout.
 
 ```rust
 #[derive(LayoutRunnerReflection, Default)]
@@ -183,7 +183,7 @@ struct App {
 |---|---|
 | *(none)* | each row's own fields resolve through `T: FieldAccess` (so `T` must `#[derive(FieldAccess)]`) |
 | `#[no_field_access]` | `list` length only, no per-item fields |
-| `#[list_click_event(handler)]` | routes a dynamic `left-clicked *event*` inside this `list` to `#[layout_event] fn handler`. In practice most layouts just write `left-clicked handler` statically inside the list instead - either way the handler gets the row index in `EventContext::list_index` |
+| `#[list_click_event(handler)]` | routes `left-clicked *clicked*` (arg spelled exactly `clicked`) inside this `list` to `#[layout_event] fn handler`. In practice most layouts just write `left-clicked handler` statically inside the list instead - either way the handler gets the row index in `EventContext::list_index` |
 
 ### `#[derive(FieldAccess)]` — on a list-item struct
 
@@ -423,7 +423,7 @@ font; loading it makes emoji render in colour everywhere.
 Any element with a background `color` (or a border, an `image`, or a
 `circle`/`ring` shape) can carry one or more fragment-level effects via the
 `` `shader` `` config keyword (repeat it to stack). Four effects are built in;
-more come from your own WGSL. `drop-shadow`/`blur` render behind the fill, the
+more come from your own WGSL. `drop_shadow`/`blur` render behind the fill, the
 rest over it.
 
 | method | effect |
@@ -439,7 +439,7 @@ rest over it.
   - `config`
     - `color` rgb(210,90,70)
     - `radius-all` 16
-    - `shader` *drop-shadow*
+    - `shader` *drop_shadow*
     - `shadow-blur` *blur_amount*
     - `shadow-color` rgba(0,0,0,0.55)
 ```
@@ -449,9 +449,9 @@ each a literal or a `*get-numeric*` / `*get-color*` binding):
 
 | `shader` | parameters |
 |---|---|
-| `drop-shadow` (`shadow`) | `shadow-offset-x`, `shadow-offset-y`, `shadow-blur`, `shadow-spread`, `shadow-color` |
-| `raised-edge` (`bevel`) | `bevel-width`, `bevel-light-angle` (deg), `bevel-highlight`, `bevel-shade` |
-| `inner-glow` (`glow`) | `glow-blur`, `glow-spread`, `glow-color` |
+| `drop_shadow` (`shadow`) | `shadow-offset-x`, `shadow-offset-y`, `shadow-blur`, `shadow-spread`, `shadow-color` |
+| `raised_edge` (`bevel`) | `bevel-width`, `bevel-light-angle` (deg), `bevel-highlight`, `bevel-shade` |
+| `inner_glow` (`glow`) | `glow-blur`, `glow-spread`, `glow-color` |
 | `blur` | `blur-radius`, `blur-tint` |
 
 Distances are logical px (dpi-scaled for you). Anything a value is bound to and

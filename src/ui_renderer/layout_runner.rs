@@ -403,6 +403,11 @@ pub enum Config {
 
     Use {
         name: GlobalSymbol,
+        /// `set-*` / `get-*` bindings from the `` `use` `` body, applied as
+        /// locals while the `## name` snippet's configs replay - so a config
+        /// snippet takes parameters the same way a `### name` element snippet
+        /// does. Empty when the `use` was written without a body.
+        params: Vec<(GlobalSymbol, DataSrc<Declaration>)>,
     },
 
     FontId(DataSrc<u16>),
@@ -1101,32 +1106,16 @@ pub trait FieldAccess {
     }
 }
 
-/// Normalizes a markdown-provided lookup name the same way
-/// `#[derive(ParserDataAccess)]`/`#[derive(FieldAccess)]` normalize a Rust
-/// field's own name before comparing the two, so e.g. `*content background
-/// color*` in a layout matches a `content_background_color` field, and
-/// `file-menu-opened` matches `file_menu_open`: lowercase, with spaces and
-/// hyphens folded to underscores. Exposed publicly because the derived code
-/// calls it; not normally something you need to call yourself.
-pub fn normalize_field_symbol(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            ' ' | '-' => '_',
-            c => c.to_ascii_lowercase(),
-        })
-        .collect()
-}
-
-/// Interns a markdown lookup name **already normalized** ([`normalize_field_symbol`]),
-/// so the derived `get_*` / `field_*` methods can match it with a plain
-/// `GlobalSymbol` equality check instead of re-normalizing (a `String` alloc)
-/// and string-comparing on every lookup, every frame. Use for every symbol that
-/// is later resolved against the app's fields / declarations - `*dynamic*`
-/// values, `list` / `item` / `if` names, `get-*` / `set-*` targets. Element,
-/// reusable-snippet, atlas and event-handler names stay raw (they're matched
-/// elsewhere, case-sensitively).
+/// Interns a markdown lookup name verbatim (only surrounding whitespace is
+/// trimmed). The name must match its target - a Rust struct field, a
+/// `set-*` / `get-*` declaration, a `list` / `item` / `if` name - **exactly**,
+/// character for character: no case folding, no space/hyphen/underscore
+/// equivalence. Used for every symbol later resolved against the app's fields
+/// or declarations: `*dynamic*` values, `list` / `item` / `if` names,
+/// `get-*` / `set-*` targets. Element, reusable-snippet, atlas and
+/// event-handler names go through `GlobalSymbol::new` directly, same rules.
 fn field_symbol(raw: &str) -> GlobalSymbol {
-    GlobalSymbol::new(normalize_field_symbol(raw.trim()))
+    GlobalSymbol::new(raw.trim())
 }
 
 // ---------------------------------------------------------------------------
@@ -1184,7 +1173,7 @@ pub struct FontLoad {
 /// applies it with `` `shader` *name* ``.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShaderLoad {
-    /// Name `` `shader` *name* `` references it by (normalised like a field).
+    /// Name `` `shader` *name* `` references it by (matched verbatim).
     pub name: String,
     /// Path to the `.wgsl` file, resolved like [`ImageLoad::path`].
     pub path: String,
@@ -1505,7 +1494,7 @@ pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
                         }
                     }
                     ParsingMode::ReusableConfig => {
-                        let mut reusable_items = process_configs(list, &mut None);
+                        let mut reusable_items = process_configs(list, &mut None, &mut calc_ctx);
                         let mut formatted_reusable_items = Vec::<Layout>::new();
                         formatted_reusable_items.append(&mut reusable_items);
                         reusables.insert(open_reuseable_name.clone(), formatted_reusable_items);
@@ -1614,17 +1603,30 @@ fn parse_index_arg(arg: &str) -> DataSrc<f32> {
     }
 }
 
-/// True if `node` is a `- \`declarations\`` list item, the way a `list`'s
-/// (optional) leading declarations block looks.
-fn is_declarations_block(node: &Node) -> bool {
+/// The `` `keyword` `` a list item leads with (`config`, `use`, `element`,
+/// `image`, ...), or `None` if the item isn't `` `keyword` ``-shaped.
+fn list_item_keyword(node: &Node) -> Option<&str> {
     if let Node::ListItem(item) = node
         && let Some(Node::Paragraph(paragraph)) = item.children.first()
         && let Some(Node::InlineCode(marker)) = paragraph.children.first()
     {
-        marker.value == "declarations"
+        Some(marker.value.as_str())
     } else {
-        false
+        None
     }
+}
+
+/// True if `node` is a `- \`declarations\`` list item, the way a `list`'s
+/// (optional) leading declarations block looks.
+fn is_declarations_block(node: &Node) -> bool {
+    list_item_keyword(node) == Some("declarations")
+}
+
+/// True if `node` is a `- \`config\`` list item - an element's (optional)
+/// leading config block. An element body without one starts straight into
+/// child elements.
+fn is_config_block(node: &Node) -> bool {
+    list_item_keyword(node) == Some("config")
 }
 
 /// Emits the layout commands for a drawn-shape element (`` `circle` ``,
@@ -1657,24 +1659,29 @@ fn process_shape(
             *camera = GlobalSymbol::new(name);
         }
     }
-    if let Some(config) = element.children.get(1)
-        && let Node::List(configs) = config
-        && let Some(configs) = configs.children.first()
-        && let Node::ListItem(configs) = configs
-        && let Some(configs) = configs.children.get(1)
-        && let Node::List(config_commands) = configs
+    let body = element.children.get(1).and_then(|node| match node {
+        Node::List(list) => Some(list),
+        _ => None,
+    });
+    let has_config = body
+        .and_then(|list| list.children.first())
+        .is_some_and(is_config_block);
+
+    if has_config
+        && let Some(body) = body
+        && let Some(Node::ListItem(configs)) = body.children.first()
+        && let Some(Node::List(config_commands)) = configs.children.get(1)
     {
-        let mut layout_config_commands = process_configs(config_commands, &mut Some(&mut spec));
+        let mut layout_config_commands =
+            process_configs(config_commands, &mut Some(&mut spec), ctx);
         layout_commands.append(&mut layout_config_commands);
     }
     layout_commands.push(Layout::Config(Config::CustomElement(spec)));
     layout_commands.push(Layout::Element(Element::ConfigClosed));
 
-    // Child elements sit after the `config` block, same as `element`.
-    if let Some(child_elements) = element.children.get(1)
-        && let Node::List(child_elements) = child_elements
-    {
-        for child_element in child_elements.children.iter().skip(1) {
+    // Child elements sit after the `config` block (if any), same as `element`.
+    if let Some(body) = body {
+        for child_element in body.children.iter().skip(usize::from(has_config)) {
             let mut child_element = process_element(child_element, ctx);
             layout_commands.append(&mut child_element);
         }
@@ -1719,22 +1726,32 @@ fn process_element(element: &Node, ctx: &mut CalcCtx) -> Vec<Layout> {
                         element_name.value.trim().to_string(),
                     ))));
                 }
-                if let Some(config) = element.children.get(1)
-                    && let Node::List(configs) = config
-                    && let Some(configs) = configs.children.first()
-                    && let Node::ListItem(configs) = configs
-                    && let Some(configs) = configs.children.get(1)
-                    && let Node::List(config_commands) = configs
+                // The body list's first item is the `config` block *only* if it
+                // actually is one - an element can skip `config` and start
+                // straight into child elements (or a lone `use`), and mistaking
+                // that first child for the config block would drop it.
+                let body = element.children.get(1).and_then(|node| match node {
+                    Node::List(list) => Some(list),
+                    _ => None,
+                });
+                let has_config = body
+                    .and_then(|list| list.children.first())
+                    .is_some_and(is_config_block);
+
+                if has_config
+                    && let Some(body) = body
+                    && let Some(Node::ListItem(configs)) = body.children.first()
+                    && let Some(Node::List(config_commands)) = configs.children.get(1)
                 {
-                    let mut layout_config_commands = process_configs(config_commands, &mut None);
+                    let mut layout_config_commands =
+                        process_configs(config_commands, &mut None, ctx);
                     layout_commands.append(&mut layout_config_commands);
                 }
                 layout_commands.push(Layout::Element(Element::ConfigClosed));
 
-                if let Some(child_elements) = element.children.get(1)
-                    && let Node::List(child_elements) = child_elements
-                {
-                    for child_element in child_elements.children.iter().skip(1) {
+                if let Some(body) = body {
+                    let skip = usize::from(has_config);
+                    for child_element in body.children.iter().skip(skip) {
                         let mut child_element = process_element(child_element, ctx);
                         layout_commands.append(&mut child_element);
                     }
@@ -1796,7 +1813,7 @@ fn process_element(element: &Node, ctx: &mut CalcCtx) -> Vec<Layout> {
                     && let Some(configs) = config.children.get(1)
                     && let Node::List(configs) = configs
                 {
-                    let mut configs = process_configs(configs, &mut None);
+                    let mut configs = process_configs(configs, &mut None, ctx);
                     layout_commands.append(&mut configs);
                 }
                 layout_commands.push(Layout::Element(Element::TextConfigClosed));
@@ -2108,7 +2125,7 @@ fn process_variable(
         && let Node::Text(variable_name) = declaration_name
     {
         let raw_value = declaration_value_str(declaration).map(str::trim);
-        let name = || normalize_field_symbol(variable_name.value.trim());
+        let name = || variable_name.value.trim().to_string();
         match variable_type.value.as_str() {
             "get-bool" | "get-numeric" | "get-text" | "get-event" | "get-image" | "get-color" => {
                 let value = field_symbol(raw_value?);
@@ -2146,11 +2163,20 @@ fn process_variable(
             "set-color" => Color::from_str(raw_value?)
                 .ok()
                 .map(|value| (name(), DataSrc::<Declaration>::Static(Declaration::Color(value)))),
-            // `` `set-image` *name* *atlas* [u1, v1, u2, v2] `` - the atlas name
-            // is a second emphasis span (children[4]); the UV rect is optional
-            // trailing text (children[5]) and defaults to the whole image.
+            // `` `set-image` *name* *source* [u1, v1, u2, v2] `` - `source` is a
+            // second emphasis span (children[4]); the UV rect is optional
+            // trailing text (children[5]).
+            //
+            // - **With** a UV rect: a literal descriptor - `source` is an atlas
+            //   name (a `load` directive or `API::add_image`), sampled at that
+            //   sub-rectangle.
+            // - **Without** a UV rect: an *alias* - `name` resolves to whatever
+            //   image `source` resolves to (another `set-image` / `get-image`
+            //   binding in scope, or an app `get_image` field). This is how you
+            //   forward an image into a `use` (`set-image` *icon* *play*).
+            //   Runtime shape is identical to `get-image`.
             "set-image" => {
-                let atlas = declaration
+                let source = declaration
                     .children
                     .get(4)
                     .and_then(|node| match node {
@@ -2161,24 +2187,23 @@ fn process_variable(
                         Node::Text(text) => Some(text.value.trim()),
                         _ => None,
                     })?;
-                let [u1, v1, u2, v2] = declaration
-                    .children
-                    .get(5)
-                    .and_then(|node| match node {
-                        Node::Text(text) => parse_uv_rect(text.value.trim()),
-                        _ => None,
-                    })
-                    .unwrap_or([0.0, 0.0, 1.0, 1.0]);
-                Some((
-                    normalize_field_symbol(variable_name.value.trim()),
-                    DataSrc::<Declaration>::Static(Declaration::Image(UIImageDescriptor {
-                        atlas: GlobalSymbol::new(atlas).as_str(),
-                        u1,
-                        v1,
-                        u2,
-                        v2,
-                    })),
-                ))
+                let uv = declaration.children.get(5).and_then(|node| match node {
+                    Node::Text(text) => parse_uv_rect(text.value.trim()),
+                    _ => None,
+                });
+                let value = match uv {
+                    Some([u1, v1, u2, v2]) => {
+                        DataSrc::<Declaration>::Static(Declaration::Image(UIImageDescriptor {
+                            atlas: GlobalSymbol::new(source).as_str(),
+                            u1,
+                            v1,
+                            u2,
+                            v2,
+                        }))
+                    }
+                    None => DataSrc::<Declaration>::Dynamic(GlobalSymbol::new(source)),
+                };
+                Some((variable_name.value.trim().to_string(), value))
             }
             _ => None,
         }
@@ -2237,6 +2262,7 @@ struct SizingAccumulator {
 fn process_configs(
     configuration_set: &List,
     custom_element: &mut Option<&mut CustomElementSpec>,
+    ctx: &mut CalcCtx,
 ) -> Vec<Layout> {
     let mut configs = Vec::new();
     let mut sizing = SizingAccumulator::default();
@@ -2433,9 +2459,10 @@ fn process_configs(
                 // `Config::Shaders` at the end.
                 "shader" => {
                     // The name is the first `*emphasis*` or non-blank text after
-                    // the `` `shader` `` keyword (`*drop-shadow*`, `bevel`,
-                    // `neon`, ...). Normalised like a field so `drop-shadow`
-                    // matches the `drop_shadow` built-in and a custom directive.
+                    // the `` `shader` `` keyword (`*drop_shadow*`, `bevel`,
+                    // `neon`, ...). Matched verbatim against the built-in aliases
+                    // in `ShaderSpec::kind` and against `` `shader` `` directive
+                    // names, so it must be spelled exactly.
                     let name = config.children.iter().skip(1).find_map(|node| match node {
                         Node::Emphasis(e) => e.children.iter().find_map(|c| match c {
                             Node::Text(t) => Some(t.value.trim().to_string()),
@@ -2618,8 +2645,12 @@ fn process_configs(
                                 )));
                             }
                             None => {
+                                // Interned verbatim, like every other dynamic
+                                // name: `` `image` *portrait* `` resolves a
+                                // `` `set-image` *portrait* `` binding or a
+                                // `get_image` field of exactly that name.
                                 configs.push(Layout::Config(Config::Image {
-                                    name: GlobalSymbol::new(&name),
+                                    name: field_symbol(&name),
                                 }));
                             }
                         }
@@ -2630,7 +2661,7 @@ fn process_configs(
                     if let Some(floating_commands) = config_elements.get(1)
                         && let Node::List(floating_commands) = floating_commands
                     {
-                        let mut floating = process_configs(floating_commands, &mut None);
+                        let mut floating = process_configs(floating_commands, &mut None, ctx);
                         configs.append(&mut floating);
                     }
                 }
@@ -2670,10 +2701,22 @@ fn process_configs(
                     if let Some(reusable_name) = config.children.get(1)
                         && let Node::Text(reusable_name) = reusable_name
                     {
-                        let reusable_name = GlobalSymbol::new(reusable_name.value.trim());
-                        configs.push(Layout::Config(Config::Use {
-                            name: reusable_name,
-                        }));
+                        let name = GlobalSymbol::new(reusable_name.value.trim());
+                        // A nested list under the `use` is its parameter body -
+                        // `set-*` / `get-*` bindings, same shape as a `### `
+                        // element snippet's `use` body.
+                        let mut params = Vec::new();
+                        if let Some(Node::List(body)) = config_elements.get(1) {
+                            for item in &body.children {
+                                if let Some((n, v)) = process_variable(item, ctx) {
+                                    if let DataSrc::Static(Declaration::Numeric(number)) = v {
+                                        ctx.bind(&n, number);
+                                    }
+                                    params.push((GlobalSymbol::new(n), v));
+                                }
+                            }
+                        }
+                        configs.push(Layout::Config(Config::Use { name, params }));
                     }
                 }
 
@@ -2696,7 +2739,7 @@ fn process_configs(
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
                     {
-                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                        configs.append(&mut process_configs(onconfig_on, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::HoveredClosed));
                 }
@@ -2719,7 +2762,7 @@ fn process_configs(
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
                     {
-                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                        configs.append(&mut process_configs(onconfig_on, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::UnHoveredClosed));
                 }
@@ -2742,7 +2785,7 @@ fn process_configs(
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
                     {
-                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                        configs.append(&mut process_configs(onconfig_on, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::HoverClosed));
                 }
@@ -2765,7 +2808,7 @@ fn process_configs(
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
                     {
-                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                        configs.append(&mut process_configs(onconfig_on, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::FocusedClosed));
                 }
@@ -2788,7 +2831,7 @@ fn process_configs(
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
                     {
-                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                        configs.append(&mut process_configs(onconfig_on, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::UnFocusedClosed));
                 }
@@ -2811,7 +2854,7 @@ fn process_configs(
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
                     {
-                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                        configs.append(&mut process_configs(onconfig_on, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::FocusClosed));
                 }
@@ -2833,7 +2876,7 @@ fn process_configs(
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
                     {
-                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                        configs.append(&mut process_configs(onconfig_on, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::KeyEventClosed));
                 }
@@ -2855,7 +2898,7 @@ fn process_configs(
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
                     {
-                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                        configs.append(&mut process_configs(onconfig_on, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::LeftPressedClosed));
                 }
@@ -2878,7 +2921,7 @@ fn process_configs(
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
                     {
-                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                        configs.append(&mut process_configs(onconfig_on, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::LeftDownClosed));
                 }
@@ -2900,7 +2943,7 @@ fn process_configs(
                     if let Some(onconfig_on) = config_elements.get(1)
                         && let Node::List(onconfig_on) = onconfig_on
                     {
-                        configs.append(&mut process_configs(onconfig_on, &mut None));
+                        configs.append(&mut process_configs(onconfig_on, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::LeftReleasedClosed));
                 }
@@ -2922,7 +2965,7 @@ fn process_configs(
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
                     {
-                        configs.append(&mut process_configs(config_on_click, &mut None));
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::LeftClickedClosed));
                 }
@@ -2947,7 +2990,7 @@ fn process_configs(
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
                     {
-                        configs.append(&mut process_configs(config_on_click, &mut None));
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::LeftDoubleClickedClosed));
                 }
@@ -2972,7 +3015,7 @@ fn process_configs(
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
                     {
-                        configs.append(&mut process_configs(config_on_click, &mut None));
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::LeftTripleClickedClosed));
                 }
@@ -2994,7 +3037,7 @@ fn process_configs(
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
                     {
-                        configs.append(&mut process_configs(config_on_click, &mut None));
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::RightPressedClosed));
                 }
@@ -3017,7 +3060,7 @@ fn process_configs(
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
                     {
-                        configs.append(&mut process_configs(config_on_click, &mut None));
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::RightDownClosed));
                 }
@@ -3042,7 +3085,7 @@ fn process_configs(
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
                     {
-                        configs.append(&mut process_configs(config_on_click, &mut None));
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::RightReleasedClosed));
                 }
@@ -3064,7 +3107,7 @@ fn process_configs(
                     if let Some(config_on_click) = config_elements.get(1)
                         && let Node::List(config_on_click) = config_on_click
                     {
-                        configs.append(&mut process_configs(config_on_click, &mut None));
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
                     }
                     configs.push(Layout::Element(Element::RightClickedClosed));
                 }
@@ -3650,15 +3693,15 @@ where
                     Element::UnFocusedClosed => event_gate_close!(),
 
                     Element::LeftPressedOpened { event } => {
-                        event_gate_open!(api.left_mouse_pressed(), event)
+                        event_gate_open!(api.l.hovered() && api.left_mouse_pressed(), event)
                     }
                     Element::LeftPressedClosed => event_gate_close!(),
                     Element::LeftDownOpened { event } => {
-                        event_gate_open!(api.left_mouse_down(), event)
+                        event_gate_open!(api.l.hovered() && api.left_mouse_down(), event)
                     }
                     Element::LeftDownClosed => event_gate_close!(),
                     Element::LeftReleasedOpened { event } => {
-                        event_gate_open!(api.left_mouse_released(), event)
+                        event_gate_open!(api.l.hovered() && api.left_mouse_released(), event)
                     }
                     Element::LeftReleasedClosed => event_gate_close!(),
                     Element::LeftClickedOpened { event } => {
@@ -3684,15 +3727,15 @@ where
                     Element::KeyEventClosed => event_gate_close!(),
 
                     Element::RightPressedOpened { event } => {
-                        event_gate_open!(api.right_mouse_pressed(), event)
+                        event_gate_open!(api.l.hovered() && api.right_mouse_pressed(), event)
                     }
                     Element::RightPressedClosed => event_gate_close!(),
                     Element::RightDownOpened { event } => {
-                        event_gate_open!(api.right_mouse_down(), event)
+                        event_gate_open!(api.l.hovered() && api.right_mouse_down(), event)
                     }
                     Element::RightDownClosed => event_gate_close!(),
                     Element::RightReleasedOpened { event } => {
-                        event_gate_open!(api.right_mouse_released(), event)
+                        event_gate_open!(api.l.hovered() && api.right_mouse_released(), event)
                     }
                     Element::RightReleasedClosed => event_gate_close!(),
                     Element::RightClickedOpened { event } => {
@@ -4237,7 +4280,7 @@ fn execute_config<UserApp>(
         Config::FloatingAttachElementToRoot => {
             config.floating_attach_to_root();
         }
-        Config::Use { name } => {
+        Config::Use { name, params } => {
             // A `## name` reusable (as opposed to a `### name` one, which
             // wraps a whole element and goes through `Element::UseOpened`/
             // `UseClosed` in `set_layout`) is just a named bundle of config
@@ -4251,6 +4294,18 @@ fn execute_config<UserApp>(
             // bookkeeping `set_layout` owns, which this function doesn't
             // have access to.
             if let Some(reusable) = reusables.get(name) {
+                // `use` body bindings shadow the caller's locals for the
+                // duration of the replay, so `` `image` *icon* `` in the
+                // snippet resolves a `` `set-image` *icon* `` passed here.
+                let param_refs: HashMap<GlobalSymbol, &DataSrc<Declaration>> =
+                    params.iter().map(|(n, v)| (*n, v)).collect();
+                let merged;
+                let use_locals = if params.is_empty() {
+                    locals
+                } else {
+                    merged = merge_locals(locals, &param_refs);
+                    Some(&merged)
+                };
                 for command in reusable {
                     if let Layout::Config(nested_command) = command {
                         let mut nested_command = nested_command.clone();
@@ -4259,7 +4314,7 @@ fn execute_config<UserApp>(
                             config,
                             text_config,
                             reusables,
-                            locals,
+                            use_locals,
                             list_data,
                             api,
                             user_app,
@@ -4345,22 +4400,23 @@ where
         list_data: &Option<(GlobalSymbol, usize)>,
     ) -> Self::ReturnType {
         // Local declarations win over the app struct (same order as every other
-        // resolver): a `get-image` local redirects to another app field, a
-        // `set-image` local carries the descriptor itself.
-        if let Some(locals) = locals
-            && let Some(local) = locals.get(name)
-        {
+        // resolver). A `set-image` local with a UV rect carries the descriptor
+        // itself; a `set-image` alias / `get-image` local redirects to another
+        // name, which may itself be another image binding - so follow the chain
+        // (`icon` -> `connect_plc` -> descriptor), capped so a cycle can't hang
+        // the layout. Whatever the chain ends on is looked up on the app struct.
+        let mut current = *name;
+        for _ in 0..16 {
+            let Some(local) = locals.and_then(|locals| locals.get(&current)) else {
+                break;
+            };
             match local {
-                DataSrc::Dynamic(local) => {
-                    if let Some(value) = user_app.get_image(local, list_data) {
-                        return Some(value);
-                    }
-                }
                 DataSrc::Static(Declaration::Image(descriptor)) => return Some(descriptor),
-                DataSrc::Static(_) => {}
+                DataSrc::Dynamic(next) => current = *next,
+                DataSrc::Static(_) => break,
             }
         }
-        user_app.get_image(name, list_data)
+        user_app.get_image(&current, list_data)
     }
     fn resolve_src(
         _var: &'frame DataSrc<Self::DeclarationType>,
@@ -5292,46 +5348,268 @@ mod tests {
         )));
     }
 
-    /// Dynamic names are interned already-normalized at parse time (spaces /
-    /// hyphens / case folded), so `get_*` can match them with a plain symbol
-    /// compare. A `set-color` target, its `color` reference, and a `list` name
-    /// written three different ways must all land on the same `GlobalSymbol`.
+    /// Dynamic names are interned verbatim at parse time - no case folding, no
+    /// space/hyphen/underscore equivalence. A `set-color` target, its `color`
+    /// reference and a `list` name all keep exactly the spelling written, and
+    /// only an exact match resolves.
     #[test]
-    fn dynamic_names_are_normalized_at_parse_time() {
-        let want = GlobalSymbol::new("content_background_color");
+    fn dynamic_names_are_interned_verbatim() {
+        let want = GlobalSymbol::new("content background color");
         let src = "\
 # root
 - `declarations`
-    - `set-color` *Content Background Color* rgb(1,2,3)
+    - `set-color` *content background color* rgb(1,2,3)
 - `element`
     - `config`
-        - `color` *content-background-color*
-- `list` Content-Background-Color
+        - `color` *content background color*
+- `list` content background color
     - `element`
 ";
         let body = process_layout(src.to_string()).expect("should parse").body;
 
-        // the `set-color` declaration's own name
+        // the `set-color` declaration's own name - kept verbatim
         assert!(body.iter().any(|c| matches!(
             c,
             Layout::Declaration { name, .. } if *name == want
         )));
-        // the `color` config that references it
+        // the `color` config that references it - same spelling, resolves
         assert!(body.iter().any(|c| matches!(
             c,
             Layout::Config(Config::Color(DataSrc::Dynamic(s))) if *s == want
         )));
-        // the `list` name (written bare, still normalized)
+        // the `list` name
         assert!(body.iter().any(|c| matches!(
             c,
             Layout::Element(Element::ListClosed(s)) if *s == want
         )));
 
-        // `parse_index_arg` (used by `if-index` / `item`) normalizes too.
+        // A differently-cased / punctuated spelling is a *different* symbol.
+        let hyphenated = GlobalSymbol::new("content-background-color");
+        assert!(!body.iter().any(|c| matches!(
+            c,
+            Layout::Config(Config::Color(DataSrc::Dynamic(s))) if *s == hyphenated
+        )));
+
+        // `parse_index_arg` (used by `if-index` / `item`) keeps names verbatim too.
         assert!(matches!(
             parse_index_arg("My Index"),
-            DataSrc::Dynamic(s) if s == GlobalSymbol::new("my_index")
+            DataSrc::Dynamic(s) if s == GlobalSymbol::new("My Index")
         ));
+    }
+
+    /// `` `image` *name* `` interns its lookup name verbatim, the same as the
+    /// `` `set-image` `` declaration and app `get_image` fields, so an exact
+    /// spelling resolves and only an exact spelling.
+    #[test]
+    fn image_config_name_is_verbatim() {
+        let want = GlobalSymbol::new("left half");
+        let src = "\
+#### TML 1.0
+- `load` [pic](examples/pic.jpg)
+
+# root
+- `declarations`
+    - `set-image` *left half* *pic* [0, 0, 0.5, 1]
+- `element`
+    - `config`
+        - `image` *left half*
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+
+        assert!(body.iter().any(|c| matches!(
+            c,
+            Layout::Declaration { name, .. } if *name == want
+        )));
+        assert!(body.iter().any(|c| matches!(
+            c,
+            Layout::Config(Config::Image { name }) if *name == want
+        )));
+    }
+
+    /// `` `set-image` *name* *source* `` with **no** UV rect is an alias: it
+    /// parses to a `DataSrc::Dynamic` (like `get-image`), not a literal
+    /// descriptor with `source` as the atlas.
+    #[test]
+    fn set_image_without_uv_is_an_alias() {
+        let src = "\
+# root
+- `declarations`
+    - `set-image` *base* *icon_atlas* [0.04, 0, 0.08, 1]
+    - `set-image` *icon* *base*
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+
+        // literal (has a UV rect)
+        assert!(body.iter().any(|c| matches!(
+            c,
+            Layout::Declaration {
+                name,
+                value: DataSrc::Static(Declaration::Image(d)),
+            } if name.as_str() == "base" && d.atlas == "icon_atlas"
+        )));
+        // alias (no UV rect) - points at `base`, does not become atlas "base"
+        assert!(body.iter().any(|c| matches!(
+            c,
+            Layout::Declaration { name, value: DataSrc::Dynamic(src) }
+                if name.as_str() == "icon" && src.as_str() == "base"
+        )));
+    }
+
+    /// `UIImageDescriptor::resolve_name` follows an alias chain through locals:
+    /// `icon` -> (alias) `connect_plc` -> descriptor. This is the runtime half
+    /// of `` `set-image` *icon* *connect_plc* `` passed into a `use`.
+    #[test]
+    fn image_alias_chain_resolves() {
+        struct NoApp;
+        impl LayoutRunnerReflection for NoApp {}
+
+        let desc = UIImageDescriptor { atlas: "icon_atlas", u1: 0.04, v1: 0.0, u2: 0.08, v2: 1.0 };
+        let connect: DataSrc<Declaration> = DataSrc::Static(Declaration::Image(desc.clone()));
+        let icon: DataSrc<Declaration> = DataSrc::Dynamic(GlobalSymbol::new("connect_plc"));
+        let indirect: DataSrc<Declaration> = DataSrc::Dynamic(GlobalSymbol::new("icon"));
+
+        let mut locals: HashMap<GlobalSymbol, &DataSrc<Declaration>> = HashMap::new();
+        locals.insert(GlobalSymbol::new("connect_plc"), &connect);
+        locals.insert(GlobalSymbol::new("icon"), &icon);
+        locals.insert(GlobalSymbol::new("indirect"), &indirect);
+
+        let app = NoApp;
+        let got = <UIImageDescriptor as ResolveValue<'_, '_, NoApp>>::resolve_name(
+            &GlobalSymbol::new("indirect"),
+            Some(&locals),
+            &app,
+            &None,
+        );
+        assert_eq!(got, Some(&desc));
+
+        // an alias that dead-ends (no binding, no app field) resolves to nothing
+        let dangling: DataSrc<Declaration> = DataSrc::Dynamic(GlobalSymbol::new("missing"));
+        locals.insert(GlobalSymbol::new("dangling"), &dangling);
+        let got = <UIImageDescriptor as ResolveValue<'_, '_, NoApp>>::resolve_name(
+            &GlobalSymbol::new("dangling"),
+            Some(&locals),
+            &app,
+            &None,
+        );
+        assert_eq!(got, None);
+    }
+
+    /// A `set-image` passed as a `use` parameter to a `### element` reusable
+    /// lands in the command stream as a `Layout::Declaration` between
+    /// `UseOpened` and `UseClosed`, so the runner can merge it into the
+    /// snippet's locals and `` `image` *icon* `` inside the snippet resolves it.
+    #[test]
+    fn set_image_use_parameter_reaches_reusable() {
+        let src = "\
+#### TML 1.0
+- `load` [pic](examples/pic.jpg)
+
+### model-control
+- `element`
+    - `config`
+        - `image` *icon*
+
+# root
+- `element`
+    - `config`
+        - `vertical`
+    - `use` model-control
+        - `set-image` *icon* *pic* [0, 0, 1, 1]
+";
+        let parsed = process_layout(src.to_string()).expect("should parse");
+
+        // the reusable stores an `image *icon*` lookup
+        let reusable = parsed
+            .reusables
+            .get("model-control")
+            .expect("reusable registered");
+        assert!(reusable.iter().any(|c| matches!(
+            c,
+            Layout::Config(Config::Image { name }) if name.as_str() == "icon"
+        )));
+
+        // the call site emits the parameter as a declaration inside the use block
+        let icon = GlobalSymbol::new("icon");
+        let mut depth = 0i32;
+        let mut decl_in_use = false;
+        for c in &parsed.body {
+            match c {
+                Layout::Element(Element::UseOpened) => depth += 1,
+                Layout::Element(Element::UseClosed(_)) => depth -= 1,
+                Layout::Declaration { name, value: DataSrc::Static(Declaration::Image(d)) }
+                    if depth > 0 && *name == icon =>
+                {
+                    assert_eq!(d.atlas, "pic");
+                    decl_in_use = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(decl_in_use, "set-image parameter should sit inside the use block");
+    }
+
+    /// A `## config` snippet invoked with `` `use` `` can take a parameter
+    /// body (`set-*` / `get-*` bindings), captured on `Config::Use` so the
+    /// runner can apply them as locals while the snippet replays.
+    #[test]
+    fn config_snippet_use_captures_parameters() {
+        let src = "\
+#### TML 1.0
+- `load` [pic](examples/pic.jpg)
+
+## model-control
+- `image` *icon*
+
+# root
+- `element`
+    - `config`
+        - `use` model-control
+            - `set-image` *icon* *pic* [0, 0, 1, 1]
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+
+        let params = body.iter().find_map(|c| match c {
+            Layout::Config(Config::Use { name, params }) if name.as_str() == "model-control" => {
+                Some(params)
+            }
+            _ => None,
+        });
+        let params = params.expect("Config::Use emitted");
+        assert!(params.iter().any(|(n, v)| n.as_str() == "icon"
+            && matches!(v, DataSrc::Static(Declaration::Image(d)) if d.atlas == "pic")));
+    }
+
+    /// An `element` can skip its `config` block and start straight into
+    /// children - the first body item is not blindly treated as (and skipped
+    /// as) the config block. A lone `use` under such an element still runs.
+    #[test]
+    fn element_without_config_block_keeps_its_first_child() {
+        let src = "\
+### model-control
+- `element`
+    - `config`
+        - `grow`
+
+# root
+- `element`
+    - `use` model-control
+        - `set-text` *label* hi
+- `element`
+    - `element` inner
+";
+        let body = process_layout(src.to_string()).expect("should parse").body;
+
+        // the `use` under the config-less first element is emitted
+        assert!(
+            body.iter()
+                .any(|c| matches!(c, Layout::Element(Element::UseClosed(s)) if s.as_str() == "model-control")),
+            "lone `use` child must not be swallowed as a config block"
+        );
+        // the config-less nested `element inner` is emitted too
+        assert!(body.iter().any(|c| matches!(
+            c,
+            Layout::Config(Config::Id(DataSrc::Static(id))) if id == "inner"
+        )));
     }
 
     /// A `#### TML` header can mix `` `load` `` (image) and `` `font` ``
@@ -5446,10 +5724,10 @@ mod tests {
 - `element`
     - `config`
         - `color` white
-        - `shader` *drop-shadow*
+        - `shader` *drop_shadow*
         - `shadow-blur` 6
         - `shadow-color` *tint*
-        - `shader` *raised-edge*
+        - `shader` *raised_edge*
         - `bevel-width` 4
 ";
         let parsed = process_layout(src.to_string()).expect("should parse");

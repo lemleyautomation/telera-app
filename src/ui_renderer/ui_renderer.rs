@@ -10,7 +10,7 @@ use unicode_script::Script;
 
 use lyon::geom::Arc;
 use lyon::geom::euclid::{Box2D, Point2D, Size2D, UnknownUnit};
-use lyon::math::{Angle, point, vector};
+use lyon::math::{Angle, vector};
 use lyon::path::Path;
 use lyon::path::builder::BorderRadii;
 use lyon::tessellation::*;
@@ -664,6 +664,10 @@ pub enum RenderBatch {
         begin: u32,
         end: u32,
         atlas: String,
+        /// Clip rect (physical px) when this image batch was emitted inside a
+        /// `scroll` container; `None` when unclipped. Without this, images
+        /// drew straight through their container's clip region.
+        scissor: Option<(UIPosition, UIPosition)>,
     },
     /// A run of `effect_indices` drawn by an effect pipeline. `key` picks the
     /// pipeline: `BuiltIn` = the shared SDF pipeline, `Custom(sym)` = a
@@ -699,7 +703,6 @@ pub struct UIRenderer {
     pub staged_images: Vec<(String, DynamicImage)>,
     pub atlas_map: HashMap<String, wgpu::BindGroup>,
     pub active_atlas: String,
-    pub new_atlas_binding_required: bool,
 
     pub render_pipeline: Option<wgpu::RenderPipeline>,
 
@@ -1167,7 +1170,6 @@ impl UIRenderer {
             staged_images: Vec::<(String, DynamicImage)>::new(),
             atlas_map: atlas_dictionary,
             active_atlas,
-            new_atlas_binding_required: false,
 
             render_pipeline: None,
             effect_vertices: Vec::new(),
@@ -1556,46 +1558,44 @@ impl UIRenderer {
         }
     }
 
+    /// Closes whatever geometry is pending (as a `Scissor` batch inside a
+    /// clip region, else a `Basic` one) so the image about to be tessellated
+    /// starts a fresh range, and records which atlas its texture batch will
+    /// bind. Pair every call with [`Self::end_atlas`].
     pub fn bind_atlas(&mut self, atlas: &str) {
-        if atlas == self.active_atlas.as_str() {
-            self.new_atlas_binding_required = false;
-            return;
-        }
-
-        match self.scissor_active {
-            true => {
-                if self.batch_index_end > self.batch_index_begin {
-                    self.batches.push(RenderBatch::Scissor {
-                        begin: self.batch_index_begin,
-                        end: self.batch_index_end,
-                        position: self.scissor_position,
-                        size: self.scissor_size,
-                    });
-                    self.batch_index_begin = self.batch_index_end;
-                }
-            }
-            false => {
+        if self.batch_index_end > self.batch_index_begin {
+            if self.scissor_active {
+                self.batches.push(RenderBatch::Scissor {
+                    begin: self.batch_index_begin,
+                    end: self.batch_index_end,
+                    position: self.scissor_position,
+                    size: self.scissor_size,
+                });
+                self.batch_index_begin = self.batch_index_end;
+            } else {
                 self.batch();
             }
         }
 
         self.active_atlas = atlas.to_string();
-        self.new_atlas_binding_required = true;
     }
 
+    /// Flushes the geometry pushed since [`Self::bind_atlas`] as an `Atlas`
+    /// batch - carrying the current clip rect, if any, so an image inside a
+    /// `scroll` container is scissored like everything else in it.
     pub fn end_atlas(&mut self) {
-        if !self.new_atlas_binding_required {
-            return;
-        }
-
         if self.batch_index_end > self.batch_index_begin {
             self.batches.push(RenderBatch::Atlas {
                 begin: self.batch_index_begin,
                 end: self.batch_index_end,
                 atlas: self.active_atlas.clone(),
+                scissor: if self.scissor_active {
+                    Some((self.scissor_position, self.scissor_size))
+                } else {
+                    None
+                },
             });
             self.batch_index_begin = self.batch_index_end;
-            self.new_atlas_binding_required = false;
         }
     }
 
@@ -1661,12 +1661,33 @@ impl UIRenderer {
                                 self.viewport_size.1 as u32,
                             );
                         }
-                        RenderBatch::Atlas { begin, end, atlas } => {
+                        RenderBatch::Atlas {
+                            begin,
+                            end,
+                            atlas,
+                            scissor,
+                        } => {
                             match self.atlas_map.get(atlas) {
                                 None => continue,
                                 Some(atlas) => {
                                     render_pass.set_bind_group(0, atlas, &[]);
-                                    render_pass.draw_indexed(*begin..*end, 0, 0..1);
+                                    if let Some((position, size)) = scissor {
+                                        render_pass.set_scissor_rect(
+                                            position.x as u32,
+                                            position.y as u32,
+                                            size.x as u32,
+                                            size.y as u32,
+                                        );
+                                        render_pass.draw_indexed(*begin..*end, 0, 0..1);
+                                        render_pass.set_scissor_rect(
+                                            0,
+                                            0,
+                                            self.viewport_size.0 as u32,
+                                            self.viewport_size.1 as u32,
+                                        );
+                                    } else {
+                                        render_pass.draw_indexed(*begin..*end, 0, 0..1);
+                                    }
                                 }
                             }
                         }
@@ -1812,217 +1833,67 @@ impl UIRenderer {
                             self.emit_effects(ebox, fx, false);
                         }
                     } else {
-                        #[allow(clippy::excessive_precision)]
-                        const K: f32 = 0.5522847493;
-                        if b.width.left > 0 {
-                            let mut builder = Path::builder();
-                            if b.corner_radii.top_left > 0.0 {
-                                let x = b.bounding_box.x;
-                                let y = b.bounding_box.y;
-                                let r = b.corner_radii.top_left;
-                                let k_offset = r * K;
-                                builder.begin(point(x, r+y));
-                                builder.cubic_bezier_to(point(x, (r - k_offset)+y), point((r - k_offset)+x, y), point(r+x, y));
-                                builder.end(false);
-                            }
-                            builder.begin(Point2D::new(
-                                b.bounding_box.x * self.dpi_scale,
-                                (b.bounding_box.y+b.corner_radii.top_left) * self.dpi_scale,
-                            ));
-                            builder.line_to(Point2D::new(
-                                b.bounding_box.x * self.dpi_scale,
-                                (b.bounding_box.y + b.bounding_box.height - b.corner_radii.bottom_left) * self.dpi_scale,
-                            ));
-                            builder.end(true);
-                            if b.corner_radii.bottom_left > 0.0 {
-                                let x = b.bounding_box.x;
-                                let y = b.bounding_box.y;
-                                let r = b.corner_radii.bottom_left;
-                                let h = b.bounding_box.height;
-                                let k_offset = r * K;
-                                builder.begin(point(r+x, h+y));
-                                builder.cubic_bezier_to(point((r - k_offset)+x, h+y), point(x, (h - r + k_offset)+y), point(x, (h - r)+y));
-                                builder.end(false);
-                            }
+                        // Per-side widths differ: draw each side as its own
+                        // rect strip, centred on the edge (half in / half out)
+                        // like the equal-width branch above. The old lyon path
+                        // here closed every 2-point edge (`end(true)`), which
+                        // tessellates to nothing - so single-side borders never
+                        // drew. Corner radii aren't applied in the uneven case
+                        // (per-side rounded corners aren't well defined); the
+                        // equal-width branch handles the rounded case.
+                        let x = b.bounding_box.x * self.dpi_scale;
+                        let y = b.bounding_box.y * self.dpi_scale;
+                        let w = b.bounding_box.width * self.dpi_scale;
+                        let h = b.bounding_box.height * self.dpi_scale;
+                        let color = UIColor::from_clay(b.color);
+                        let wl = b.width.left as f32 * self.dpi_scale;
+                        let wr = b.width.right as f32 * self.dpi_scale;
+                        let wt = b.width.top as f32 * self.dpi_scale;
+                        let wb = b.width.bottom as f32 * self.dpi_scale;
 
-                            let path = builder.build();
-
-                            let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
-                            let mut tessellator = StrokeTessellator::new();
-                            if tessellator
-                                .tessellate_path(
-                                    &path,
-                                    &StrokeOptions::default().with_line_width(self.dpi_scale*b.width.left as f32),
-                                    &mut BuffersBuilder::new(
-                                        &mut geometry,
-                                        |vertex: StrokeVertex| UIVertex {
-                                            position: vertex.position().into(),
-                                            texture: 0,
-                                            color: UIColor::from_clay(b.color),
-                                    uv: [0.0, 0.0],
-                                        },
-                                    ),
-                                )
-                                .is_ok()
-                            {
-                                let mut offset_indices = geometry
-                                    .indices
-                                    .iter()
-                                    .map(|index| index + self.vertices.len() as u32)
-                                    .collect::<Vec<u32>>();
-                                self.vertices.append(&mut geometry.vertices);
-                                self.indices.append(&mut offset_indices);
-                                self.batch_index_end = self.indices.len() as u32;
-                            }
+                        let fx = b.custom_layout_settings;
+                        let ebox = EffectBox {
+                            x: x - wl * 0.5,
+                            y: y - wt * 0.5,
+                            w: w + (wl + wr) * 0.5,
+                            h: h + (wt + wb) * 0.5,
+                            z,
+                            radii: [0.0; 4],
+                            base: color,
+                        };
+                        self.emit_effects(ebox, fx, true);
+                        // Verticals run the full height (incl. the corners) so
+                        // a left+top pair meets cleanly; horizontals then fill
+                        // the top/bottom strips between them.
+                        if wl > 0.0 {
+                            self.push_quad(
+                                x - wl * 0.5, y - wt * 0.5,
+                                x + wl * 0.5, y + h + wb * 0.5,
+                                z, color,
+                            );
                         }
-                        if b.width.right > 0 {
-                            let mut builder = Path::builder();
-                            if b.corner_radii.top_right > 0.0 {
-                                let x = b.bounding_box.x;
-                                let w = b.bounding_box.width;
-                                let y = b.bounding_box.y;
-                                let r = b.corner_radii.top_right;
-                                let k_offset = r * K;
-                                builder.begin(point(x+w-r, y));
-                                builder.cubic_bezier_to(point(x+w-r+k_offset, y), point(w+x, y+r-k_offset), point(x+w, y+r));
-                                builder.end(false);
-                            }
-                            builder.begin(Point2D::new(
-                                (b.bounding_box.x+b.bounding_box.width) * self.dpi_scale,
-                                (b.bounding_box.y+b.corner_radii.top_right) * self.dpi_scale,
-                            ));
-                            builder.line_to(Point2D::new(
-                                (b.bounding_box.x+b.bounding_box.width) * self.dpi_scale,
-                                (b.bounding_box.y+b.bounding_box.height-b.corner_radii.bottom_right) * self.dpi_scale,
-                            ));
-                            builder.end(true);
-                            if b.corner_radii.bottom_right > 0.0 {
-//                                br.begin(point(w, h - r));
-//        br.cubic_bezier_to(point(w, h - r + k_offset), point(w - r + k_offset, h), point(w - r, h));
-                                let x = b.bounding_box.x;
-                                let w = b.bounding_box.width;
-                                let h = b.bounding_box.height;
-                                let y = b.bounding_box.y;
-                                let r = b.corner_radii.top_right;
-                                let k_offset = r * K;
-                                builder.begin(point(x+w, y+h-r));
-                                builder.cubic_bezier_to(point(x+w, y+h-r+k_offset), point(x+w-r+k_offset, y+h), point(x+w-r, y+h));
-                                builder.end(false);
-                            }
-
-                            let path = builder.build();
-
-                            let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
-                            let mut tessellator = StrokeTessellator::new();
-                            if tessellator
-                                .tessellate_path(
-                                    &path,
-                                    &StrokeOptions::default().with_line_width(self.dpi_scale*b.width.right as f32),
-                                    &mut BuffersBuilder::new(
-                                        &mut geometry,
-                                        |vertex: StrokeVertex| UIVertex {
-                                            position: vertex.position().into(),
-                                            texture: 0,
-                                            color: UIColor::from_clay(b.color),
-                                    uv: [0.0, 0.0],
-                                        },
-                                    ),
-                                )
-                                .is_ok()
-                            {
-                                let mut offset_indices = geometry
-                                    .indices
-                                    .iter()
-                                    .map(|index| index + self.vertices.len() as u32)
-                                    .collect::<Vec<u32>>();
-                                self.vertices.append(&mut geometry.vertices);
-                                self.indices.append(&mut offset_indices);
-                                self.batch_index_end = self.indices.len() as u32;
-                            }
+                        if wr > 0.0 {
+                            self.push_quad(
+                                x + w - wr * 0.5, y - wt * 0.5,
+                                x + w + wr * 0.5, y + h + wb * 0.5,
+                                z, color,
+                            );
                         }
-                        if b.width.top > 0 {
-                            let mut builder = Path::builder();                            builder.begin(Point2D::new(
-                                (b.bounding_box.x+b.corner_radii.top_right) * self.dpi_scale,
-                                (b.bounding_box.y) * self.dpi_scale,
-                            ));
-                            builder.line_to(Point2D::new(
-                                (b.bounding_box.x+b.bounding_box.width-b.corner_radii.top_left) * self.dpi_scale,
-                                (b.bounding_box.y) * self.dpi_scale,
-                            ));
-                            builder.end(true);
-
-                            let path = builder.build();
-
-                            let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
-                            let mut tessellator = StrokeTessellator::new();
-                            if tessellator
-                                .tessellate_path(
-                                    &path,
-                                    &StrokeOptions::default().with_line_width(self.dpi_scale*b.width.top as f32),
-                                    &mut BuffersBuilder::new(
-                                        &mut geometry,
-                                        |vertex: StrokeVertex| UIVertex {
-                                            position: vertex.position().into(),
-                                            texture: 0,
-                                            color: UIColor::from_clay(b.color),
-                                    uv: [0.0, 0.0],
-                                        },
-                                    ),
-                                )
-                                .is_ok()
-                            {
-                                let mut offset_indices = geometry
-                                    .indices
-                                    .iter()
-                                    .map(|index| index + self.vertices.len() as u32)
-                                    .collect::<Vec<u32>>();
-                                self.vertices.append(&mut geometry.vertices);
-                                self.indices.append(&mut offset_indices);
-                                self.batch_index_end = self.indices.len() as u32;
-                            }
+                        if wt > 0.0 {
+                            self.push_quad(
+                                x - wl * 0.5, y - wt * 0.5,
+                                x + w + wr * 0.5, y + wt * 0.5,
+                                z, color,
+                            );
                         }
-                        if b.width.bottom > 0 {
-                            let mut builder = Path::builder();
-                            builder.begin(Point2D::new(
-                                (b.bounding_box.x+b.corner_radii.bottom_left) * self.dpi_scale,
-                                (b.bounding_box.y+b.bounding_box.height) * self.dpi_scale,
-                            ));
-                            builder.line_to(Point2D::new(
-                                (b.bounding_box.x+b.bounding_box.width-b.corner_radii.bottom_right) * self.dpi_scale,
-                                (b.bounding_box.y+b.bounding_box.height) * self.dpi_scale,
-                            ));
-                            builder.end(true);
-
-                            let path = builder.build();
-
-                            let mut geometry: VertexBuffers<UIVertex, u32> = VertexBuffers::new();
-                            let mut tessellator = StrokeTessellator::new();
-                            if tessellator
-                                .tessellate_path(
-                                    &path,
-                                    &StrokeOptions::default().with_line_width(self.dpi_scale*b.width.bottom as f32),
-                                    &mut BuffersBuilder::new(
-                                        &mut geometry,
-                                        |vertex: StrokeVertex| UIVertex {
-                                            position: vertex.position().into(),
-                                            texture: 0,
-                                            color: UIColor::from_clay(b.color),
-                                    uv: [0.0, 0.0],
-                                        },
-                                    ),
-                                )
-                                .is_ok()
-                            {
-                                let mut offset_indices = geometry
-                                    .indices
-                                    .iter()
-                                    .map(|index| index + self.vertices.len() as u32)
-                                    .collect::<Vec<u32>>();
-                                self.vertices.append(&mut geometry.vertices);
-                                self.indices.append(&mut offset_indices);
-                                self.batch_index_end = self.indices.len() as u32;
-                            }
+                        if wb > 0.0 {
+                            self.push_quad(
+                                x - wl * 0.5, y + h - wb * 0.5,
+                                x + w + wr * 0.5, y + h + wb * 0.5,
+                                z, color,
+                            );
                         }
+                        self.emit_effects(ebox, fx, false);
                     }
                 }
                 RenderCommand::Text(t) => self.draw_text(

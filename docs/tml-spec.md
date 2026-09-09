@@ -156,18 +156,20 @@ Which keywords take which shape is fixed by the parser; using the wrong one
 silently drops the command (the `if let ... = ...` chain simply fails to
 match and nothing is pushed).
 
-### Name normalization
+### Name matching
 
-Whenever a dynamic name is resolved against the application (`get_bool`,
-`get_numeric`, `get_text`, `get_color`, `get_image`, `get_event`, and the
-per-item `field_*` equivalents), both the name written in the layout and the
-Rust struct field name are normalized the same way before comparing
-(`normalize_field_symbol`): lowercased, with spaces and hyphens folded to
-underscores. So `*content background color*` matches a Rust field named
-`content_background_color`, and an event name `file-menu-opened` matches a
-handler/field named `file_menu_open`. This means spaces, hyphens, and
-underscores are interchangeable in a dynamic name anywhere it's written in
-TML.
+Every name in TML is matched **exactly**, character for character. There is
+no normalization: no case folding, and spaces / hyphens / underscores are
+*not* interchangeable. A dynamic name resolved against the application
+(`get_bool`, `get_numeric`, `get_text`, `get_color`, `get_image`,
+`get_event`, and the per-item `field_*` equivalents) must be spelled
+identically to the Rust struct field it targets - `*content_background_color*`
+matches a `content_background_color` field; `*content background color*` and
+`*Content-Background-Color*` do not. The same rule applies to `set-*` / `get-*`
+declaration names and their `*references*`, `list` / `item` / `if` names,
+reusable-snippet names, atlas names, shader names, and event-handler names:
+write each one the same way in both places. Only surrounding whitespace is
+trimmed from a name.
 
 ### Colors
 
@@ -206,11 +208,12 @@ into two families:
 | `set-text` | plain text | binds `name` to a literal string |
 | `set-color` | plain text, parsed as a `Color` | binds `name` to a literal color |
 | `set-event` | plain text | binds `name` to a literal handler name (looked up later via `LayoutReflector::dispatch_event`) |
-| `set-image` | `*atlas*` then optional `[u1, v1, u2, v2]` | binds `name` to a `UIImageDescriptor` for atlas `atlas` (a name a `load` directive or the app staged), sampling the given UV sub-rectangle (default `[0, 0, 1, 1]`) - see [Images](#images) |
+| `set-image` | `*source*` then optional `[u1, v1, u2, v2]` | **with** a UV rect: binds `name` to a `UIImageDescriptor` for atlas `source` (a `load` / staged name), sampling that sub-rectangle. **Without** a UV rect: binds `name` as an *alias* for image `source` (another `set-image`/`get-image` binding, or a `get_image` field), resolved at render time - same as `get-image`. See [Images](#images) |
 
 `set-image` is the one declaration whose value is itself written with
-emphasis (`*atlas*`), since it names an atlas rather than carrying a plain
-literal; the UV rect, if given, is ordinary trailing text.
+emphasis (`*source*`), since it names an atlas / another binding rather than
+carrying a plain literal; the UV rect, if given, is ordinary trailing text
+and is what distinguishes the literal form from the alias form.
 
 (There is no `get-list`/`set-list` - a `Vec<T>` field is referenced directly
 by name from `list`/`item`, not bound through `declarations` first.)
@@ -252,9 +255,9 @@ field's Rust type to the matching getter:
 A `Vec<T>` field's element type `T` derives `FieldAccess` instead (same
 type-to-getter mapping, minus the list case) so a `list`'s body can resolve
 each item's own fields. A `#[list_click_event(handler)]` attribute on the
-`Vec<T>` field makes `left-clicked *Clicked*` inside that `list` resolve to
-`handler`, with the current iteration index attached to the fired event's
-`EventContext::list_index`.
+`Vec<T>` field makes `left-clicked *clicked*` (the arg spelled exactly
+`clicked`) inside that `list` resolve to `handler`, with the current
+iteration index attached to the fired event's `EventContext::list_index`.
 
 Events and `fn *name*` custom elements are wired up by `#[telera_app]` on
 the app's own `impl` block, which marks methods `#[layout_event]` (`fn
@@ -324,10 +327,10 @@ functions; and other `` `set-numeric` `` bindings **declared textually earlier
 in the same or an enclosing scope**. It may **not** reference `get-*`
 bindings, application fields, `list`/`item` fields, or `use` parameters -
 those resolve at render time, and using one is an error. An identifier is
-matched case-insensitively, but **`-` inside an expression is always
-subtraction** - a declaration whose name has spaces or hyphens
-(`*content background width*`) must be referenced by its normalized form with
-underscores (`content_background_width`).
+matched **exactly** (like every other TML name), and **`-` inside an
+expression is always subtraction** - so only a `` `set-numeric` `` whose name
+is a plain `[A-Za-z_][A-Za-z0-9_]*` identifier can be referenced from an
+expression at all; a name with spaces or hyphens is unreachable here.
 
 **Scope.** Same frames as declarations: page body, a `list`'s leading
 `declarations`, and `set-numeric` `use` parameters each add a frame; forward
@@ -365,8 +368,13 @@ it's useful to name an element, though nothing in the current config surface
 can *reference* another element's id yet (see
 [Known incomplete paths](#known-incomplete-paths)). Inside a `list`/`item`,
 the `id-indexed` config keyword sets an id that folds in the current
-iteration index, so repeated rows don't collide. Everything after the
-optional `config` block is processed as child elements.
+iteration index, so repeated rows don't collide.
+
+The `config` block, if present, must be the **first** item of the body list;
+it is recognised by its `` `config` `` keyword, not by position, so an element
+that needs no config can start straight into its children (or a single
+`` `use` ``). Every body item that isn't that leading `config` block is a
+child element.
 
 There is also a bare `grow` element shorthand - `` - `grow` `` with no body
 at all - that opens and immediately closes an empty element configured with
@@ -517,8 +525,8 @@ its body once per item:
             - *title*
 ```
 
-The list name (`Documents` above) is **plain text**, matched (after
-normalization) against a `Vec<T>` field. An optional leading `declarations`
+The list name (`Documents` above) is **plain text**, matched exactly against
+a `Vec<T>` field's name. An optional leading `declarations`
 block scopes bindings to the list body (and can shadow outer ones); every
 other child is the per-item body, replayed once per item with that item's
 index attached, so `*field*` inside it resolves against the current item
@@ -569,12 +577,14 @@ the latter):
 
 The snippet name is plain text. Its body (if any) is a `declarations`-style
 list of `set-*`/`get-*` bindings - not wrapped in a `declarations` list item
-itself - that become the invocation's locals, letting one `### name`
-snippet be reused with different text/colors/etc per call site. A `## name`
-config snippet, invoked with `` `use` name `` from inside a `config` block,
-takes no such parameters - it's just replayed inline (flat `Config`
-commands only; it can't itself open a `hover`/`left-clicked`/... block from
-that position).
+itself - that become the invocation's locals, letting one snippet be reused
+with different text/colors/images/etc per call site. This works for **both**
+snippet kinds: a `### name` element snippet and a `## name` config snippet
+each see their `` `use` `` body's bindings while they replay, so
+`` `image` *icon* `` inside the snippet resolves a `` `set-image` *icon* ``
+passed at the call site. A `## name` config snippet is still replayed as
+flat `Config` commands only - it can't itself open a
+`hover`/`left-clicked`/... block from a `config`-block position.
 
 ### `fn`
 
@@ -644,7 +654,7 @@ member folds them into a single sizing rule.
 | `no-clip` | none | do not inherit clipping from the attached element (the default) |
 | `pointer-capture` | none | the floating element captures pointer events over its bounds |
 | `pointer-pass-through` | none | pointer events fall through the floating element to whatever is behind it |
-| `use` name | plain text | inline a `## name` reusable config snippet here |
+| `use` name | plain text, optional `set-*`/`get-*` body | inline a `## name` reusable config snippet here; body bindings apply as locals during the replay (see [`use`](#use)) |
 | `hover` / `unhovered`* / `hovered`* | none, or single (event name), with a nested config list | opens a block whose configs only apply while the condition holds; see [Events](#6-events) |
 | `focus` | same shape as `hover` | gates its block (and fires its event) while this (named) element is the focused one |
 | `focused`* / `unfocused`* | same shape as `hover` | focus-*edge* events - see [Known incomplete paths](#known-incomplete-paths) |
@@ -662,7 +672,7 @@ member folds them into a single sizing rule.
 | `wrap` | plain text: `words`/`lines`/`none` | text: wrap on whitespace (`words`), only on explicit newlines (`lines`), or never (`none`) |
 | shape-config keywords (`thickness`/`width`, `from`/`to`/`center`, `from-x`, `radius`, `start-angle`, ...) | single (number) or anchor word | geometry of a drawn shape - see [`circle` / `ring` / `line` / `arc` / `bezier`](#circle--ring--line--arc--bezier-drawn-shapes); ignored outside the shape they belong to |
 | camera keywords (`eye-x/-y/-z`, `target-x/-y/-z`, `up-x/-y/-z`, `fov`, `ortho-height`, `near`, `far`) | single (number) | position a `render-window`'s camera - see [`render-window`](#render-window); ignored elsewhere |
-| `shader` | single (name), emphasised or bare | attach a fragment effect (`drop-shadow`/`raised-edge`/`inner-glow`, or a custom shader) - see [Effects](#effects) |
+| `shader` | single (name), emphasised or bare | attach a fragment effect (`drop_shadow`/`raised_edge`/`inner_glow`, or a custom shader) - see [Effects](#effects) |
 | effect keywords (`shadow-blur`, `shadow-color`, `shadow-offset-x/-y`, `shadow-spread`, `bevel-width`, `bevel-light-angle`, `bevel-highlight`, `bevel-shade`, `glow-blur`, `glow-spread`, `glow-color`, `blur-radius`, `blur-tint`, `shader-param-1`..`shader-param-8`) | single (number or color) | tune the open `shader` effect; ignored with no `shader` |
 
 *Marked keywords parse into real `Element` commands but never actually
@@ -707,14 +717,30 @@ config at that atlas.
 - `` `set-image` *name* *atlas* [u1, v1, u2, v2] `` in a `declarations` block
   binds `name` to such a literal so several elements can share it (and a
   `list`/`use` scope can shadow it).
+- `` `set-image` *name* *source* `` with **no** UV rect is an *alias*: `name`
+  resolves to whatever image `source` resolves to - another `set-image` /
+  `get-image` binding in scope, or an app `get_image` field. Resolution
+  follows the chain (`icon` → `connect_plc` → descriptor). This is how you
+  forward a shared image into a `use`: the snippet's `` `image` *icon* ``
+  picks up a `` `set-image` *icon* *connect_plc* `` passed in the `use` body.
+  (`get-image` *name* source does the same thing; `set-image` just also
+  accepts the emphasised `*source*`.)
 
 ```markdown
 #### TML 1.0
 - `load` [portrait](assets/portrait.png)
+- `load` [icons](assets/icons.png)
+
+### badge
+- `element`
+  - `config`
+    - `fixed-square` 40
+    - `image` *icon*
 
 # root
 - `declarations`
   - `set-image` *left half* *portrait* [0, 0, 0.5, 1]
+  - `set-image` *play* *icons* [0, 0, 0.25, 1]
 - `element`
   - `config`
     - `image` *left half*
@@ -724,6 +750,8 @@ config at that atlas.
 - `element`
   - `config`
     - `image` *app_provided_field*
+- `use` badge
+  - `set-image` *icon* *play*        # alias: badge's `image *icon*` -> *play*
 ```
 
 ### Effects
@@ -733,7 +761,7 @@ element it sits on - any element with a background `color`, a border, an
 `image`, or a `circle`/`ring` shape (not `text`, not `line`/`arc`/`bezier`).
 
 Effects **stack**: repeat `` `shader` `` to add another; the tuning keywords
-that follow bind to the most recently opened one. `drop-shadow` and `blur` paint
+that follow bind to the most recently opened one. `drop_shadow` and `blur` paint
 *behind* the element's fill, the rest *over* it (written order kept within each
 group).
 
@@ -742,11 +770,11 @@ group).
   - `config`
     - `color` rgb(150,90,200)
     - `radius-all` 16
-    - `shader` *drop-shadow*
+    - `shader` *drop_shadow*
     - `shadow-blur` *blur_amount*
     - `shadow-offset-y` 6
     - `shadow-color` rgba(0,0,0,0.55)
-    - `shader` *raised-edge*
+    - `shader` *raised_edge*
     - `bevel-width` 10
 ```
 
@@ -755,9 +783,9 @@ bare); the tuning keywords that follow are each a literal or a `*binding*`:
 
 | `shader` | tuning keywords |
 |---|---|
-| `drop-shadow` (`shadow`) | `shadow-offset-x`, `shadow-offset-y`, `shadow-blur`, `shadow-spread`, `shadow-color` |
-| `raised-edge` (`bevel`) | `bevel-width`, `bevel-light-angle` (degrees), `bevel-highlight`, `bevel-shade` |
-| `inner-glow` (`glow`) | `glow-blur`, `glow-spread`, `glow-color` |
+| `drop_shadow` (`shadow`) | `shadow-offset-x`, `shadow-offset-y`, `shadow-blur`, `shadow-spread`, `shadow-color` |
+| `raised_edge` (`bevel`) | `bevel-width`, `bevel-light-angle` (degrees), `bevel-highlight`, `bevel-shade` |
+| `inner_glow` (`glow`) | `glow-blur`, `glow-spread`, `glow-color` |
 | `blur` | `blur-radius`, `blur-tint` - frosts the element by blurring the UI layer behind it (not the 3D scene); keep its content beside/below it, not inside |
 
 Distances are logical px.
@@ -804,12 +832,17 @@ The condition each keyword gates on:
 | Keyword | Fires/gates on |
 |---|---|
 | `hover` | the element is hovered this frame |
-| `left-pressed` | left mouse button pressed down this frame |
-| `left-down` | left mouse button currently held |
-| `left-released` | left mouse button released this frame |
+| `left-pressed` | hovered *and* left mouse button pressed down this frame |
+| `left-down` | hovered *and* left mouse button currently held |
+| `left-released` | hovered *and* left mouse button released this frame |
 | `left-clicked` | hovered *and* a left click completed this frame |
 | `left-dbl-clicked` | hovered *and* a double-click completed this frame |
 | `right-pressed`/`right-down`/`right-released`/`right-clicked` | same, right mouse button |
+
+Every mouse-button block is hover-gated: the block opens (and its event fires)
+only while the pointer is over this element. A press that starts on the element
+and a button still held after the pointer leaves both stop matching once
+`hovered` goes false.
 | `focus` | this (named) element is the focused element |
 | `key-event` | this (named) element is focused *and* the window has key events queued this frame |
 

@@ -36,7 +36,7 @@ mod ui_renderer;
 pub use ui_renderer::layout_runner::{
     Binder, Config, CustomElementSpec, DataSrc, Declaration, Element, EventContext, FieldAccess,
     FontLoad, ImageLoad, Layout, LayoutReflector, LayoutRunnerReflection, LayoutResources,
-    ParsedLayout, ShaderLoad, ShaderSpec, normalize_field_symbol, process_layout,
+    ParsedLayout, ShaderLoad, ShaderSpec, process_layout,
 };
 pub use ui_renderer::telera_layout::{Color, ElementConfiguration, TextConfig};
 pub use ui_renderer::ui_renderer::{
@@ -109,10 +109,18 @@ pub trait App: LayoutRunnerReflection + LayoutReflector + Sized {
 
     fn onload(&mut self, api: &mut API) {}
 
-    /// All application update logic
+    /// All application update logic.
     ///
-    /// This will be called at the beginning of each render loop
-    fn update(&mut self, api: &mut API) {}
+    /// Called twice per frame cycle:
+    /// - once with `viewport == None`, from the global loop-wake scheduler
+    ///   (`about_to_wait`), before any window is redrawn. The per-window input
+    ///   accessors (`left_mouse_down`, `mouse_position`, ...) have no window to
+    ///   read here and return their neutral defaults.
+    /// - once with `viewport == Some(name)` for each window that is about to be
+    ///   redrawn, right before its `layout` pass. The input accessors read that
+    ///   window's state, so mouse/keyboard input belongs in this call - `match`
+    ///   or `if let` on `viewport` to act per window.
+    fn update(&mut self, viewport: Option<&str>, api: &mut API) {}
 
     fn layout(&mut self, page: &str, api: &mut API) {}
 }
@@ -400,6 +408,7 @@ impl API {
         // Everything from here to `end_frame` builds and draws *this* window;
         // the input accessors read the viewport named here.
         self.active_window = Some(window_id);
+        let viewport_name = self.viewport_lookup.get_by_right(&window_id).cloned();
 
         let page = self
             .viewports
@@ -422,6 +431,13 @@ impl API {
             let mouse_position = viewport.mouse_position;
             let left_mouse_down = viewport.left_mouse_down;
             let scroll_delta = viewport.scroll_delta;
+
+            // Per-window update pass: `active_window` is set, so the input
+            // accessors now read this window. Runs before the layout pass and
+            // before `ui_renderer` is taken below.
+            if let Some(name) = &viewport_name {
+                user_application.update(Some(name), self);
+            }
 
             let mut ui_renderer = self.ui_renderer.take().unwrap();
             ui_renderer.dpi_scale = dpi_scale;
@@ -1006,7 +1022,7 @@ impl API {
         .validate(&module)
         .map_err(|e| e.emit_to_string(&full))?;
 
-        let sym = symbol_table::GlobalSymbol::new(normalize_field_symbol(name));
+        let sym = symbol_table::GlobalSymbol::new(name.trim());
         if let Some(ui_renderer) = &mut self.ui_renderer {
             ui_renderer.compile_effect_shader(&self.device, sym, &full);
         } else {
@@ -1142,7 +1158,7 @@ where
 
         // App logic + window staging: moved off `window_event` so they run once
         // per loop wake (i.e. per frame while animating), not once per OS event.
-        self.user_application.update(api);
+        self.user_application.update(None, api);
         api.create_staged_viewports(event_loop);
 
         let now = Instant::now();
