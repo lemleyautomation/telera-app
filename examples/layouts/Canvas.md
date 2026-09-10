@@ -82,6 +82,7 @@
                 - `padding-all` 16
                 - `color` rgb(46,110,140)
                 - `radius-all` 12
+                - `left-clicked` bump
             - `text`
                 - `config`
                     - `font-size` 17
@@ -93,7 +94,7 @@
                     - `font-size` 14
                     - `line-height` 18
                     - `font-color` rgb(220,235,240)
-                - floating, clipped to the frame
+                - *clicks_label*
 
         - `element` card-b
             - `config`
@@ -109,6 +110,7 @@
                 - `padding-all` 16
                 - `color` rgb(150,90,60)
                 - `radius-all` 12
+                - `left-clicked` bump
             - `text`
                 - `config`
                     - `font-size` 17
@@ -136,6 +138,7 @@
                 - `padding-all` 16
                 - `color` rgb(96,80,150)
                 - `radius-all` 12
+                - `left-clicked` bump
             - `text`
                 - `config`
                     - `font-size` 17

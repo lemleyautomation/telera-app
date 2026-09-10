@@ -25,7 +25,7 @@ pub use graphics::model::{
     BaseMesh, Euler, Model, Quaternion, Transform, TransformMatrix, load_model_gltf,
 };
 pub use graphics::camera::Camera;
-pub use ui_renderer::canvas::Canvas;
+pub use ui::canvas::Canvas;
 use graphics::{
     scene_renderer::SceneRenderer,
     textures::{DepthTexture, MultiSampleTexture},
@@ -33,17 +33,17 @@ use graphics::{
 };
 const MULTI_SAMPLE_COUNT: u32 = 1;
 
-mod ui_renderer;
-pub use ui_renderer::layout_runner::{
+mod ui;
+pub use ui::layout_runner::{
     Binder, Config, CustomElementSpec, DataSrc, Declaration, Element, EventContext, FieldAccess,
     FontLoad, ImageLoad, Layout, LayoutReflector, LayoutRunnerReflection, LayoutResources,
     ParsedLayout, ShaderLoad, ShaderSpec, process_layout,
 };
-pub use ui_renderer::telera_layout::{Color, ElementConfiguration, TextConfig};
-pub use ui_renderer::ui_renderer::{
+pub use ui::telera_layout::{Color, ElementConfiguration, TextConfig};
+pub use ui::ui_renderer::{
     CustomElement, CustomLayoutSettings, EffectKind, ResolvedShader, UIImageDescriptor,
 };
-use ui_renderer::{
+use ui::{
     telera_layout::LayoutEngine, ui_renderer::commands_fingerprint, ui_renderer::effect_source,
     ui_renderer::UIRenderer,
 };
@@ -426,7 +426,7 @@ impl API {
         // `render-window` rects for the scene renderer. Collected from this
         // frame's commands (below) even when the cached UI texture is reused -
         // the scene redraws every frame.
-        let mut render_windows: Vec<ui_renderer::ui_renderer::RenderWindow> = Vec::new();
+        let mut render_windows: Vec<ui::ui_renderer::RenderWindow> = Vec::new();
         let ui_renderer = if let Some(viewport) = self.viewports.get_mut(&window_id)
             && let Some(page) = page
         {
@@ -486,7 +486,7 @@ impl API {
             // Canvas pan/zoom control and the world-size auto fallback want this
             // frame's on-screen rect for every `canvas` element the walk touched.
             self.refresh_canvas_rects();
-            render_windows = ui_renderer::ui_renderer::collect_render_windows(
+            render_windows = ui::ui_renderer::collect_render_windows(
                 &render_commands,
                 ui_renderer.dpi_scale,
             );

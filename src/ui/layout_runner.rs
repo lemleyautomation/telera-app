@@ -67,6 +67,17 @@ pub struct EventContext {
     pub list_index: Option<usize>,
 }
 
+/// A deterministic id for an un-named `` `floating` `` element that uses an
+/// event gate, stable frame to frame for a static tree. The `list`/`item`
+/// iteration key (if any) is folded in so the same synthetic slot in two list
+/// rows doesn't collide. See the `hovered!` macro in [`set_layout`].
+fn synthetic_gate_id_name(list_data: &Option<(GlobalSymbol, usize)>, counter: u32) -> String {
+    match list_data {
+        Some((list, index)) => format!("__telera_gate::{}#{index}::{counter}", list.as_str()),
+        None => format!("__telera_gate::{counter}"),
+    }
+}
+
 fn build_event_context(list_data: &Option<(GlobalSymbol, usize)>) -> Option<EventContext> {
     list_data.as_ref().map(|(_, index)| EventContext {
         text: None,
@@ -3475,6 +3486,22 @@ fn process_configs(
         configs.push(Layout::Config(Config::Shaders(shader_specs)));
     }
 
+    // Hoist `` `floating` `` ahead of everything else in the block. `Config::Floating`
+    // is just a flag (`config.floating()`), order-independent among the other
+    // configs - but `set_layout` needs to know the element is floating *before*
+    // it evaluates any event gate (`hover` / `left-clicked` / ...) in the same
+    // block, so the gate hit-tests by id instead of calling `Clay_Hovered()` on
+    // the unconfigured element (see the `hovered!` macro). Without this, writing
+    // `left-clicked` above `floating` would reintroduce the DUPLICATE_ID storm.
+    if let Some(pos) = configs
+        .iter()
+        .position(|c| matches!(c, Layout::Config(Config::Floating)))
+        && pos != 0
+    {
+        let floating = configs.remove(pos);
+        configs.insert(0, floating);
+    }
+
     configs
 }
 
@@ -3717,6 +3744,16 @@ where
     // *name* `` -> `Config::Id`), or `None` for an unnamed element. Reset at each
     // `ConfigOpened`, read at `ConfigClosed` and by the `focus` gate.
     let mut current_element_name: Option<GlobalSymbol> = None;
+    // Does the currently-open `config` block carry `` `floating` ``? Set when
+    // `Config::Floating` is seen, reset at `ConfigOpened`. An event gate on a
+    // floating element must not fall through to `Clay_Hovered()` (see the
+    // `hovered!` macro below).
+    let mut current_element_floating = false;
+    // An id synthesised for an *un-named* floating element that hits an event
+    // gate, so the gate has something to hit-test by and `ConfigClosed` can
+    // attach the same id. Reset at `ConfigOpened`.
+    let mut gate_synthetic_id: Option<GlobalSymbol> = None;
+    let mut gate_synth_counter: u32 = 0;
     // Was this a left/right mouse-down frame? Then focus is up for grabs.
     let focusing = api.left_mouse_pressed() || api.right_mouse_pressed();
 
@@ -3769,6 +3806,41 @@ where
                 skip = Some(nesting_level);
             }
             nesting_level += 1;
+        }};
+    }
+
+    // Is the pointer over the element whose `config` block is currently open?
+    //
+    // This runs from an event gate (`hover`, `left-clicked`, ...) *inside* the
+    // config block, i.e. before `configure_element`. `api.l.hovered()` there
+    // makes clay generate + register an anonymous id for the still-unconfigured
+    // element (`Clay_Hovered` -> `Clay__GenerateIdForAnonymousElement`), and for
+    // consecutive **floating** siblings those ids collide - clay doesn't advance
+    // the parent's child count for a floating child - which spams
+    // `CLAY_ERROR_TYPE_DUPLICATE_ID` every frame. So hit-test by the element's
+    // real id instead: it hashes identically to what `configure_element` will
+    // attach, and reading last frame's `pointerOverIds` has no side effect. An
+    // un-named floating element gets a synthesised, position-stable id (also
+    // attached at `ConfigClosed`) so it works too.
+    macro_rules! hovered {
+        () => {{
+            let id = match current_element_name.or(gate_synthetic_id) {
+                Some(sym) => Some(sym),
+                None if current_element_floating => {
+                    let sym = GlobalSymbol::new(synthetic_gate_id_name(
+                        &list_data,
+                        gate_synth_counter,
+                    ));
+                    gate_synth_counter += 1;
+                    gate_synthetic_id = Some(sym);
+                    Some(sym)
+                }
+                None => None,
+            };
+            match id {
+                Some(sym) => api.l.pointer_over(api.l.get_element_id(sym.as_str())),
+                None => api.l.hovered(),
+            }
         }};
     }
 
@@ -3831,7 +3903,7 @@ where
                         nesting_level += 1;
                     }
 
-                    Element::HoverOpened { event } => event_gate_open!(api.l.hovered(), event),
+                    Element::HoverOpened { event } => event_gate_open!(hovered!(), event),
                     Element::HoverClosed => event_gate_close!(),
                     Element::HoveredOpened { .. } => event_gate_unsupported!(), // TODO: needs hover-edge tracking in `API`
                     Element::HoveredClosed => event_gate_close!(),
@@ -3854,23 +3926,23 @@ where
                     Element::UnFocusedClosed => event_gate_close!(),
 
                     Element::LeftPressedOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.left_mouse_pressed(), event)
+                        event_gate_open!(hovered!() && api.left_mouse_pressed(), event)
                     }
                     Element::LeftPressedClosed => event_gate_close!(),
                     Element::LeftDownOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.left_mouse_down(), event)
+                        event_gate_open!(hovered!() && api.left_mouse_down(), event)
                     }
                     Element::LeftDownClosed => event_gate_close!(),
                     Element::LeftReleasedOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.left_mouse_released(), event)
+                        event_gate_open!(hovered!() && api.left_mouse_released(), event)
                     }
                     Element::LeftReleasedClosed => event_gate_close!(),
                     Element::LeftClickedOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.left_mouse_clicked(), event)
+                        event_gate_open!(hovered!() && api.left_mouse_clicked(), event)
                     }
                     Element::LeftClickedClosed => event_gate_close!(),
                     Element::LeftDoubleClickedOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.left_mouse_double_clicked(), event)
+                        event_gate_open!(hovered!() && api.left_mouse_double_clicked(), event)
                     }
                     Element::LeftDoubleClickedClosed => event_gate_close!(),
                     Element::LeftTripleClickedOpened { .. } => event_gate_unsupported!(), // TODO: `API` doesn't track triple-clicks yet
@@ -3888,19 +3960,19 @@ where
                     Element::KeyEventClosed => event_gate_close!(),
 
                     Element::RightPressedOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.right_mouse_pressed(), event)
+                        event_gate_open!(hovered!() && api.right_mouse_pressed(), event)
                     }
                     Element::RightPressedClosed => event_gate_close!(),
                     Element::RightDownOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.right_mouse_down(), event)
+                        event_gate_open!(hovered!() && api.right_mouse_down(), event)
                     }
                     Element::RightDownClosed => event_gate_close!(),
                     Element::RightReleasedOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.right_mouse_released(), event)
+                        event_gate_open!(hovered!() && api.right_mouse_released(), event)
                     }
                     Element::RightReleasedClosed => event_gate_close!(),
                     Element::RightClickedOpened { event } => {
-                        event_gate_open!(api.l.hovered() && api.right_mouse_clicked(), event)
+                        event_gate_open!(hovered!() && api.right_mouse_clicked(), event)
                     }
                     Element::RightClickedClosed => event_gate_close!(),
 
@@ -4007,11 +4079,21 @@ where
                         if skip.is_none() {
                             *config = ElementConfiguration::default();
                             current_element_name = None;
+                            current_element_floating = false;
+                            gate_synthetic_id = None;
                         }
                     }
                     Element::ConfigClosed => {
                         nesting_level -= 1;
                         if skip.is_none() {
+                            // An un-named floating element whose event gate had to
+                            // synthesise an id: attach that same id here so the
+                            // hit-test in `hovered!` lines up next frame.
+                            if current_element_name.is_none()
+                                && let Some(sym) = gate_synthetic_id
+                            {
+                                config.id(sym.as_str());
+                            }
                             api.l.configure_element(config);
                             // Rule: only a *named* element can take focus, and
                             // only on the frame a mouse button went down while it
@@ -4119,6 +4201,9 @@ where
                     // the `focus` gate can key focus off the name.
                     if let Config::Id(DataSrc::Static(name)) = &*config_command {
                         current_element_name = Some(GlobalSymbol::new(name.as_str()));
+                    }
+                    if matches!(&*config_command, Config::Floating) {
+                        current_element_floating = true;
                     }
                     execute_config(
                         config_command,

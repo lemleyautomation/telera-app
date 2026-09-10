@@ -4,7 +4,7 @@ For the Rust side - the `App` trait, `run`, the macros, and the `API` methods -
 see [`telera_api.md`](telera_api.md).
 
 This document describes TML as implemented today by
-`src/ui_renderer/layout_runner.rs` (the parser: `process_layout` /
+`src/ui/layout_runner.rs` (the parser: `process_layout` /
 `process_element` / `process_configs` / `process_variable`, and the runner:
 `Binder::set_page` / `set_layout` / `execute_config` / `ResolveValue`). It is
 a reference for the language surface that actually parses and runs, not an

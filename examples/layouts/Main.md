@@ -88,7 +88,7 @@
                     - `line-height` 20
                     - `color` white
                 - File
-            - `if` file-menu-opened
+            - `if` file_menu_opened
                 - `element`
                     - `config`
                         - `padding-right`8
@@ -152,7 +152,7 @@
                   - `font-size` 24
                   - `color` black
                 - *search_bar*
-            - `list` Documents
+            - `list` documents
                 - `if-index` selected_document
                     - `element`
                         - `config`
@@ -196,7 +196,7 @@
                 - `padding-all` 16
                 - `use` layout expand
                 - `radius-all` 8
-            - `item` Documents selected_document
+            - `item` documents selected_document
                 - `text`
                     - `config`
                         - `font-size` 24

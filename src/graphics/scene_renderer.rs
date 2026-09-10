@@ -10,7 +10,7 @@ use crate::{
         model::Vertex,
         textures::Texture,
     },
-    ui_renderer::ui_renderer::RenderWindow,
+    ui::ui_renderer::RenderWindow,
 };
 
 /// The camera name a `render-window` uses when it has no element name, and the
@@ -292,7 +292,7 @@ impl ScenePipeline {
         bindgroup_layouts: &[Option<&wgpu::BindGroupLayout>],
         multi_sample_count: u32,
     ) -> wgpu::RenderPipeline {
-        let source_code = include_str!("scene_shader.wgsl");
+        let source_code = include_str!("../../shaders/scene_shader.wgsl");
 
         let shader_module_desc = wgpu::ShaderModuleDescriptor {
             label: Some("Scene Shader Module"),

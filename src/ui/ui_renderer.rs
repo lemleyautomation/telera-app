@@ -306,6 +306,70 @@ impl TeleraFallback {
     }
 }
 
+/// First family in `candidates` that has a face loaded in `db`, matched
+/// case-insensitively.
+fn pick_installed_family<'a>(db: &fontdb::Database, candidates: &[&'a str]) -> Option<&'a str> {
+    candidates.iter().copied().find(|name| {
+        db.faces().any(|face| {
+            face.families
+                .iter()
+                .any(|(family, _)| family.eq_ignore_ascii_case(name))
+        })
+    })
+}
+
+/// Points fontdb's generic families (`sans-serif` / `serif` / `monospace`, which
+/// is what an unset `font-id` resolves to) at a face that is actually installed.
+///
+/// cosmic-text's own defaults are `Open Sans` / `DejaVu Serif` / `Noto Sans Mono`
+/// - none of which ship with Windows. When the sans-serif name does not resolve,
+/// shaping falls straight through to the fallback chain (which, with a loaded
+/// emoji font, renders body text as `.notdef` boxes), so pick the first name
+/// here that the system font DB knows.
+fn configure_generic_families(db: &mut fontdb::Database) {
+    if let Some(name) = pick_installed_family(
+        db,
+        &[
+            "Open Sans",
+            "Segoe UI",
+            "Helvetica Neue",
+            "Helvetica",
+            "Arial",
+            "Roboto",
+            "DejaVu Sans",
+            "Liberation Sans",
+            "Noto Sans",
+        ],
+    ) {
+        db.set_sans_serif_family(name);
+    }
+    if let Some(name) = pick_installed_family(
+        db,
+        &[
+            "DejaVu Serif",
+            "Georgia",
+            "Times New Roman",
+            "Liberation Serif",
+            "Noto Serif",
+        ],
+    ) {
+        db.set_serif_family(name);
+    }
+    if let Some(name) = pick_installed_family(
+        db,
+        &[
+            "Noto Sans Mono",
+            "Consolas",
+            "DejaVu Sans Mono",
+            "Menlo",
+            "Liberation Mono",
+            "Courier New",
+        ],
+    ) {
+        db.set_monospace_family(name);
+    }
+}
+
 impl Fallback for TeleraFallback {
     fn common_fallback(&self) -> &[&'static str] {
         &self.common
@@ -1003,10 +1067,9 @@ impl UIRenderer {
 
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
-        // Match `FontSystem::new`'s generic-family defaults.
-        db.set_monospace_family("Noto Sans Mono");
-        db.set_sans_serif_family("Open Sans");
-        db.set_serif_family("DejaVu Serif");
+        // Point the generic families at faces that are actually installed (an
+        // unset `font-id` resolves through `sans-serif`).
+        configure_generic_families(&mut db);
 
         self.font_families.clear();
         let mut preferred: Vec<&'static str> = Vec::new();
@@ -1151,6 +1214,11 @@ impl UIRenderer {
         });
 
         let mut font_system = FontSystem::new();
+        // `FontSystem::new` hard-codes generic families that don't exist on every
+        // platform (notably `Open Sans` on Windows); repoint them at installed
+        // faces so text with no `font-id` still shapes. `db_mut` drops the
+        // font-match cache, which is empty here anyway.
+        configure_generic_families(font_system.db_mut());
         let swash_cache = SwashCache::new();
         let measurement_buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
 
@@ -1297,7 +1365,7 @@ impl UIRenderer {
             config.format,
             multi_sample_count,
             &self.size_bind_group_layout,
-            &effect_source(include_str!("ui_effects.wgsl")),
+            &effect_source(include_str!("../../shaders/ui_effects.wgsl")),
             "UI Effect Pipeline",
         ));
         self.drain_staged_shaders(device);
@@ -2790,7 +2858,7 @@ impl UIPipeline {
         size_bind_group_layout: &wgpu::BindGroupLayout,
         multisample: wgpu::MultisampleState,
     ) -> wgpu::RenderPipeline {
-        let source_code = include_str!("ui_shader.wgsl");
+        let source_code = include_str!("../../shaders/ui_shader.wgsl");
 
         let shader_module_desc = wgpu::ShaderModuleDescriptor {
             label: Some("UI Shader Module"),
@@ -2891,7 +2959,7 @@ fn build_composite_pipeline(
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("UI Composite Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("ui_composite.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/ui_composite.wgsl").into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("UI Composite Pipeline Layout"),
@@ -2931,7 +2999,7 @@ fn build_composite_pipeline(
 /// The shared contract prepended to every effect shader body (built-in and
 /// custom), so a `.wgsl` file only has to provide `fs_main`. See
 /// `effect_prelude.wgsl`.
-pub const EFFECT_PRELUDE: &str = include_str!("effect_prelude.wgsl");
+pub const EFFECT_PRELUDE: &str = include_str!("../../shaders/effect_prelude.wgsl");
 
 /// Concatenates [`EFFECT_PRELUDE`] in front of an effect shader body.
 pub fn effect_source(body: &str) -> String {
@@ -3045,7 +3113,7 @@ fn build_blur_pipeline(
 ) -> wgpu::RenderPipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("UI Blur Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("blur.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/blur.wgsl").into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("UI Blur Pipeline Layout"),
@@ -3495,7 +3563,7 @@ mod tests {
     #[test]
     fn built_in_effect_wgsl_validates() {
         for (name, body) in [
-            ("ui_effects.wgsl", include_str!("ui_effects.wgsl")),
+            ("ui_effects.wgsl", include_str!("../../shaders/ui_effects.wgsl")),
         ] {
             let full = effect_source(body);
             let module = wgpu::naga::front::wgsl::parse_str(&full)
@@ -3512,7 +3580,7 @@ mod tests {
     /// The standalone backdrop-blur shader (`blur.wgsl`) parses and validates.
     #[test]
     fn blur_wgsl_validates() {
-        let src = include_str!("blur.wgsl");
+        let src = include_str!("../../shaders/blur.wgsl");
         let module = wgpu::naga::front::wgsl::parse_str(src)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(src)));
         wgpu::naga::valid::Validator::new(

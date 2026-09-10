@@ -13,10 +13,18 @@ use telera_app::*;
 struct CanvasApp {
     /// The status line under the canvas, shown as `*hint*`.
     hint: String,
+    /// Bumped by clicking any card - proves hit-testing follows the pan/zoom.
+    card_clicks: u32,
+    clicks_label: String,
 }
 
 #[telera_app]
-impl CanvasApp {}
+impl CanvasApp {
+    #[layout_event]
+    fn bump(&mut self, _ctx: Option<EventContext>, _api: &mut API) {
+        self.card_clicks += 1;
+    }
+}
 
 impl App for CanvasApp {
     fn initialize(&mut self) -> Startup {
@@ -40,6 +48,8 @@ impl App for CanvasApp {
 
     fn update(&mut self, viewport: Option<&str>, api: &mut API) {
         // The second `update` of each frame is the one carrying window input.
+        self.clicks_label = format!("clicked {} times", self.card_clicks);
+
         if viewport.is_none() {
             return;
         }
