@@ -1314,8 +1314,25 @@ impl API {
     /// After a layout pass, refresh every known canvas's `dpi` + `screen_rect`
     /// (physical px) from the finished Clay tree so cursor-anchored zoom and the
     /// world-size auto fallback have this frame's geometry.
+    ///
+    /// Width/height are clamped to the window's own physical size. Without
+    /// this, a canvas with no explicit `world-width`/`world-height` can enter
+    /// a runaway feedback loop: `canvas_world_or_default` falls back to this
+    /// very `screen_rect`, and once `zoom` pushes the world wrapper (a
+    /// fixed-size child) past the outer `` `canvas` `` container's naturally
+    /// available `grow` space, Clay expands that "grow" container to fit it
+    /// instead of clipping it at layout time (clipping only affects
+    /// rendering, not the size computation) - so the *next* frame's fallback
+    /// reads back an already-inflated size, multiplies it by `zoom` again,
+    /// and so on. A few dozen frames of that (e.g. one redraw per mouse-move
+    /// while dragging) compounds a modest zoom into billions of px, wrecking
+    /// layout for the entire window, not just the canvas. A `` `canvas` ``
+    /// element can never legitimately be bigger than its own window, so
+    /// clamping here is a correct bound in the non-buggy case too (and still
+    /// tracks window resizes normally, unlike freezing the value outright).
     fn refresh_canvas_rects(&mut self) {
         let dpi = self.dpi_scale();
+        let window_size = self.window_size();
         let names: Vec<symbol_table::GlobalSymbol> = self.canvases.keys().copied().collect();
         for name in names {
             let id = self.l.get_element_id(name.as_str());
@@ -1323,8 +1340,12 @@ impl API {
             if let Some(canvas) = self.canvases.get_mut(&name) {
                 canvas.dpi = dpi;
                 if let Some(bb) = bb {
-                    canvas.screen_rect =
-                        (bb.x * dpi, bb.y * dpi, bb.width * dpi, bb.height * dpi);
+                    canvas.screen_rect = (
+                        bb.x * dpi,
+                        bb.y * dpi,
+                        (bb.width * dpi).min(window_size.0.max(0.0)),
+                        (bb.height * dpi).min(window_size.1.max(0.0)),
+                    );
                 }
             }
         }

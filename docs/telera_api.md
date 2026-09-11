@@ -127,6 +127,7 @@ pub struct Startup {
     pub window_name: String,                  // the window title AND its lookup key for `set_viewport_*`
     pub page: Option<String>,                 // which page to show; None => same as window_name
     pub watch_path: RunType,
+    pub agent_access_port: Option<u16>,       // Some(port) => remote-control HTTP server; see §4.11
 }
 ```
 
@@ -319,7 +320,9 @@ input. Away from any window they return a neutral default.
 | `middle_mouse_pressed() / _down() / _released() / _clicked() -> bool` | same for the middle button | |
 | `key_events() -> &[KeyEvent]` | winit key events since the last redraw | read them the frame they arrive |
 | `event_string() -> &str` | accumulated text this frame | |
+| `synthetic_key_events() -> &[SyntheticKeyEvent]` | key events fabricated by the agent access port (§4.11) | separate from `key_events` - see why there |
 | `focus() -> Option<GlobalSymbol>` | the interned id of the focused element, or `None` | only named elements are focusable |
+| `agent_port_active() -> bool` | whether `Startup::agent_access_port` was set | see §4.11 |
 
 ```rust
 fn update(&mut self, api: &mut API) {
@@ -641,6 +644,90 @@ fn badge(&mut self, api: &mut API) {
 }
 ```
 
+### 4.11 Agent access port
+
+Setting `Startup::agent_access_port` to `Some(port)` spawns a background HTTP
+server on `127.0.0.1:port` that lets an external process - a script, a test
+harness, an LLM coding agent - drive the app directly: inject synthetic mouse
+and keyboard input (including multi-step "combos"), pull a screenshot, or
+dump the current frame's layout/render commands to a file. `None` (the
+default) opens no socket and adds no overhead - the feature is entirely
+opt-in.
+
+```rust
+fn initialize(&mut self) -> Startup {
+    Startup {
+        // ...
+        agent_access_port: Some(4545),
+    }
+}
+```
+
+**While the port is active, every window force-draws a ~3px border** so it's
+never ambiguous, on screen, that the app is remotely controllable:
+
+![A window with the agent access port active - note the orange border around every edge](images/agent-port-border.png)
+
+The border is drawn last in that frame's render commands (so it always paints
+over everything else, regardless of any element's own `z-index`) and is not
+configurable - a fixed, unmissable color by design.
+
+Plain JSON over hand-rolled HTTP/1.1 (no keep-alive, no chunked encoding) -
+`curl` is enough to drive it. Every response is `{"ok": bool, "path"?:
+string, "message"?: string}`; a screenshot/dump's `path` is the file it wrote
+(request one explicitly or a timestamped default under the OS temp dir is
+used). Every request except `GET /health` accepts an optional `"window"`
+field (defaults to the bootstrap window's name).
+
+| endpoint | body | effect |
+|---|---|---|
+| `GET /health` | - | liveness check, `{"ok":true}` |
+| `POST /input` | `{"window"?, "events": [...]}` | apply a sequence of synthetic input events, in order, then request a redraw |
+| `POST /screenshot` | `{"window"?, "path"?}` | wait for the next frame, PNG-encode the swapchain, write it to `path` |
+| `POST /dump` | `{"window"?, "kind": "layout"\|"render"\|"both", "path"?}` | `Debug`-format the requested command list(s) to a text file |
+
+`POST /input`'s `events` array is a tagged union - `mouse_move {x, y}`
+(physical px, absolute), `mouse_down`/`mouse_up`/`mouse_click {button}`
+(`"left"|"right"|"middle"`), `scroll {dx, dy}`, `key_down`/`key_up {key}`
+(a name like `"KeyA"`, `"Enter"`, `"ControlLeft"` - see `key_from_name` in
+`src/agent_port.rs` for the full table), and `type_text {text}` (appended
+straight to `event_string()`). Events apply in order within one request, so a
+"combo" - hold a modifier, click, release it - is one request, not several:
+
+```bash
+curl -X POST http://127.0.0.1:4545/input -d '{"events":[
+  {"type":"mouse_move","x":700.0,"y":240.0},
+  {"type":"key_down","key":"ControlLeft"},
+  {"type":"mouse_click","button":"left"},
+  {"type":"key_up","key":"ControlLeft"}
+]}'
+
+curl -X POST http://127.0.0.1:4545/screenshot -d '{"path":"/tmp/shot.png"}'
+curl -X POST http://127.0.0.1:4545/dump -d '{"kind":"both","path":"/tmp/dump.txt"}'
+```
+
+A few things worth knowing before you rely on this:
+
+- **`key_down`/`key_up` land on `synthetic_key_events()`, not `key_events()`.**
+  A real `winit::event::KeyEvent` can't be constructed outside winit (it has
+  a `platform_specific` field private to winit itself), so a fabricated key
+  press is a different, framework-owned type
+  (`SyntheticKeyEvent { physical_key, logical_key, location, state, repeat }`,
+  built from winit's public `PhysicalKey`/`Key`/`KeyLocation`/`ElementState`).
+  Code that only reads real keyboard input via `key_events()` won't see
+  injected key presses unless it also checks `synthetic_key_events()`.
+- **`POST /screenshot`/`POST /dump` (with `kind: "render"` or `"both"`) wait
+  for an actual frame** - screenshot pixels and render commands are
+  transient, only existing mid-redraw - so they can take a little longer
+  than `/input`, and time out (`504`) after 5s if the target window never
+  redraws (e.g. it's minimized). `kind: "layout"` alone answers immediately,
+  since a page's authored command list persists across frames.
+- **The connection is one request per socket** - no keep-alive. Each request
+  spawns its own short-lived thread, so a slow/hung client only blocks
+  itself, never other requests.
+
+See `src/agent_port.rs` for the full wire format and implementation.
+
 ---
 
 ## 5. Building blocks
@@ -724,18 +811,19 @@ pub struct EventContext {
 
 | from | items |
 |---|---|
-| `winit` | `Window`, `WindowAttributes`, `WindowId`, `LogicalSize`, `KeyEvent`, `ElementState`, `Key`, `NamedKey`, `KeyCode`, `PhysicalKey`, `keyboard` |
+| `winit` | `Window`, `WindowAttributes`, `WindowId`, `LogicalSize`, `KeyEvent`, `ElementState`, `Key`, `NamedKey`, `KeyCode`, `KeyLocation`, `PhysicalKey`, `keyboard` |
 | `image` | `image` (the crate), `DynamicImage`, `load_from_memory` |
 | `cgmath` | `cgmath` (the crate) - for `Camera` / `Transform` vector math |
-| framework | `Color`, `ElementConfiguration`, `TextConfig`, `Camera`, `Canvas`, `Transform`, `Quaternion`, `Euler`, `Model`, `BaseMesh`, `CustomElement`, `UIImageDescriptor`, `EventContext`, `symbol_table`, `rkyv` |
+| framework | `Color`, `ElementConfiguration`, `TextConfig`, `Camera`, `Canvas`, `Transform`, `Quaternion`, `Euler`, `Model`, `BaseMesh`, `CustomElement`, `UIImageDescriptor`, `EventContext`, `SyntheticKeyEvent`, `symbol_table`, `rkyv` |
 
 ---
 
 ## 7. See also
 
 - [`tml-spec.md`](tml-spec.md) — the markdown layout language in full.
-- `examples/` — `basic.rs` (imperative UI), `layout.rs` (markdown + events +
-  list), `images.rs` (all three image paths), `scene.rs` (3D + cameras +
+- `examples/` — `basic.rs` (imperative UI; also wires `agent_access_port` on
+  for manual testing, see §4.11), `layout.rs` (markdown + events + list),
+  `images.rs` (all three image paths), `scene.rs` (3D + cameras +
   `render-window`), `shapes.rs` (drawn shapes), `custom_element.rs`
   (`#[layout_element]`), `canvas.rs` (a pannable / zoomable `canvas`),
   `stress.rs` (a large markdown dashboard).
