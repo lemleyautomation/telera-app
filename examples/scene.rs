@@ -6,14 +6,14 @@ use telera_app::*;
 /// - `orbit` is driven from `update()` with the `Camera` convenience methods
 ///   (`orbit` / `zoom`) off `api.camera("orbit")`;
 /// - `front` is an orthographic view positioned entirely by `render-window`
-///   config keywords in `scene.md` (`ortho-height`, `eye-z *front_z*`).
+///   config keywords in `scene.tmd` (`ortho-height`, `eye-z *front_z*`).
 #[derive(LayoutRunnerReflection, Default)]
 struct MyApp {
     dt: Option<Instant>,
     dt_samples: [u16; 20],
     dt_samples_index: u8,
     fps: String,
-    /// Bound into `scene.md` as the `front` render-window's `eye-z`.
+    /// Bound into `scene.tmd` as the `front` render-window's `eye-z`.
     front_z: f32,
     start: Option<Instant>,
     prev_t: f32,
@@ -30,6 +30,7 @@ impl App for MyApp {
             window_name: "scene".to_string(),
             page: None,
             watch_path: RunType::Watch("examples/layouts".to_string()),
+            agent_access_port: None,
         }
     }
 

@@ -1,5 +1,5 @@
 //! Layout stress test — a fake trading terminal ("NOCTURNE") built entirely
-//! from the markdown layout system (`examples/layouts/Dashboard.md`), tuned to
+//! from the markdown layout system (`examples/layouts/Dashboard.tmd`), tuned to
 //! sit just under clay's default 8192-element ceiling.
 //!
 //! The whole dataset (~1000 candles, ~90 watchlist rows, a 68-level order book,
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use telera_app::*;
 
 // --- element-count knobs -----------------------------------------------------
-// `element_estimate()` mirrors Dashboard.md's structure. Going over clay's 8192
+// `element_estimate()` mirrors Dashboard.tmd's structure. Going over clay's 8192
 // default doesn't print anything - the whole layout is replaced by a red
 // "Layout elements exceeded" message - so the count here is set to land at
 // ~8100 (≈ 99% of the cap) and left there.
@@ -342,6 +342,7 @@ impl App for Nocturne {
             window_name: "Dashboard".to_string(),
             page: None,
             watch_path: RunType::Watch("examples/layouts".to_string()),
+            agent_access_port: None,
         }
     }
 

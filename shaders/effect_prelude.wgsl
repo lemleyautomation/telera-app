@@ -24,6 +24,7 @@ struct EffectVertex {
     @location(6) radii: vec4<f32>,
     @location(7) params: vec4<f32>,
     @location(8) params2: vec4<f32>,
+    @location(9) colors: vec2<u32>,
 };
 
 struct VertexPayload {
@@ -41,6 +42,14 @@ struct VertexPayload {
     @location(7) params: vec4<f32>,
     // `shader-param-5..8` for a custom shader; effect-specific for built-ins.
     @location(8) params2: vec4<f32>,
+    // `shader-color-1`/`-2` for a custom shader, packed RGBA8 (unpack with
+    // `unpack4x8unorm(in.colors.x)` / `.y` -> `vec4<f32>`, 0..1 per channel).
+    // Unused (`0u`) for built-ins. An integer vertex output is implicitly
+    // flat in WGSL - `@interpolate(flat)` is required here, not optional -
+    // so these bits reach the fragment shader unchanged instead of being
+    // blended the way `params`/`params2` are; that's *why* a packed color
+    // rides here rather than through a `params` slot as a bit-cast `f32`.
+    @location(9) @interpolate(flat) colors: vec2<u32>,
 };
 
 @group(1) @binding(0)
@@ -69,6 +78,7 @@ fn vs_main(vertex: EffectVertex) -> VertexPayload {
     out.radii = vertex.radii;
     out.params = vertex.params;
     out.params2 = vertex.params2;
+    out.colors = vertex.colors;
     return out;
 }
 

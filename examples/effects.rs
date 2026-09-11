@@ -1,7 +1,7 @@
 use std::time::Instant;
 use telera_app::*;
 
-/// Acceptance harness for the UI effect-shader system (`examples/layouts/Effects.md`).
+/// Acceptance harness for the UI effect-shader system (`examples/layouts/Effects.tmd`).
 ///
 /// Shows every built-in effect - `drop-shadow`, `raised-edge`, `inner-glow` -
 /// on rectangles and on a `circle`, plus two custom shaders loaded with a
@@ -45,6 +45,7 @@ impl App for EffectsApp {
             window_name: "Effects".to_string(),
             page: None,
             watch_path: RunType::Watch("examples/layouts".to_string()),
+            agent_access_port: None,
         }
     }
 

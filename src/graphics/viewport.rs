@@ -4,12 +4,30 @@ use std::time::{Duration, Instant};
 use symbol_table::GlobalSymbol;
 use winit::window::Window;
 use winit::{dpi::PhysicalSize, event::KeyEvent};
+use winit::event::ElementState;
+use winit::keyboard::{Key, KeyLocation, PhysicalKey};
 
 use crate::graphics::textures::{DepthTexture, MultiSampleTexture, UiSurface};
 
 /// Default gap the animation / continuous-render path paces to: 30 fps. Apps
 /// override per window with `API::set_viewport_frame_interval`.
 pub const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_nanos(33_333_333);
+
+/// A keyboard event fabricated by the agent access port (see
+/// `Startup::agent_access_port`), pushed onto [`Viewport::synthetic_key_events`]
+/// rather than [`Viewport::key_events`]. It can't be a real
+/// `winit::event::KeyEvent` - that type has a `pub(crate)` field internal to
+/// winit and so can't be constructed outside it - so this carries the same
+/// useful pieces (`PhysicalKey`/`Key`/`KeyLocation`/`ElementState` are all
+/// public and freely constructible) instead.
+#[derive(Debug, Clone)]
+pub struct SyntheticKeyEvent {
+    pub physical_key: PhysicalKey,
+    pub logical_key: Key,
+    pub location: KeyLocation,
+    pub state: ElementState,
+    pub repeat: bool,
+}
 
 /// One window and everything that is specific to it: its GPU surface, the page
 /// it currently shows, and - the point of this struct - all the mouse / keyboard
@@ -75,6 +93,13 @@ pub struct Viewport {
     pub right_mouse_clicked: bool,
     right_mouse_clicked_timer: Option<Instant>,
 
+    // --- middle button ---
+    pub middle_mouse_pressed: bool,
+    pub middle_mouse_down: bool,
+    pub middle_mouse_released: bool,
+    pub middle_mouse_clicked: bool,
+    middle_mouse_clicked_timer: Option<Instant>,
+
     pub x_at_click: f32,
     pub y_at_click: f32,
     /// Name (interned) of the currently focused element in this window's layout,
@@ -86,6 +111,11 @@ pub struct Viewport {
     // --- os / keyboard one-shots, cleared every redraw ---
     pub key_events: Vec<KeyEvent>,
     pub event_string: String,
+    /// Keyboard events fabricated by the agent access port (`POST /input`'s
+    /// `key_down`/`key_up`), kept separate from `key_events` since those are
+    /// real `winit::event::KeyEvent`s and this can't fabricate one of those
+    /// (see [`SyntheticKeyEvent`]). Cleared every redraw, same as `key_events`.
+    pub synthetic_key_events: Vec<SyntheticKeyEvent>,
 }
 
 impl Viewport {
@@ -134,11 +164,17 @@ impl Viewport {
             right_mouse_released: false,
             right_mouse_clicked: false,
             right_mouse_clicked_timer: None,
+            middle_mouse_pressed: false,
+            middle_mouse_down: false,
+            middle_mouse_released: false,
+            middle_mouse_clicked: false,
+            middle_mouse_clicked_timer: None,
             x_at_click: 0.0,
             y_at_click: 0.0,
             focus: None,
             key_events: Vec::new(),
             event_string: String::new(),
+            synthetic_key_events: Vec::new(),
         }
     }
 
@@ -171,10 +207,19 @@ impl Viewport {
         {
             self.right_mouse_clicked_timer = None;
         }
+        self.middle_mouse_pressed = false;
+        self.middle_mouse_released = false;
+        self.middle_mouse_clicked = false;
+        if let Some(timer) = self.middle_mouse_clicked_timer
+            && timer.elapsed().as_millis() > 300
+        {
+            self.middle_mouse_clicked_timer = None;
+        }
         self.scroll_delta = (0.0, 0.0);
         self.mouse_delta = (0.0, 0.0);
         self.key_events.clear();
         self.event_string.clear();
+        self.synthetic_key_events.clear();
         // This frame incorporated every pending input, so the request is met.
         self.redraw_requested = false;
     }
@@ -225,6 +270,29 @@ impl Viewport {
         }
         self.right_mouse_down = false;
         self.right_mouse_released = true;
+    }
+
+    /// Middle-button press: mirror of [`Viewport::left_mouse_press`].
+    pub fn middle_mouse_press(&mut self) {
+        self.middle_mouse_pressed = true;
+        self.middle_mouse_down = true;
+        if self.middle_mouse_clicked_timer.is_none() {
+            self.middle_mouse_clicked_timer = Some(Instant::now());
+        }
+        self.x_at_click = self.mouse_position.0 / self.dpi_scale;
+        self.y_at_click = self.mouse_position.1 / self.dpi_scale;
+    }
+
+    /// Middle-button release: mirror of [`Viewport::left_mouse_release`].
+    pub fn middle_mouse_release(&mut self) {
+        if let Some(timer) = self.middle_mouse_clicked_timer
+            && timer.elapsed().as_millis() < 300
+        {
+            self.middle_mouse_clicked = true;
+            self.middle_mouse_clicked_timer = None;
+        }
+        self.middle_mouse_down = false;
+        self.middle_mouse_released = true;
     }
 
     pub fn resize(

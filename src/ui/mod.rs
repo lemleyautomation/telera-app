@@ -1,6 +1,3 @@
-/// Compile-time arithmetic (`` `calc` `` functions and expression-valued
-/// `` `set-numeric` `` declarations) used by [`layout_runner`].
-mod calc;
 /// Pan/zoom state for `` `canvas` `` elements.
 pub mod canvas;
 pub mod layout_runner;

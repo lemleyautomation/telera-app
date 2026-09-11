@@ -1,4 +1,4 @@
-use syn::{GenericArgument, Ident, PathArguments, Type};
+use telera_tmd::classify::{FieldKind, classify_field_type, find_attr, has_attr};
 
 // ---------------------------------------------------------------------------
 // ParserDataAccess / FieldAccess
@@ -40,61 +40,13 @@ use syn::{GenericArgument, Ident, PathArguments, Type};
 // struct needs to provide.
 // ---------------------------------------------------------------------------
 
-/// What a field's Rust type tells us to expose it as.
-enum FieldKind {
-    Bool,
-    Numeric,
-    Text,
-    Color,
-    Image,
-    /// A `Vec<T>`. Carries the element type's own [`FieldKind`] when `T` is a
-    /// primitive we can expose directly (`Vec<String>`, `Vec<f32>`, `Vec<bool>`,
-    /// `Vec<Color>`, `Vec<UIImageDescriptor>`); `None` when `T` is a struct that
-    /// has to provide its fields through `T: FieldAccess`.
-    List(Option<Box<FieldKind>>),
-}
-
-fn classify_field_type(ty: &Type) -> Option<FieldKind> {
-    let Type::Path(path) = ty else {
-        return None;
-    };
-    if path.path.leading_colon.is_some() {
-        return None;
-    }
-    let segment = path.path.segments.last()?;
-    match segment.ident.to_string().as_str() {
-        "bool" => Some(FieldKind::Bool),
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
-        | "isize" | "f32" | "f64" => Some(FieldKind::Numeric),
-        "String" => Some(FieldKind::Text),
-        "Color" => Some(FieldKind::Color),
-        "UIImageDescriptor" => Some(FieldKind::Image),
-        "Vec" => {
-            let PathArguments::AngleBracketed(args) = &segment.arguments else {
-                return None;
-            };
-            let Some(GenericArgument::Type(inner)) = args.args.first() else {
-                return None;
-            };
-            Some(FieldKind::List(classify_field_type(inner).map(Box::new)))
-        }
-        _ => None,
-    }
-}
-
-fn find_attr<'a>(attrs: &'a [syn::Attribute], name: &str) -> Option<&'a syn::Attribute> {
-    attrs
-        .iter()
-        .find(|attribute| attribute.path().segments.len() == 1 && attribute.path().is_ident(name))
-}
-
-fn has_attr(attrs: &[syn::Attribute], name: &str) -> bool {
-    find_attr(attrs, name).is_some()
-}
-
 /// Parses `#[name(some_ident)]`'s single identifier argument.
-fn attr_ident_arg(attr: &syn::Attribute) -> Ident {
-    attr.parse_args::<Ident>().unwrap_or_else(|_| {
+///
+/// [`telera_tmd::classify::attr_ident_arg`] returns `None` when the attribute
+/// isn't shaped that way (the language server reports a diagnostic); the derive
+/// macros keep the old panicking contract.
+fn attr_ident_arg(attr: &syn::Attribute) -> syn::Ident {
+    telera_tmd::classify::attr_ident_arg(attr).unwrap_or_else(|| {
         let name = attr
             .path()
             .get_ident()

@@ -52,7 +52,7 @@ a GUI app framework designed for performance, and modularity.
 
 - [`docs/telera_api.md`](docs/telera_api.md) — the Rust API: `App`, `run`, the
   macros, and every `API` method, with a trivial app to start from.
-- [`docs/tml-spec.md`](docs/tml-spec.md) — the TML markdown layout language.
+- [`docs/tml-spec.md`](docs/tml-spec.md) — the TML markdown layout language (`.tmd` files).
 
 
 ## Profiling

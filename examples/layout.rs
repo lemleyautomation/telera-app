@@ -57,6 +57,7 @@ impl App for LayoutApp {
             window_name: "Main".to_string(),
             page: None,
             watch_path: RunType::Watch("examples/layouts".to_string()),
+            agent_access_port: None,
         }
     }
 }

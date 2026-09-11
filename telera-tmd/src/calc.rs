@@ -3,10 +3,10 @@
 //! A tiny expression language evaluated *once*, while a layout file is parsed,
 //! and folded to a constant `f32`. It never runs at frame time - the result
 //! lands in a `` `set-numeric` `` declaration as a plain
-//! [`DataSrc::Static`](super::layout_runner::DataSrc) number, indistinguishable
+//! a static number, indistinguishable
 //! from a literal.
 //!
-//! Two entry points, both used only by [`super::layout_runner`]:
+//! Two entry points, both used by the layout-file parser:
 //! - [`parse_fn`] reads a `` - `calc` `name(a, b) = a * b` `` header directive
 //!   into a named [`CalcFn`].
 //! - [`parse_expr`] + [`eval`] turn a `` `set-numeric` `` value like
@@ -37,7 +37,7 @@ const MAX_DEPTH: u32 = 32;
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BinOp {
+pub enum BinOp {
     Add,
     Sub,
     Mul,
@@ -46,7 +46,7 @@ pub(crate) enum BinOp {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Expr {
+pub enum Expr {
     Num(f32),
     Ident(Box<str>),
     Neg(Box<Expr>),
@@ -58,7 +58,7 @@ pub(crate) enum Expr {
 /// body's free identifiers must all be parameters (checked lazily, at [`eval`]
 /// time, when the surrounding environment is known).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CalcFn {
+pub struct CalcFn {
     pub params: Vec<Box<str>>,
     pub body: Expr,
 }
@@ -68,7 +68,7 @@ pub(crate) struct CalcFn {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum CalcError {
+pub enum CalcError {
     /// Lexing or parsing failed (bad character, unbalanced parens, trailing
     /// input, a `` `calc` `` directive with no `=`, ...).
     Syntax(String),
@@ -336,7 +336,7 @@ impl<'a> Parser<'a> {
 }
 
 /// Parses a complete expression, rejecting any trailing tokens.
-pub(crate) fn parse_expr(src: &str) -> Result<Expr, CalcError> {
+pub fn parse_expr(src: &str) -> Result<Expr, CalcError> {
     let toks = lex(src)?;
     let mut parser = Parser::new(&toks);
     let expr = parser.expr()?;
@@ -351,7 +351,7 @@ pub(crate) fn parse_expr(src: &str) -> Result<Expr, CalcError> {
 
 /// Parses a `` `calc` `` header directive body: `name(p1, p2) = <expr>`.
 /// Returns the (verbatim) function name and its [`CalcFn`].
-pub(crate) fn parse_fn(signature_and_body: &str) -> Result<(String, CalcFn), CalcError> {
+pub fn parse_fn(signature_and_body: &str) -> Result<(String, CalcFn), CalcError> {
     let (signature, body_src) = signature_and_body
         .split_once('=')
         .ok_or_else(|| CalcError::Syntax("a `calc` function needs `name(args) = expression`".into()))?;
@@ -404,7 +404,7 @@ fn is_ident(s: &str) -> bool {
 /// Evaluates `expr` against a stack of variable frames (`vars`, innermost last)
 /// and the file's `` `calc` `` functions. `depth` guards against cyclic
 /// function definitions - callers start at `0`.
-pub(crate) fn eval(
+pub fn eval(
     expr: &Expr,
     vars: &[HashMap<String, f32>],
     fns: &HashMap<String, CalcFn>,
@@ -507,7 +507,7 @@ mod tests {
         // no spaces around `-`
         assert_eq!(eval_str("base-3", &vars, &f).unwrap(), 7.0);
         // a hyphenated name is not a valid identifier token
-        assert!(matches!(parse_expr("a-b-c"), Ok(_))); // parses as a - b - c
+        assert!(parse_expr("a-b-c").is_ok()); // parses as a - b - c
         assert_eq!(
             eval_str("a-b", &no_vars(), &f),
             Err(CalcError::UnknownIdent("a".to_string()))

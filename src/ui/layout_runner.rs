@@ -8,7 +8,7 @@
 //!      [`DataSrc`] and the [`ParserDataAccess`] trait an application
 //!      implements to feed dynamic data into a layout.
 //!   2. **Parser** - [`process_layout`] turns a markdown document (see
-//!      `src/layouts/main.md` for an example) into a flat `Vec<Layout>`
+//!      `examples/layouts/Main.tmd` for an example) into a flat `Vec<Layout>`
 //!      of layout commands plus a table of reusable snippets.
 //!   3. **Runner** - [`Binder`] owns the parsed pages/reusables and
 //!      [`Binder::set_page`] walks the flattened command list each frame,
@@ -45,7 +45,11 @@ use markdown::mdast::{List, ListItem, Node, Paragraph};
 use symbol_table::GlobalSymbol;
 use telera_layout::{Color, ElementConfiguration, TextConfig};
 
-use super::calc;
+use telera_tmd::calc;
+use telera_tmd::prepass::add_missing_keyword_backticks;
+#[cfg(test)]
+use telera_tmd::prepass::LEADING_KEYWORDS;
+
 use crate::{API, CustomElement, EffectKind, ResolvedShader, UIImageDescriptor};
 
 const DEFAULT_TEXT: &str = ":(";
@@ -270,6 +274,34 @@ pub enum Element {
         event: Option<DataSrc<GlobalSymbol>>,
     },
     RightClickedClosed,
+
+    MiddlePressedOpened {
+        event: Option<DataSrc<GlobalSymbol>>,
+    },
+    MiddlePressedClosed,
+
+    MiddleDownOpened {
+        event: Option<DataSrc<GlobalSymbol>>,
+    },
+    MiddleDownClosed,
+
+    MiddleReleasedOpened {
+        event: Option<DataSrc<GlobalSymbol>>,
+    },
+    MiddleReleasedClosed,
+
+    MiddleClickedOpened {
+        event: Option<DataSrc<GlobalSymbol>>,
+    },
+    MiddleClickedClosed,
+
+    /// Gates on "hovered AND the scroll wheel moved this frame" - the handler
+    /// reads the amount/direction itself via `API::scroll_delta`, the same way
+    /// `key-event` handlers read `API::key_events`.
+    WheelOpened {
+        event: Option<DataSrc<GlobalSymbol>>,
+    },
+    WheelClosed,
 
     /// Opens the zoom-bake scope for a `` `canvas` `` (`set_layout` pushes the
     /// current `canvas_scale` and replaces it with `api.canvas_zoom(name)`).
@@ -844,10 +876,11 @@ const SHAPE_PARAM_KEYWORDS: &[&str] = &[
 /// parameters plus the positional `` `shader-param-1` `` .. `` `shader-param-8` ``
 /// a custom shader reads. `process_configs` forwards these to the current
 /// [`ShaderSpec`] instead of turning them into a [`Config`]. **Sorted** (a
-/// prefix of [`LEADING_KEYWORDS`]).
+/// prefix of [`telera_tmd::prepass::LEADING_KEYWORDS`]).
 const SHADER_PARAM_KEYWORDS: &[&str] = &[
     "bevel-highlight", "bevel-light-angle", "bevel-shade", "bevel-width", "blur-radius", "blur-tint",
-    "glow-blur", "glow-color", "glow-spread", "shader-param-1", "shader-param-2", "shader-param-3",
+    "glow-blur", "glow-color", "glow-spread", "shader-color-1", "shader-color-2", "shader-param-1",
+    "shader-param-2", "shader-param-3",
     "shader-param-4", "shader-param-5", "shader-param-6", "shader-param-7", "shader-param-8",
     "shadow-blur", "shadow-color", "shadow-offset-x", "shadow-offset-y", "shadow-spread",
 ];
@@ -875,6 +908,11 @@ pub struct ShaderSpec {
     pub blur_radius: DataSrc<f32>,
     pub blur_tint: DataSrc<Color>,
     pub custom: [DataSrc<f32>; 8],
+    /// `` `shader-color-1` ``/`` `shader-color-2` `` - two colors for a custom
+    /// shader, carried to the renderer as packed RGBA8 (see
+    /// [`ResolvedShader::colors`]) rather than spending four `custom` slots
+    /// per color the way a built-in effect's own color config would.
+    pub custom_colors: [DataSrc<Color>; 2],
 }
 
 impl ShaderSpec {
@@ -899,6 +937,10 @@ impl ShaderSpec {
             blur_radius: s(8.0),
             blur_tint: DataSrc::Static(Color { r: 255.0, g: 255.0, b: 255.0, a: 0.0 }),
             custom: [s(0.0), s(0.0), s(0.0), s(0.0), s(0.0), s(0.0), s(0.0), s(0.0)],
+            custom_colors: [
+                DataSrc::Static(Color::default()),
+                DataSrc::Static(Color::default()),
+            ],
         }
     }
 
@@ -922,6 +964,16 @@ impl ShaderSpec {
         {
             if let Some(v) = optional_arg::<f32>(config) {
                 self.custom[idx - 1] = v;
+            }
+            return;
+        }
+        if let Some(idx) = key
+            .strip_prefix("shader-color-")
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| (1..=2).contains(n))
+        {
+            if let Some(v) = optional_arg::<Color>(config) {
+                self.custom_colors[idx - 1] = v;
             }
             return;
         }
@@ -1015,6 +1067,17 @@ impl ShaderSpec {
                 ],
             ),
         };
+        // `shader-color-1`/`-2`, packed RGBA8 - only meaningful for a custom
+        // shader (built-ins have their own dedicated color config, resolved
+        // into `params`/`params2` above like everything else they use).
+        let colors = if kind == EffectKind::Custom {
+            let pack = |src: &DataSrc<Color>| {
+                Color::resolve_src(src, locals, user_app, list_data).pack_rgba8()
+            };
+            [pack(&self.custom_colors[0]), pack(&self.custom_colors[1])]
+        } else {
+            [0, 0]
+        };
         ResolvedShader {
             kind,
             custom: if kind == EffectKind::Custom {
@@ -1024,6 +1087,7 @@ impl ShaderSpec {
             },
             params,
             params2,
+            colors,
         }
     }
 }
@@ -1244,7 +1308,7 @@ pub struct LayoutResources {
 /// The page has no name of its own - the `# ...` heading only marks where the
 /// body starts (its text is ignored, `# root` by convention). The caller names
 /// the page when it registers it (see [`Binder::load_layout`]); `API` uses the
-/// layout file's own name, minus the `.md`.
+/// layout file's own name, minus its extension.
 #[derive(Debug, Default)]
 pub struct ParsedLayout {
     pub body: Vec<Layout>,
@@ -1329,160 +1393,7 @@ fn collect_calc_fns(root: &Node) -> HashMap<String, calc::CalcFn> {
     fns
 }
 
-/// Every keyword the grammar looks for as the *first token* of a list item -
-/// element, config, declaration and header directives. **Sorted** (binary
-/// searched by [`add_missing_keyword_backticks`]).
-///
-/// Kept in sync by hand with the `match` arms of [`process_element`],
-/// [`process_configs`], [`process_variable`] and [`process_header_directive`];
-/// adding a keyword there means adding it here too. `config` is included even
-/// though the parser only recognises it positionally, so a backtick-free file
-/// still round-trips to the canonical `` `config` `` form. Argument words that
-/// are written as inline code but never lead an item (`min`, `max`, `x`, `y`,
-/// `height`, and the alignment/attach-point value words) are deliberately *not*
-/// in this list.
-const LEADING_KEYWORDS: &[&str] = &[
-    "align", "align-children-x", "align-children-y", "arc", "aspect-ratio", "attach-root",
-    "attach-self", "attatch-parent",
-    "bevel-highlight", "bevel-light-angle", "bevel-shade", "bevel-width",
-    "bezier", "blur-radius", "blur-tint", "border-all", "border-bottom", "border-color",
-    "border-in-between", "border-left", "border-right", "border-top", "calc", "canvas", "center",
-    "center-x",
-    "center-y", "child-gap", "circle", "clip-to-parent", "color", "config", "ctrl1-x", "ctrl1-y",
-    "ctrl2-x", "ctrl2-y", "declarations", "element", "end-angle", "eye-x", "eye-y", "eye-z", "far",
-    "fit", "fixed-square", "floating",
-    "floating-dimensions-height", "floating-dimensions-width",
-    "fn", "focus", "focused", "font", "font-color", "font-id", "font-size", "fov", "from", "from-x",
-    "from-y", "get-bool", "get-color",
-    "get-event", "get-image", "get-numeric", "get-text",
-    "glow-blur", "glow-color", "glow-spread",
-    "grow", "height-fit", "height-fit-max",
-    "height-fit-min", "height-fixed", "height-grow", "height-grow-max", "height-grow-min",
-    "height-percent", "horizontal", "hover", "hovered", "id-indexed", "if",
-    "if-index", "if-index-not", "if-not", "image", "item", "key-event", "left-clicked",
-    "left-dbl-clicked",
-    "left-down", "left-pressed", "left-released", "left-tpl-clicked", "letter-spacing", "line",
-    "line-height", "list", "load", "max-zoom", "min-zoom", "near", "no-clip", "offset-x", "offset-y",
-    "ortho-height",
-    "padding-all",
-    "padding-bottom", "padding-left", "padding-right", "padding-top", "pan-x", "pan-y", "pointer",
-    "pointer-capture",
-    "pointer-pass-through", "radius", "radius-all", "radius-bottom-left", "radius-bottom-right",
-    "radius-top-left", "radius-top-right", "render-window", "right-clicked", "right-down",
-    "right-pressed",
-    "right-released", "ring", "scroll-horizontal", "scroll-vertical", "set-bool", "set-color",
-    "set-event", "set-image", "set-numeric",
-    "set-text",
-    "shader", "shader-param-1", "shader-param-2", "shader-param-3", "shader-param-4",
-    "shader-param-5", "shader-param-6", "shader-param-7", "shader-param-8",
-    "shadow-blur", "shadow-color", "shadow-offset-x", "shadow-offset-y", "shadow-spread",
-    "start-angle", "target-x", "target-y", "target-z", "text", "thickness", "to", "to-x",
-    "to-y", "unfocused", "unhovered", "up-x", "up-y", "up-z",
-    "use", "vertical", "width",
-    "width-fit", "width-fit-max", "width-fit-min", "width-fixed", "width-grow", "width-grow-max",
-    "width-grow-min", "width-percent", "world-height", "world-width", "wrap", "z-index", "zoom",
-];
-
-/// Pre-parsing pass: lets a layout file be written without the `` ` `` inline-code
-/// spans around keywords. Walks the source line by line and, for any Markdown
-/// list item whose **first word** is one of [`LEADING_KEYWORDS`], wraps that word
-/// in backticks before the text is handed to the Markdown parser.
-///
-/// It is a no-op on a file that already uses backticks - an item whose content
-/// starts with `` ` `` is left untouched - so it's safe to run unconditionally
-/// and to mix both styles in one file.
-///
-/// Only the leading keyword is touched. Every config keyword now takes at most
-/// one value, so nothing after the keyword needs backticks except a UV rect
-/// (`` `image` *atlas* `[0,0,1,1]` ``). And because
-/// this runs with no grammar context, a plain-text line - a `text` element's
-/// content, say - that happens to start with a keyword word (`color`, `image`,
-/// `if`, ...) *will* be turned into a config; write that line's backticks
-/// yourself (or reword it) to opt out.
-fn add_missing_keyword_backticks(source: &str) -> String {
-    debug_assert!(
-        LEADING_KEYWORDS.windows(2).all(|w| w[0] < w[1]),
-        "LEADING_KEYWORDS must stay sorted"
-    );
-
-    let mut out = String::with_capacity(source.len() + 64);
-    let mut in_code_fence = false;
-
-    for line in source.split_inclusive('\n') {
-        let (text, newline) = match line.strip_suffix('\n') {
-            Some(rest) => (rest.strip_suffix('\r').unwrap_or(rest), &line[rest.len()..]),
-            None => (line, ""),
-        };
-
-        // ``` / ~~~ fenced code blocks pass straight through.
-        let fence = text.trim_start();
-        if fence.starts_with("```") || fence.starts_with("~~~") {
-            in_code_fence = !in_code_fence;
-            out.push_str(line);
-            continue;
-        }
-        if in_code_fence {
-            out.push_str(line);
-            continue;
-        }
-
-        match backtick_leading_keyword(text) {
-            Some(rewritten) => {
-                out.push_str(&rewritten);
-                out.push_str(newline);
-            }
-            None => out.push_str(line),
-        }
-    }
-
-    out
-}
-
-/// The per-line worker for [`add_missing_keyword_backticks`]. Returns the
-/// rewritten line if `line` is a list item whose first word is a keyword and
-/// isn't already backticked, otherwise `None` (leave the line as-is).
-fn backtick_leading_keyword(line: &str) -> Option<String> {
-    let indent_len = line.len() - line.trim_start().len();
-    let after_indent = &line[indent_len..];
-    let bytes = after_indent.as_bytes();
-
-    // Bullet marker: `-`/`*`/`+`, or an ordered `12.` / `12)`.
-    let marker_len = match bytes.first()? {
-        b'-' | b'*' | b'+' => 1,
-        b'0'..=b'9' => {
-            let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
-            match bytes.get(digits) {
-                Some(b'.') | Some(b')') => digits + 1,
-                _ => return None,
-            }
-        }
-        _ => return None,
-    };
-
-    // At least one space/tab between the marker and the content.
-    let after_marker = &after_indent[marker_len..];
-    if !after_marker.starts_with([' ', '\t']) {
-        return None;
-    }
-    let content = after_marker.trim_start_matches([' ', '\t']);
-    if content.is_empty() || content.starts_with('`') {
-        return None;
-    }
-
-    let word_end = content
-        .find([' ', '\t'])
-        .unwrap_or(content.len());
-    let word = &content[..word_end];
-    if LEADING_KEYWORDS.binary_search(&word).is_err() {
-        return None;
-    }
-
-    // Everything up to the first content character, verbatim, then `` `word` ``.
-    let prefix = &line[..line.len() - content.len()];
-    Some(format!("{prefix}`{word}`{}", &content[word_end..]))
-}
-
-/// Parses a markdown layout document (see `examples/layouts/Main.md`) into a
+/// Parses a markdown layout document (see `examples/layouts/Main.tmd`) into a
 /// [`ParsedLayout`].
 pub fn process_layout(file: String) -> Result<ParsedLayout, String> {
     let file = add_missing_keyword_backticks(&file);
@@ -1646,6 +1557,25 @@ fn parse_index_arg(arg: &str) -> DataSrc<f32> {
         Ok(value) => DataSrc::Static(value),
         Err(_) => DataSrc::Dynamic(field_symbol(arg)),
     }
+}
+
+/// The condition name for an `` `if` `` / `` `if-not` ``: the token after the
+/// keyword, whether it was written bare (`` `if` open ``) or - like every other
+/// name-valued keyword - with emphasis (`` `if` *open* ``). Both resolve the
+/// same way at runtime (local declaration first, then a `bool` field). `None`
+/// only when no condition was given at all. Skips the empty `Text(" ")` node the
+/// markdown parser puts between the keyword and an emphasis span.
+fn condition_symbol(declaration: &Paragraph) -> Option<GlobalSymbol> {
+    declaration.children.iter().skip(1).find_map(|node| match node {
+        Node::Emphasis(emphasis) => match emphasis.children.first() {
+            Some(Node::Text(text)) if !text.value.trim().is_empty() => {
+                Some(field_symbol(text.value.trim()))
+            }
+            _ => None,
+        },
+        Node::Text(text) if !text.value.trim().is_empty() => Some(field_symbol(text.value.trim())),
+        _ => None,
+    })
 }
 
 /// The `` `keyword` `` a list item leads with (`config`, `use`, `element`,
@@ -2119,13 +2049,11 @@ fn process_element(element: &Node, ctx: &mut CalcCtx) -> Vec<Layout> {
                 }
             }
             "if" => {
-                if let Some(conditional) = element_declaration.children.get(1)
-                    && let Node::Text(conditional) = conditional
+                if let Some(src) = condition_symbol(element_declaration)
                     && let Some(conditional_elements) = element.children.get(1)
                     && let Node::List(conditional_elements) = conditional_elements
                 {
                     let mut formatted_element = Vec::<Layout>::new();
-                    let src = field_symbol(conditional.value.trim());
                     formatted_element.push(Layout::Element(Element::IfOpened { condition: src }));
 
                     for conditional_element in &conditional_elements.children {
@@ -2139,13 +2067,11 @@ fn process_element(element: &Node, ctx: &mut CalcCtx) -> Vec<Layout> {
                 }
             }
             "if-not" => {
-                if let Some(conditional) = element_declaration.children.get(1)
-                    && let Node::Text(conditional) = conditional
+                if let Some(src) = condition_symbol(element_declaration)
                     && let Some(conditional_elements) = element.children.get(1)
                     && let Node::List(conditional_elements) = conditional_elements
                 {
                     let mut formatted_element = Vec::<Layout>::new();
-                    let src = field_symbol(conditional.value.trim());
                     formatted_element
                         .push(Layout::Element(Element::IfNotOpened { condition: src }));
 
@@ -3276,6 +3202,121 @@ fn process_configs(
                     }
                     configs.push(Layout::Element(Element::RightClickedClosed));
                 }
+                "middle-pressed" => {
+                    match parameter_check::<GlobalSymbol>(config) {
+                        AvailableParameters::SingleDynamic(a) => {
+                            configs.push(Layout::Element(Element::MiddlePressedOpened {
+                                event: Some(DataSrc::Dynamic(a)),
+                            }))
+                        }
+                        AvailableParameters::SingleStatic(a) => {
+                            configs.push(Layout::Element(Element::MiddlePressedOpened {
+                                event: Some(DataSrc::Static(a)),
+                            }))
+                        }
+                        AvailableParameters::None => configs
+                            .push(Layout::Element(Element::MiddlePressedOpened { event: None })),
+                    }
+                    if let Some(config_on_click) = config_elements.get(1)
+                        && let Node::List(config_on_click) = config_on_click
+                    {
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
+                    }
+                    configs.push(Layout::Element(Element::MiddlePressedClosed));
+                }
+                "middle-down" => {
+                    match parameter_check::<GlobalSymbol>(config) {
+                        AvailableParameters::SingleDynamic(a) => {
+                            configs.push(Layout::Element(Element::MiddleDownOpened {
+                                event: Some(DataSrc::Dynamic(a)),
+                            }))
+                        }
+                        AvailableParameters::SingleStatic(a) => {
+                            configs.push(Layout::Element(Element::MiddleDownOpened {
+                                event: Some(DataSrc::Static(a)),
+                            }))
+                        }
+                        AvailableParameters::None => {
+                            configs.push(Layout::Element(Element::MiddleDownOpened { event: None }))
+                        }
+                    }
+                    if let Some(config_on_click) = config_elements.get(1)
+                        && let Node::List(config_on_click) = config_on_click
+                    {
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
+                    }
+                    configs.push(Layout::Element(Element::MiddleDownClosed));
+                }
+                "middle-released" => {
+                    match parameter_check::<GlobalSymbol>(config) {
+                        AvailableParameters::SingleDynamic(a) => {
+                            configs.push(Layout::Element(Element::MiddleReleasedOpened {
+                                event: Some(DataSrc::Dynamic(a)),
+                            }))
+                        }
+                        AvailableParameters::SingleStatic(a) => {
+                            configs.push(Layout::Element(Element::MiddleReleasedOpened {
+                                event: Some(DataSrc::Static(a)),
+                            }))
+                        }
+                        AvailableParameters::None => {
+                            configs.push(Layout::Element(Element::MiddleReleasedOpened {
+                                event: None,
+                            }))
+                        }
+                    }
+                    if let Some(config_on_click) = config_elements.get(1)
+                        && let Node::List(config_on_click) = config_on_click
+                    {
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
+                    }
+                    configs.push(Layout::Element(Element::MiddleReleasedClosed));
+                }
+                "middle-clicked" => {
+                    match parameter_check::<GlobalSymbol>(config) {
+                        AvailableParameters::SingleDynamic(a) => {
+                            configs.push(Layout::Element(Element::MiddleClickedOpened {
+                                event: Some(DataSrc::Dynamic(a)),
+                            }))
+                        }
+                        AvailableParameters::SingleStatic(a) => {
+                            configs.push(Layout::Element(Element::MiddleClickedOpened {
+                                event: Some(DataSrc::Static(a)),
+                            }))
+                        }
+                        AvailableParameters::None => configs
+                            .push(Layout::Element(Element::MiddleClickedOpened { event: None })),
+                    }
+                    if let Some(config_on_click) = config_elements.get(1)
+                        && let Node::List(config_on_click) = config_on_click
+                    {
+                        configs.append(&mut process_configs(config_on_click, &mut None, ctx));
+                    }
+                    configs.push(Layout::Element(Element::MiddleClickedClosed));
+                }
+                "wheel" => {
+                    match parameter_check::<GlobalSymbol>(config) {
+                        AvailableParameters::SingleDynamic(a) => {
+                            configs.push(Layout::Element(Element::WheelOpened {
+                                event: Some(DataSrc::Dynamic(a)),
+                            }))
+                        }
+                        AvailableParameters::SingleStatic(a) => {
+                            configs.push(Layout::Element(Element::WheelOpened {
+                                event: Some(DataSrc::Static(a)),
+                            }))
+                        }
+                        AvailableParameters::None => {
+                            configs.push(Layout::Element(Element::WheelOpened { event: None }))
+                        }
+                    }
+                    if let Some(config_on_wheel) = config_elements.get(1)
+                        && let Node::List(config_on_wheel) = config_on_wheel
+                    {
+                        configs.append(&mut process_configs(config_on_wheel, &mut None, ctx));
+                    }
+                    configs.push(Layout::Element(Element::WheelClosed));
+                }
                 "pointer" => {
                     if let Some(pointer) = config.children.get(1)
                         && let Node::Text(pointer) = pointer
@@ -3514,7 +3555,7 @@ fn process_configs(
 /// their own declarations to their own body, via `recursive_call_stack` in
 /// `set_layout`, and shouldn't leak into the rest of the page). These are
 /// the ones a whole page can reference anywhere, e.g. `*content background
-/// color*` declared once at the top of `main.md` and used by several
+/// color*` declared once at the top of `main.tmd` and used by several
 /// unrelated elements further down.
 ///
 /// Returns owned values (rather than references into `commands`) so the
@@ -3583,6 +3624,15 @@ impl Binder {
         self.pages.insert(name.to_string(), page);
     }
 
+    /// The parsed command list for a registered page, or `None` if no page
+    /// of that name exists. Read-only counterpart to `add_page`/`replace_page`
+    /// - used by the agent access port's `` `layout` ``-kind dump so it can
+    /// read a page's authored structure without needing a live redraw
+    /// (unlike render commands, which only exist mid-frame).
+    pub(crate) fn page(&self, name: &str) -> Option<&Vec<Layout>> {
+        self.pages.get(name)
+    }
+
     /// Adds a reusable snippet, replacing any existing one of the same name.
     pub fn add_reusable(&mut self, name: &str, reusable: Vec<Layout>) {
         self.reusable.insert(GlobalSymbol::new(name), reusable);
@@ -3592,7 +3642,7 @@ impl Binder {
     /// registers it as the page `name`, along with any reusable snippets it
     /// defines, replacing any existing ones of the same names. The document
     /// itself carries no page name (its `# ...` heading is ignored) - the
-    /// caller chooses it; `API` passes the layout file's name minus `.md`.
+    /// caller chooses it; `API` passes the layout file's name minus its extension.
     ///
     /// This only parses `markdown_source` - reading it from disk (or
     /// embedding it with `include_str!`) is left to the caller.
@@ -3975,6 +4025,29 @@ where
                         event_gate_open!(hovered!() && api.right_mouse_clicked(), event)
                     }
                     Element::RightClickedClosed => event_gate_close!(),
+
+                    Element::MiddlePressedOpened { event } => {
+                        event_gate_open!(hovered!() && api.middle_mouse_pressed(), event)
+                    }
+                    Element::MiddlePressedClosed => event_gate_close!(),
+                    Element::MiddleDownOpened { event } => {
+                        event_gate_open!(hovered!() && api.middle_mouse_down(), event)
+                    }
+                    Element::MiddleDownClosed => event_gate_close!(),
+                    Element::MiddleReleasedOpened { event } => {
+                        event_gate_open!(hovered!() && api.middle_mouse_released(), event)
+                    }
+                    Element::MiddleReleasedClosed => event_gate_close!(),
+                    Element::MiddleClickedOpened { event } => {
+                        event_gate_open!(hovered!() && api.middle_mouse_clicked(), event)
+                    }
+                    Element::MiddleClickedClosed => event_gate_close!(),
+
+                    Element::WheelOpened { event } => {
+                        let (wx, wy) = api.scroll_delta();
+                        event_gate_open!(hovered!() && (wx != 0.0 || wy != 0.0), event)
+                    }
+                    Element::WheelClosed => event_gate_close!(),
 
                     // Enter / leave a `canvas` world: bake the canvas's zoom into
                     // every spatial config in between. Runs even under `skip` so
@@ -5101,6 +5174,54 @@ where
 mod tests {
     use super::*;
 
+    /// `` `if` `` accepts its condition bare *or* emphasised - `*name*` is the
+    /// pervasive "resolve this name" convention, and the markdown parser puts a
+    /// stray `Text(" ")` node before an emphasis span that used to be read as an
+    /// empty (always-false) condition, silently hiding the block.
+    #[test]
+    fn if_condition_accepts_bare_and_emphasis() {
+        let want = GlobalSymbol::new("viewport_open");
+        for src in [
+            "# root\n- `if` viewport_open\n    - `element`\n",
+            "# root\n- `if` *viewport_open*\n    - `element`\n",
+            "# root\n- if viewport_open\n    - element\n",
+            "# root\n- if *viewport_open*\n    - element\n",
+        ] {
+            let ParsedLayout { body, .. } = process_layout(src.to_string()).unwrap();
+            let cond = body.iter().find_map(|c| match c {
+                Layout::Element(Element::IfOpened { condition }) => Some(*condition),
+                _ => None,
+            });
+            assert_eq!(cond, Some(want), "condition not parsed from {src:?}");
+            // and the gated child is actually emitted between IfOpened/IfClosed
+            let open = body
+                .iter()
+                .position(|c| matches!(c, Layout::Element(Element::IfOpened { .. })))
+                .unwrap();
+            let close = body
+                .iter()
+                .position(|c| matches!(c, Layout::Element(Element::IfClosed)))
+                .unwrap();
+            assert!(
+                body[open..close]
+                    .iter()
+                    .any(|c| matches!(c, Layout::Element(Element::ElementOpened { .. }))),
+                "gated element missing for {src:?}"
+            );
+        }
+    }
+
+    /// `` `if-not` `` takes the same forms.
+    #[test]
+    fn if_not_condition_accepts_emphasis() {
+        let ParsedLayout { body, .. } =
+            process_layout("# root\n- `if-not` *menu_open*\n    - `element`\n".to_string()).unwrap();
+        assert!(body.iter().any(|c| matches!(
+            c,
+            Layout::Element(Element::IfNotOpened { condition }) if *condition == GlobalSymbol::new("menu_open")
+        )));
+    }
+
     /// `canvas` lowers to: an outer clip container carrying the user's own
     /// config + one `Config::Canvas`, then a `CanvasWorldOpened` ..
     /// `CanvasWorldClosed` pair wrapping a fixed-size world element
@@ -5220,18 +5341,18 @@ mod tests {
             .any(|c| matches!(c, Layout::Element(Element::CanvasWorldOpened { .. }))));
     }
 
-    /// The parser should turn `examples/layouts/Main.md` into a non-empty,
+    /// The parser should turn `examples/layouts/Main.tmd` into a non-empty,
     /// flattened command stream without panicking or erroring.
     #[test]
     fn parses_main_md() {
         let file = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/layouts/Main.md"
+            "/examples/layouts/Main.tmd"
         ))
         .unwrap();
         let ParsedLayout {
             body, reusables, ..
-        } = process_layout(file).expect("Main.md should parse");
+        } = process_layout(file).expect("Main.tmd should parse");
 
         assert!(!body.is_empty());
         assert!(reusables.contains_key("layout expand"));
@@ -5254,7 +5375,7 @@ mod tests {
         }
         assert_eq!(depth, 0, "command stream left something unclosed");
 
-        // `*pad*` in Main.md is `scale(base, base)` with `base = 4` and the
+        // `*pad*` in Main.tmd is `scale(base, base)` with `base = 4` and the
         // header `calc` `scale(a, b) = a * b`, so it must fold to 16.
         let pad = GlobalSymbol::new("pad");
         assert!(body.iter().any(|command| matches!(
@@ -5655,13 +5776,13 @@ mod tests {
     fn shapes_example_parses() {
         let file = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/layouts/shapes.md"
+            "/examples/layouts/shapes.tmd"
         ))
         .unwrap();
         // fully backticked already - the pre-pass must not touch it
         assert_eq!(add_missing_keyword_backticks(&file), file);
 
-        let parsed = process_layout(file).expect("shapes.md should parse");
+        let parsed = process_layout(file).expect("shapes.tmd should parse");
         let specs: Vec<&CustomElementSpec> = parsed
             .body
             .iter()
@@ -5706,10 +5827,10 @@ mod tests {
     fn scene_example_parses() {
         let file = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/layouts/scene.md"
+            "/examples/layouts/scene.tmd"
         ))
         .unwrap();
-        let parsed = process_layout(file).expect("scene.md should parse");
+        let parsed = process_layout(file).expect("scene.tmd should parse");
         let windows: Vec<&CustomElementSpec> = parsed
             .body
             .iter()
@@ -5753,7 +5874,7 @@ mod tests {
     }
 
     /// The header `` `load` `` directive, the `set-image` declaration, and both
-    /// `image` config shapes should all parse the way `Image Viewer.md` uses
+    /// `image` config shapes should all parse the way `Image Viewer.tmd` uses
     /// them.
     #[test]
     fn image_loading_syntax_parses() {
@@ -6127,15 +6248,15 @@ mod tests {
         );
     }
 
-    /// The shipped `Image Viewer.md` example parses and exercises every image path.
+    /// The shipped `Image Viewer.tmd` example parses and exercises every image path.
     #[test]
     fn image_viewer_example_parses() {
         let file = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/layouts/Image Viewer.md"
+            "/examples/layouts/Image Viewer.tmd"
         ))
         .unwrap();
-        let parsed = process_layout(file).expect("Image Viewer.md should parse");
+        let parsed = process_layout(file).expect("Image Viewer.tmd should parse");
 
         assert_eq!(
             parsed.image_loads,
@@ -6175,6 +6296,112 @@ mod tests {
             );
         }
         assert!(LEADING_KEYWORDS.binary_search(&"shader").is_ok());
+    }
+
+    /// Every keyword the parser acts on must be described by
+    /// [`telera_tmd::schema`], and vice versa. Guards against the schema table
+    /// (the language server's source of truth) drifting from the `process_*`
+    /// match arms as keywords are added or renamed.
+    ///
+    /// The parser recognises a keyword one of three ways, all covered here:
+    /// a string-literal arm of a `match <node>.value.as_str()` inside one of the
+    /// `process_*` walkers; membership in [`SHAPE_PARAM_KEYWORDS`] /
+    /// [`SHADER_PARAM_KEYWORDS`] (guard arms in [`process_configs`]); or the
+    /// positional `` `config` `` block.
+    #[test]
+    fn schema_describes_every_parser_keyword() {
+        use std::collections::BTreeSet;
+        use syn::visit::Visit;
+
+        fn collect_str_pats(pat: &syn::Pat, out: &mut BTreeSet<String>) {
+            match pat {
+                syn::Pat::Lit(p) => {
+                    if let syn::Lit::Str(s) = &p.lit {
+                        out.insert(s.value());
+                    }
+                }
+                syn::Pat::Or(p) => p.cases.iter().for_each(|c| collect_str_pats(c, out)),
+                syn::Pat::Paren(p) => collect_str_pats(&p.pat, out),
+                syn::Pat::Reference(p) => collect_str_pats(&p.pat, out),
+                _ => {}
+            }
+        }
+
+        #[derive(Default)]
+        struct ArmCollector {
+            keywords: BTreeSet<String>,
+        }
+        impl<'ast> Visit<'ast> for ArmCollector {
+            fn visit_expr_match(&mut self, m: &'ast syn::ExprMatch) {
+                let over_as_str = matches!(
+                    &*m.expr,
+                    syn::Expr::MethodCall(mc) if mc.method == "as_str"
+                );
+                if over_as_str {
+                    for arm in &m.arms {
+                        collect_str_pats(&arm.pat, &mut self.keywords);
+                    }
+                }
+                syn::visit::visit_expr_match(self, m);
+            }
+
+            fn visit_expr_binary(&mut self, b: &'ast syn::ExprBinary) {
+                // `keyword.value == "calc"` — the header `calc` directive is
+                // matched with `==`, not a `match` arm.
+                if matches!(b.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
+                    for side in [&*b.left, &*b.right] {
+                        if let syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(s),
+                            ..
+                        }) = side
+                        {
+                            self.keywords.insert(s.value());
+                        }
+                    }
+                }
+                syn::visit::visit_expr_binary(self, b);
+            }
+        }
+
+        const TARGET_FNS: &[&str] = &[
+            "process_header_directive",
+            "process_element",
+            "process_variable",
+            "process_configs",
+            "process_canvas",
+            "collect_calc_fns",
+        ];
+
+        let src = include_str!("layout_runner.rs");
+        let file = syn::parse_file(src).expect("layout_runner.rs parses as a syn::File");
+
+        let mut parser_kw = BTreeSet::<String>::new();
+        for item in &file.items {
+            if let syn::Item::Fn(f) = item
+                && TARGET_FNS.contains(&f.sig.ident.to_string().as_str())
+            {
+                let mut collector = ArmCollector::default();
+                collector.visit_block(&f.block);
+                parser_kw.extend(collector.keywords);
+            }
+        }
+        parser_kw.extend(SHAPE_PARAM_KEYWORDS.iter().map(|s| s.to_string()));
+        parser_kw.extend(SHADER_PARAM_KEYWORDS.iter().map(|s| s.to_string()));
+        parser_kw.insert("config".to_string());
+
+        let schema_kw: BTreeSet<String> = telera_tmd::schema::KEYWORDS
+            .iter()
+            .map(|d| d.name.to_string())
+            .collect();
+
+        let in_parser_only: Vec<&String> = parser_kw.difference(&schema_kw).collect();
+        let in_schema_only: Vec<&String> = schema_kw.difference(&parser_kw).collect();
+        assert!(
+            in_parser_only.is_empty() && in_schema_only.is_empty(),
+            "telera_tmd::schema has drifted from the parser:\n  \
+             handled by the parser, missing from schema: {in_parser_only:?}\n  \
+             in schema, no parser match arm: {in_schema_only:?}"
+        );
     }
 
     /// A `#### TML` header `` `shader` `` directive records a [`ShaderLoad`].
@@ -6298,7 +6525,7 @@ mod tests {
     /// Running the pre-pass over a fully-backticked file is a no-op.
     #[test]
     fn keyword_backtick_prepass_is_idempotent_on_real_files() {
-        for name in ["Main.md", "Custom.md", "Image Viewer.md"] {
+        for name in ["Main.tmd", "Custom.tmd", "Image Viewer.tmd"] {
             let path = format!("{}/examples/layouts/{name}", env!("CARGO_MANIFEST_DIR"));
             let file = std::fs::read_to_string(&path).unwrap();
             assert_eq!(

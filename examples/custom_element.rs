@@ -35,6 +35,7 @@ impl App for MyApp {
             window_name: "Custom".to_string(),
             page: None,
             watch_path: RunType::Watch("examples/layouts".to_string()),
+            agent_access_port: None,
         }
     }
 }

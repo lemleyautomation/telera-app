@@ -419,16 +419,22 @@ impl EffectKind {
     }
 }
 
-/// The fully-resolved (all `f32`) effect payload for one element this frame -
-/// the renderer-side twin of the parser's `ShaderSpec`. `params` / `params2`
-/// are packed per [`EffectKind`] (for `Custom`, they are `shader-param-1..8`
-/// verbatim). `custom` is the interned custom-shader name, unused for built-ins.
+/// The fully-resolved effect payload for one element this frame - the
+/// renderer-side twin of the parser's `ShaderSpec`. `params` / `params2` are
+/// packed per [`EffectKind`] (for `Custom`, they are `shader-param-1..8`
+/// verbatim). `custom` is the interned custom-shader name, unused for
+/// built-ins. `colors` are `shader-color-1`/`-2` (custom shaders only, `[0,
+/// 0]` for a built-in), each a `Color::pack_rgba8()` value carried to the GPU
+/// as a flat-interpolated `u32` (see [`EffectVertex::colors`]) rather than
+/// four more `f32` params - see `Color::pack_rgba8` for why it isn't an
+/// `f32` bit-cast instead.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ResolvedShader {
     pub kind: EffectKind,
     pub custom: Option<GlobalSymbol>,
     pub params: [f32; 4],
     pub params2: [f32; 4],
+    pub colors: [u32; 2],
 }
 
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -635,13 +641,20 @@ pub struct EffectVertex {
     pub radii: [f32; 4],
     pub params: [f32; 4],
     pub params2: [f32; 4],
+    /// `shader-color-1`/`-2`, packed RGBA8 (see [`ResolvedShader::colors`]).
+    /// `Uint32x2`, not `Float32x2` - an integer vertex format is implicitly
+    /// flat (WGSL requires `@interpolate(flat)` on it), so these bits reach
+    /// the fragment shader completely unchanged instead of going through
+    /// interpolation math the way `params`/`params2` do.
+    pub colors: [u32; 2],
 }
 
 impl EffectVertex {
     pub fn get_layout() -> wgpu::VertexBufferLayout<'static> {
-        const ATTR: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
+        const ATTR: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
             0 => Float32x3, 1 => Uint32, 2 => Float32x4, 3 => Float32x2,
-            4 => Float32x2, 5 => Float32x2, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4
+            4 => Float32x2, 5 => Float32x2, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4,
+            9 => Uint32x2
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<EffectVertex>() as u64,
@@ -735,11 +748,16 @@ pub enum RenderBatch {
     },
     /// A run of `effect_indices` drawn by an effect pipeline. `key` picks the
     /// pipeline: `BuiltIn` = the shared SDF pipeline, `Custom(sym)` = a
-    /// user shader from `effect_pipelines`.
+    /// user shader from `effect_pipelines`. `scissor` mirrors `Atlas`'s: the
+    /// clip rect (physical px) active when this run was emitted, so an effect
+    /// on an element inside a `scroll`/canvas clip region doesn't paint past
+    /// it. Without this, an effect always drew fully unclipped, regardless of
+    /// any ancestor clip.
     Effect {
         begin: u32,
         end: u32,
         key: EffectKey,
+        scissor: Option<(UIPosition, UIPosition)>,
     },
 }
 
@@ -1667,6 +1685,42 @@ impl UIRenderer {
         }
     }
 
+    /// Converts a clip rect (physical px, as stashed on a `Scissor`/`Atlas`/
+    /// `Effect` batch) into the `(x, y, w, h)` quad `set_scissor_rect` wants,
+    /// clamped to actually fit inside the current viewport.
+    ///
+    /// The rect arriving here has already been through several rounding
+    /// steps upstream - Clay's own float layout, a `dpi_scale` multiply, and
+    /// `begin_scissor`'s own overflow adjustment - any of which can leave it
+    /// a fraction of a pixel past the true surface bounds. `wgpu` treats an
+    /// out-of-bounds scissor rect as a hard validation error (which crashes
+    /// the process, since nothing here registers a custom `on_uncaptured_error`
+    /// handler), rather than clamping it the way it clamps a viewport.
+    ///
+    /// Clamps each *edge* (`x0`/`x1`, `y0`/`y1`) to the viewport independently,
+    /// rather than clamping `position` and `size` separately and combining
+    /// them afterwards - clamping them separately shrinks the rect correctly
+    /// when only its far edge overshoots, but silently *widens* it back out
+    /// to `size` unchanged whenever `position` itself needed clamping (e.g. a
+    /// rect nominally starting off-screen to the left/top with a size that
+    /// already accounts for that), which is how an earlier version of this
+    /// function could hand back a rect covering the wrong area instead of the
+    /// small sliver that's actually meant to be visible. Working in edges
+    /// throughout also keeps the crash-safety guarantee: since `x0`/`x1` are
+    /// each clamped into `[0, full_w]` and `floor(a) + floor(b - a) <=
+    /// floor(b)` holds for any `0 <= a <= b`, `(x0 as u32) + (w as u32)`
+    /// can never exceed `full_w as u32` (and likewise for y/h), regardless of
+    /// how the input rect got here.
+    fn clamp_scissor(&self, position: UIPosition, size: UIPosition) -> (u32, u32, u32, u32) {
+        let full_w = self.viewport_size.0.max(0.0);
+        let full_h = self.viewport_size.1.max(0.0);
+        let x0 = position.x.clamp(0.0, full_w);
+        let y0 = position.y.clamp(0.0, full_h);
+        let x1 = (position.x + size.x.max(0.0)).clamp(0.0, full_w);
+        let y1 = (position.y + size.y.max(0.0)).clamp(0.0, full_h);
+        (x0 as u32, y0 as u32, (x1 - x0).max(0.0) as u32, (y1 - y0).max(0.0) as u32)
+    }
+
     pub fn end(
         &mut self,
         render_pass: &mut wgpu::RenderPass,
@@ -1715,12 +1769,8 @@ impl UIRenderer {
                             position,
                             size,
                         } => {
-                            render_pass.set_scissor_rect(
-                                position.x as u32,
-                                position.y as u32,
-                                size.x as u32,
-                                size.y as u32,
-                            );
+                            let (x, y, w, h) = self.clamp_scissor(*position, *size);
+                            render_pass.set_scissor_rect(x, y, w, h);
                             render_pass.draw_indexed(*begin..*end, 0, 0..1);
                             render_pass.set_scissor_rect(
                                 0,
@@ -1740,12 +1790,8 @@ impl UIRenderer {
                                 Some(atlas) => {
                                     render_pass.set_bind_group(0, atlas, &[]);
                                     if let Some((position, size)) = scissor {
-                                        render_pass.set_scissor_rect(
-                                            position.x as u32,
-                                            position.y as u32,
-                                            size.x as u32,
-                                            size.y as u32,
-                                        );
+                                        let (x, y, w, h) = self.clamp_scissor(*position, *size);
+                                        render_pass.set_scissor_rect(x, y, w, h);
                                         render_pass.draw_indexed(*begin..*end, 0, 0..1);
                                         render_pass.set_scissor_rect(
                                             0,
@@ -1759,7 +1805,7 @@ impl UIRenderer {
                                 }
                             }
                         }
-                        RenderBatch::Effect { begin, end, key } => {
+                        RenderBatch::Effect { begin, end, key, scissor } => {
                             let pipeline = match key {
                                 EffectKey::BuiltIn => self.effect_pipeline.as_ref(),
                                 EffectKey::Custom(sym) => self.effect_pipelines.get(sym),
@@ -1774,7 +1820,19 @@ impl UIRenderer {
                                 self.effect_index_buffer.slice(..),
                                 wgpu::IndexFormat::Uint32,
                             );
-                            render_pass.draw_indexed(*begin..*end, 0, 0..1);
+                            if let Some((position, size)) = scissor {
+                                let (x, y, w, h) = self.clamp_scissor(*position, *size);
+                                render_pass.set_scissor_rect(x, y, w, h);
+                                render_pass.draw_indexed(*begin..*end, 0, 0..1);
+                                render_pass.set_scissor_rect(
+                                    0,
+                                    0,
+                                    self.viewport_size.0 as u32,
+                                    self.viewport_size.1 as u32,
+                                );
+                            } else {
+                                render_pass.draw_indexed(*begin..*end, 0, 0..1);
+                            }
                             on_effect = true;
                         }
                     }
@@ -2675,7 +2733,7 @@ impl UIRenderer {
         let vbase = self.effect_vertices.len() as u32;
         // Vertex `color` is the element's own fill (what `raised-edge` and
         // custom shaders read as `in.color`); effect-specific colours ride in
-        // `params2`.
+        // `params2`/`colors`.
         let v = |px: f32, py: f32, u: f32, vv: f32| EffectVertex {
             position: UIPosition { x: px, y: py, z },
             effect,
@@ -2686,6 +2744,7 @@ impl UIRenderer {
             radii,
             params,
             params2: rs.params2,
+            colors: rs.colors,
         };
         self.effect_vertices.extend_from_slice(&[
             v(x0, y0, 0.0, 0.0),
@@ -2711,14 +2770,38 @@ impl UIRenderer {
     }
 
     /// Closes the current effect run as a `RenderBatch::Effect`, flushing the
-    /// pending main `Basic` range first so draw order (and depth) is preserved.
+    /// pending main range first (as `Scissor` rather than `Basic` when a clip
+    /// is active, same as `bind_atlas`/`end_atlas` - otherwise the pending
+    /// scissored geometry silently loses its clip the first time an effect is
+    /// emitted inside it) so draw order (and depth) is preserved, and carrying
+    /// the current clip rect (if any) onto the `Effect` batch itself.
     fn batch_effect(&mut self, key: EffectKey) {
-        self.batch();
+        if self.batch_index_end > self.batch_index_begin {
+            if self.scissor_active {
+                self.batches.push(RenderBatch::Scissor {
+                    begin: self.batch_index_begin,
+                    end: self.batch_index_end,
+                    position: self.scissor_position,
+                    size: self.scissor_size,
+                });
+            } else {
+                self.batches.push(RenderBatch::Basic {
+                    begin: self.batch_index_begin,
+                    end: self.batch_index_end,
+                });
+            }
+            self.batch_index_begin = self.batch_index_end;
+        }
         if self.effect_batch_index_end > self.effect_batch_index_begin {
             self.batches.push(RenderBatch::Effect {
                 begin: self.effect_batch_index_begin,
                 end: self.effect_batch_index_end,
                 key,
+                scissor: if self.scissor_active {
+                    Some((self.scissor_position, self.scissor_size))
+                } else {
+                    None
+                },
             });
             self.effect_batch_index_begin = self.effect_batch_index_end;
         }

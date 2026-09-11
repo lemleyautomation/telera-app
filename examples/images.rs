@@ -1,6 +1,6 @@
 use telera_app::*;
 
-/// `Image Viewer.md` shows all three ways a layout gets an image:
+/// `Image Viewer.tmd` shows all three ways a layout gets an image:
 ///
 /// * `` `load` [pic](examples/pic.jpg) `` in the header - the parser asks the
 ///   API to stage the file, no Rust involved.
@@ -24,6 +24,7 @@ impl App for MyApp {
             window_name: "Image Viewer".to_string(),
             page: None,
             watch_path: RunType::Watch("examples/layouts".to_string()),
+            agent_access_port: None,
         }
     }
 

@@ -37,7 +37,11 @@ impl App for BasicApp {
             window_attributes: Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)),
             window_name: "Main".to_string(),
             page: None,
-            watch_path: RunType::None
+            watch_path: RunType::None,
+            // Wired on for manual testing of the agent access port - see
+            // `src/agent_port.rs`. `curl http://127.0.0.1:4545/health` once
+            // this example is running.
+            agent_access_port: Some(4545),
         }
     }
 

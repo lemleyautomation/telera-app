@@ -13,9 +13,14 @@ wired up to anything, that's called out explicitly in
 [Known incomplete paths](#known-incomplete-paths) rather than presented as
 working.
 
+TML layout files use the **`.tmd`** extension ("telera markdown"). A file's
+content is still Markdown - the `markdown` crate parses it into an AST that this
+grammar walks - `.tmd` just marks it as a Telera layout so editors and the
+loader can tell it apart from ordinary Markdown.
+
 A `#### TML <version>` heading may appear (conventionally first) to open the
 optional preamble block - see below. It is otherwise not required, and the
-version string is not checked today; every `.md` file under an app's
+version string is not checked today; every `.tmd` file under an app's
 configured layout directory is parsed the same way, by the same fixed grammar
 described here.
 
@@ -43,7 +48,7 @@ A TML file is a Markdown document read by the `markdown` crate into an AST
 - **A level-1 heading** (`# anything`) marks the start of the page body. The
   heading text itself is ignored - `# root` is the convention, but the page
   is actually named by whoever loads the file (`Binder::load_layout`/`API`
-  use the file's own name, minus `.md`). Only the Markdown *list* that
+  use the file's own name, minus its extension). Only the Markdown *list* that
   immediately follows becomes the page body; everything before the `#`
   heading (or between it and the list) is ignored by the parser.
 - **A level-2 heading** (`## name`) opens a **reusable config snippet**: the
@@ -411,7 +416,7 @@ A shape's children are laid out inside it like any container and drawn on
 top of it, so nesting shapes stacks them: an `arc` whose child is another
 `arc` (each `grow`ing to fill the box) draws two concentric sweeps - a track
 plus a value - which is how an RPM-style gauge is built. See
-`examples/layouts/shapes.md`.
+`examples/layouts/shapes.tmd`.
 
 | element | draws |
 |---|---|
@@ -509,7 +514,7 @@ was removed: drive cameras from `update()` or from these keywords.
             - `fov` 50
 ```
 
-See `examples/scene.rs` + `examples/layouts/scene.md`.
+See `examples/scene.rs` + `examples/layouts/scene.tmd`.
 
 ### `canvas`
 
@@ -589,7 +594,7 @@ Canvas-only config keywords:
 | `zoom` | number | initial zoom, applied once the first time the canvas is laid out |
 | `pan-x` / `pan-y` | number (physical px) | initial pan, applied once |
 
-See `examples/canvas.rs` + `examples/layouts/Canvas.md`.
+See `examples/canvas.rs` + `examples/layouts/Canvas.tmd`.
 
 ### `list` / `item`
 
@@ -743,6 +748,8 @@ member folds them into a single sizing rule.
 | `left-pressed`/`left-down`/`left-released`/`left-clicked`/`left-dbl-clicked` | same shape as `hover` | mouse-button event blocks |
 | `left-tpl-clicked`* | same shape | parsed but never fires (no triple-click tracking) |
 | `right-pressed`/`right-down`/`right-released`/`right-clicked` | same shape as `hover` | right mouse-button event blocks |
+| `middle-pressed`/`middle-down`/`middle-released`/`middle-clicked` | same shape as `hover` | middle mouse-button event blocks |
+| `wheel` | same shape as `hover` | fires while hovered **and** the scroll wheel moved this frame; the handler reads the amount/direction itself via `api.scroll_delta()` |
 | `pointer` | plain text: `standard`/`resize-horizontal` | sets the cursor icon while this element (or an ancestor, since it's not gated) is being laid out |
 | `font-id` | single (number) | text: font id |
 | `font-size` | single (number) | text: font size |
@@ -754,7 +761,7 @@ member folds them into a single sizing rule.
 | shape-config keywords (`thickness`/`width`, `from`/`to`/`center`, `from-x`, `radius`, `start-angle`, ...) | single (number) or anchor word | geometry of a drawn shape - see [`circle` / `ring` / `line` / `arc` / `bezier`](#circle--ring--line--arc--bezier-drawn-shapes); ignored outside the shape they belong to |
 | camera keywords (`eye-x/-y/-z`, `target-x/-y/-z`, `up-x/-y/-z`, `fov`, `ortho-height`, `near`, `far`) | single (number) | position a `render-window`'s camera - see [`render-window`](#render-window); ignored elsewhere |
 | `shader` | single (name), emphasised or bare | attach a fragment effect (`drop_shadow`/`raised_edge`/`inner_glow`, or a custom shader) - see [Effects](#effects) |
-| effect keywords (`shadow-blur`, `shadow-color`, `shadow-offset-x/-y`, `shadow-spread`, `bevel-width`, `bevel-light-angle`, `bevel-highlight`, `bevel-shade`, `glow-blur`, `glow-spread`, `glow-color`, `blur-radius`, `blur-tint`, `shader-param-1`..`shader-param-8`) | single (number or color) | tune the open `shader` effect; ignored with no `shader` |
+| effect keywords (`shadow-blur`, `shadow-color`, `shadow-offset-x/-y`, `shadow-spread`, `bevel-width`, `bevel-light-angle`, `bevel-highlight`, `bevel-shade`, `glow-blur`, `glow-spread`, `glow-color`, `blur-radius`, `blur-tint`, `shader-param-1`..`shader-param-8`, `shader-color-1`/`shader-color-2`) | single (number or color) | tune the open `shader` effect; ignored with no `shader`. `shader-color-1`/`-2` are custom-shader-only: unlike the numbered params, each is carried to the shader as one packed `u32` (`in.colors.x`/`.y`, unpack with `unpack4x8unorm`) rather than spending four `shader-param-*` slots per color |
 
 *Marked keywords parse into real `Element` commands but never actually
 fire - see [Known incomplete paths](#known-incomplete-paths).
@@ -874,11 +881,20 @@ Distances are logical px.
 **Custom shaders.** A `` - `shader` [name](path.wgsl) `` preamble directive
 loads a WGSL file that provides only `fs_main` (telera prepends the vertex
 stage, bind groups, the `VertexPayload` struct and an `sd_rounded_box` helper).
-Apply it the same way - `` `shader` *name* `` - and pass up to eight positional
+Apply it the same way - `` `shader` *name* `` - and pass up to eight numeric
 values with `` `shader-param-1` `` .. `` `shader-param-8` `` (the shader reads
-them as `in.params` / `in.params2`). A file that fails to load/validate is
-logged and the element just renders without the effect. See
+them as `in.params` / `in.params2`), plus two colors with `` `shader-color-1` ``
+/ `` `shader-color-2` `` (each a literal `rgb()`/`rgba()`/named color or a
+`*binding*`, exactly like `shadow-color`; the shader reads them as
+`unpack4x8unorm(in.colors.x)` / `.y`, each a `vec4<f32>` with channels in
+`0..1`). The colors ride in their own packed, flat-interpolated `u32` slots
+rather than spending four `shader-param-*` values per color, so all eight
+numeric params stay free for other tuning. A file that fails to load/validate
+is logged and the element just renders without the effect. See
 `examples/effects.rs` and `examples/shaders/glass.wgsl` / `neon.wgsl`.
+
+Neither the numeric params nor the two colors are scaled by canvas zoom or
+window dpi - see the note under [Known incomplete paths](#known-incomplete-paths).
 
 ## 6. Events
 
@@ -919,11 +935,14 @@ The condition each keyword gates on:
 | `left-clicked` | hovered *and* a left click completed this frame |
 | `left-dbl-clicked` | hovered *and* a double-click completed this frame |
 | `right-pressed`/`right-down`/`right-released`/`right-clicked` | same, right mouse button |
+| `middle-pressed`/`middle-down`/`middle-released`/`middle-clicked` | same, middle mouse button |
+| `wheel` | hovered *and* the scroll wheel moved this frame; the handler reads the amount via `api.scroll_delta()` |
 
-Every mouse-button block is hover-gated: the block opens (and its event fires)
-only while the pointer is over this element. A press that starts on the element
-and a button still held after the pointer leaves both stop matching once
-`hovered` goes false.
+Every mouse-button block (and `wheel`) is hover-gated: the block opens (and its
+event fires) only while the pointer is over this element. A press that starts
+on the element and a button still held after the pointer leaves both stop
+matching once `hovered` goes false - the same is true of a wheel turn that
+starts while hovered but where the pointer has since moved off.
 | `focus` | this (named) element is the focused element |
 | `key-event` | this (named) element is focused *and* the window has key events queued this frame |
 
@@ -959,10 +978,18 @@ working:
   renderer knows how to draw, but `process_element` never produces it (only
   `circle` and `line` map to a `CustomElement` from TML).
 - `canvas` zoom does not scale `` `shader` `` effect sizes (`shadow-blur`,
-  `glow-spread`, `blur-radius`, `bevel-width`, ...) - `ResolvedShader` packs
-  them as a flat parameter array with per-effect meaning, so a zoom multiply
-  needs per-effect handling that isn't wired yet. Every other spatial config
-  inside a `canvas` scales.
+  `glow-spread`, `blur-radius`, `bevel-width`, ...), nor a custom shader's
+  `shader-param-1`..`8` - `ResolvedShader` packs them as a flat parameter
+  array with per-effect (or, for a custom shader, per-app) meaning, so a zoom
+  multiply needs per-effect handling that isn't wired yet. Every other
+  spatial config inside a `canvas` scales; an app that wants a custom
+  shader's params to track zoom has to multiply them itself (typically via a
+  `*binding*` recomputed each frame from `Canvas::zoom`). Custom-shader
+  params also aren't scaled by window dpi the way the geometry they measure
+  against (`in.rect_center`/`rect_half`/`frag_px`, already physical px) is -
+  an app usually wants to fold `API::dpi_scale()` into the same per-frame
+  multiply. `shader-color-1`/`-2` are unaffected either way (colors aren't
+  spatial).
 - `calc` expressions are only accepted as a `` `set-numeric` `` value. There
   is no `calc-color`, and no inline `calc(...)` directly on a config line -
   compute the value in a `` `set-numeric` `` and reference it by name.

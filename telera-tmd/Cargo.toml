@@ -1,0 +1,17 @@
+[package]
+name = "telera-tmd"
+version = "0.1.0"
+edition = "2024"
+description = "Shared grammar for the Telera markdown layout language (`.tmd`): the compile-time `calc` sub-language, the keyword backtick pre-pass, the keyword schema, Rust field-type classification, and a position-aware structural parser. Consumed by telera-app (runtime), telera_macros (derives), and telera-lsp (editor tooling)."
+
+[dependencies]
+# `syn` is needed by `classify` (used by telera_macros) - not optional.
+syn = { version = "2.0", default-features = false, features = ["parsing", "derive"] }
+# `markdown` is only needed by `tree` (used by telera-lsp) - feature-gated so
+# telera_macros doesn't pull it in.
+markdown = { version = "1.0", optional = true }
+
+[features]
+default = ["mdast"]
+# The position-aware structural parser (`tree`), which walks `markdown`'s mdast.
+mdast = ["dep:markdown"]

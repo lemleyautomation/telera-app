@@ -3,7 +3,7 @@
 The Rust side of the framework: the `App` trait you implement, the `run` entry
 point, the macros that erase the boilerplate, and every public method on `API`.
 
-For the markdown layout language (`.md` layout files, the `` `element` `` /
+For the markdown layout language (`.tmd` layout files, the `` `element` `` /
 `` `text` `` / `` `list` `` / `` `render-window` `` vocabulary, data binding,
 events) see [`tml-spec.md`](tml-spec.md). This document is only the Rust
 surface.
@@ -50,7 +50,7 @@ fn main() {
 }
 ```
 
-with `layouts/Main.md`:
+with `layouts/Main.tmd`:
 
 ```markdown
 # root
@@ -81,12 +81,12 @@ What each piece does:
 | `#[telera_app]` on the `impl` | generates the event/element dispatch glue; `#[layout_event] fn bump` becomes reachable as `left-clicked bump` |
 | `impl App` + `initialize` | the one required method: hands back the first window and where the layout files live |
 | `App::update` | your per-frame logic - here it re-formats `label` from the click count |
-| `Startup::watch_path` | `RunType::Watch("layouts")` loads every `.md` under `layouts/` and hot-reloads on change; the page shown is `Main.md` (matches `window_name`) |
-| the `.md` file | one page. A leading `#### TML 1.0` header block is optional and only needed for `` `load` `` (image) / `` `font` `` directives (`tml-spec.md` §Images) |
+| `Startup::watch_path` | `RunType::Watch("layouts")` loads every `.tmd` under `layouts/` and hot-reloads on change; the page shown is `Main.tmd` (matches `window_name`) |
+| the `.tmd` file | one page. A leading `#### TML 1.0` header block is optional and only needed for `` `load` `` (image) / `` `font` `` directives (`tml-spec.md` §Images) |
 | `run::<MyApp>(app)` | takes over the thread, opens the window, runs the event loop |
 
 That is the whole program - no manual render loop, no GPU setup, no event
-plumbing. `cargo run` and edit `Main.md` live.
+plumbing. `cargo run` and edit `Main.tmd` live.
 
 ---
 
@@ -134,11 +134,11 @@ pub struct Startup {
 
 | variant | meaning |
 |---|---|
-| `RunType::Watch(dir)` | load every `.md` under `dir` at startup, then hot-reload changed files |
-| `RunType::Once(dir)` | load every `.md` under `dir` once, never look again |
+| `RunType::Watch(dir)` | load every `.tmd` under `dir` at startup, then hot-reload changed files |
+| `RunType::Once(dir)` | load every `.tmd` under `dir` once, never look again |
 | `RunType::None` | don't load any layout files - this app builds its UI in Rust via `App::layout` (see #4) |
 
-A "page" is one `.md` file (named by its filename minus `.md`); reusable
+A "page" is one `.tmd` file (named by its filename minus its extension); reusable
 snippets inside a file are `## headings`. See `tml-spec.md` §1.
 
 ---
@@ -171,8 +171,8 @@ case does not. Write the Rust identifier verbatim in the layout.
 struct App {
     title: String,           // *title*
     zoom: f32,               // *zoom*
-    dark_mode: bool,         // *dark mode*  (in an `if`)
-    documents: Vec<Doc>,     // `list` Documents
+    dark_mode: bool,         // *dark_mode*  (in an `if`)
+    documents: Vec<Doc>,     // `list` documents
     selected: usize,         // an index field for `item` / `if-index`
 }
 ```
@@ -193,8 +193,8 @@ Put it on the `T` in a `Vec<T>` list field.
 ```rust
 #[derive(FieldAccess, Default)]
 struct Doc {
-    title: String,       // inside `list` Documents: *title*
-    word_count: u32,     // *word count*
+    title: String,       // inside `list` documents: *title*
+    word_count: u32,     // *word_count*
 }
 ```
 
@@ -316,6 +316,7 @@ input. Away from any window they return a neutral default.
 | `x_at_click() / y_at_click() -> f32` | cursor position (logical px) latched at the last mouse-down | |
 | `left_mouse_pressed() / _down() / _released() / _clicked() / _double_clicked() -> bool` | edge (`pressed`/`released`/`clicked`) vs level (`down`) | `clicked` = quick press+release |
 | `right_mouse_pressed() / _down() / _released() / _clicked() -> bool` | same for the right button | |
+| `middle_mouse_pressed() / _down() / _released() / _clicked() -> bool` | same for the middle button | |
 | `key_events() -> &[KeyEvent]` | winit key events since the last redraw | read them the frame they arrive |
 | `event_string() -> &str` | accumulated text this frame | |
 | `focus() -> Option<GlobalSymbol>` | the interned id of the focused element, or `None` | only named elements are focusable |
@@ -350,7 +351,7 @@ lookup key. Missing name → the call is a silent no-op.
 fn onload(&mut self, api: &mut API) {
     api.create_viewport(
         "Inspector",
-        Some("inspector"),                        // shows inspector.md
+        Some("inspector"),                        // shows inspector.tmd
         Window::default_attributes().with_inner_size(LogicalSize::new(400, 700)),
     );
 }

@@ -3104,8 +3104,12 @@ dependencies = [
  "notify",
  "pollster",
  "rkyv",
+ "serde",
+ "serde_json",
  "symbol_table",
+ "syn 2.0.119",
  "telera-layout",
+ "telera-tmd",
  "telera_macros",
  "unicode-script",
  "wgpu",
@@ -3122,12 +3126,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "telera-tmd"
+version = "0.1.0"
+dependencies = [
+ "markdown",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "telera_macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+ "telera-tmd",
 ]
 
 [[package]]

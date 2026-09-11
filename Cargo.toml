@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "telera_macros", "telera-tmd"]
+
 [package]
 name = "telera-app"
 version = "0.4.0"
@@ -5,6 +8,7 @@ edition = "2024"
 
 [dependencies]
 telera_macros = { path = "telera_macros" }
+telera-tmd = { path = "telera-tmd" }
 telera-layout = { path = "../telera-layout"}
 winit = "0.30.12"
 wgpu = "30.0.1"
@@ -23,6 +27,13 @@ bimap = "0.6.3"
 rkyv = "0.8.18"
 markdown = "1.0.0"
 symbol_table = { version = "0.5.0", features = [ "global" ] }
+serde = { version = "1", features = [ "derive" ] }
+serde_json = "1"
+
+[dev-dependencies]
+# The schema-drift test parses `src/ui/layout_runner.rs` to check every
+# `process_*` keyword match arm is described by `telera_tmd::schema`.
+syn = { version = "2.0", features = [ "full", "parsing", "visit" ] }
 
 # Line tables in optimized builds so `samply` / `cargo flamegraph` can name
 # frames (applies to the whole graph: telera-layout, wgpu, lyon, glyphon, ...).

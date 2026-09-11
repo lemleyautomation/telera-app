@@ -16,15 +16,18 @@ use winit::{
 pub use winit::{
     dpi::LogicalSize,
     event::{ElementState, KeyEvent},
-    keyboard::{self, Key, KeyCode, NamedKey, PhysicalKey},
+    keyboard::{self, Key, KeyCode, KeyLocation, NamedKey, PhysicalKey},
     window::{Window, WindowAttributes, WindowId},
 };
+
+mod agent_port;
 
 mod graphics;
 pub use graphics::model::{
     BaseMesh, Euler, Model, Quaternion, Transform, TransformMatrix, load_model_gltf,
 };
 pub use graphics::camera::Camera;
+pub use graphics::viewport::SyntheticKeyEvent;
 pub use ui::canvas::Canvas;
 use graphics::{
     scene_renderer::SceneRenderer,
@@ -51,19 +54,37 @@ use ui::{
 pub enum APIError {
     ModelNotFound,
 }
-/// Sent through the winit event loop's user-event channel by the
-/// background thread `spawn_layout_watcher` starts for `RunType::Watch` -
-/// `notify`'s watcher callback runs off the event-loop thread and can't
-/// touch `API`/`Binder` directly, so it just names the file that changed
-/// and lets `Application::user_event` do the actual reload.
+/// Sent through the winit event loop's user-event channel by a background
+/// thread that can't safely touch `API`/`Binder` itself, for
+/// `Application::user_event` to act on back on the event-loop thread.
+/// `RebuildLayout` is `spawn_layout_watcher`'s (`RunType::Watch`); the
+/// `Agent*` variants are the agent access port's (`Startup::agent_access_port`,
+/// `agent_port::spawn_agent_listener`) - each carries an `mpsc::Sender` so
+/// the HTTP connection thread that sent it can block for a reply.
 #[derive(Debug)]
 enum InternalEvents {
     RebuildLayout(PathBuf),
+    AgentInput {
+        window: String,
+        events: Vec<agent_port::SyntheticEvent>,
+        reply: mpsc::Sender<agent_port::AgentReply>,
+    },
+    AgentScreenshot {
+        window: String,
+        path: PathBuf,
+        reply: mpsc::Sender<agent_port::AgentReply>,
+    },
+    AgentDump {
+        window: String,
+        kind: agent_port::DumpKind,
+        path: PathBuf,
+        reply: mpsc::Sender<agent_port::AgentReply>,
+    },
 }
 
 /// How an `App` wants its markdown layout file(s) loaded, per
 /// [`Startup::watch_path`]. In every non-`None` case the string names a
-/// *directory* - `API` recursively loads every `.md` file it finds there
+/// *directory* - `API` recursively loads every `.tmd` file it finds there
 /// into the `Binder`, not a single file.
 #[derive(Clone)]
 pub enum RunType {
@@ -84,10 +105,19 @@ pub struct Startup {
     /// The bootstrap window's title and its viewport-lookup key.
     pub window_name: String,
     /// The page the bootstrap window shows. `None` means "use `window_name`",
-    /// i.e. the layout file named `<window_name>.md` (or a page registered
+    /// i.e. the layout file named `<window_name>.tmd` (or a page registered
     /// under that name by hand). Change it later with [`API::set_viewport_page`].
     pub page: Option<String>,
     pub watch_path: RunType,
+    /// If `Some(port)`, spawns a background HTTP listener on
+    /// `127.0.0.1:port` that lets an external agent (a script, a test
+    /// harness, an LLM tool) drive this app: inject synthetic mouse/
+    /// keyboard input, request a screenshot, or dump the current layout/
+    /// render commands to a file - see `agent_port` for the wire format.
+    /// While active, a ~3px border is force-drawn around every window so
+    /// it's visually obvious the app is remotely controllable. `None` (the
+    /// default) disables the feature entirely - no socket is opened.
+    pub agent_access_port: Option<u16>,
 }
 
 #[allow(unused_variables)]
@@ -202,6 +232,19 @@ pub struct API {
     /// `api.canvas("name")`). Auto-created the first frame a `canvas` of that
     /// name is laid out; never auto-removed.
     canvases: HashMap<symbol_table::GlobalSymbol, Canvas>,
+
+    /// Set once from `Startup::agent_access_port.is_some()`; never toggled
+    /// back off at runtime. Read every frame in `redraw_viewport` to decide
+    /// whether to force-draw the "remotely controllable" border.
+    agent_port_active: bool,
+    /// `POST /screenshot` requests queued in `Application::user_event`,
+    /// fulfilled from inside `redraw_viewport` once `window_id` actually
+    /// redraws (screenshot pixels are transient, only existing mid-frame).
+    pending_screenshots: Vec<agent_port::PendingScreenshot>,
+    /// Same idea for `POST /dump` requests whose `kind` needs
+    /// `render_commands` (`"render"`/`"both"`) - a `"layout"`-only dump is
+    /// answered synchronously in `user_event` instead.
+    pending_dumps: Vec<agent_port::PendingDump>,
 }
 
 /// Per-window input accessors. Each reads the [`Viewport`] named by
@@ -283,6 +326,20 @@ impl API {
     pub fn right_mouse_clicked(&self) -> bool {
         self.active_viewport().is_some_and(|v| v.right_mouse_clicked)
     }
+    pub fn middle_mouse_pressed(&self) -> bool {
+        self.active_viewport().is_some_and(|v| v.middle_mouse_pressed)
+    }
+    pub fn middle_mouse_down(&self) -> bool {
+        self.active_viewport().is_some_and(|v| v.middle_mouse_down)
+    }
+    pub fn middle_mouse_released(&self) -> bool {
+        self.active_viewport()
+            .is_some_and(|v| v.middle_mouse_released)
+    }
+    pub fn middle_mouse_clicked(&self) -> bool {
+        self.active_viewport()
+            .is_some_and(|v| v.middle_mouse_clicked)
+    }
 
     /// Key events that landed on the active window since its last redraw.
     /// Cleared by `Viewport::end_frame` once the frame has consumed them, so a
@@ -292,6 +349,19 @@ impl API {
     }
     pub fn event_string(&self) -> &str {
         self.active_viewport().map_or("", |v| v.event_string.as_str())
+    }
+    /// Keyboard events fabricated by the agent access port's `POST /input`
+    /// (`key_down`/`key_up`) on the active window since its last redraw.
+    /// Separate from `key_events` because a real `winit::event::KeyEvent`
+    /// can't be constructed outside winit - see [`SyntheticKeyEvent`].
+    pub fn synthetic_key_events(&self) -> &[SyntheticKeyEvent] {
+        self.active_viewport()
+            .map_or(&[], |v| v.synthetic_key_events.as_slice())
+    }
+    /// Whether `Startup::agent_access_port` was set - i.e. whether a
+    /// remote-control HTTP listener is running for this app.
+    pub fn agent_port_active(&self) -> bool {
+        self.agent_port_active
     }
 }
 
@@ -361,7 +431,12 @@ impl API {
                 continue;
             };
             let surface_config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                // `COPY_SRC` alongside the usual `RENDER_ATTACHMENT` so the
+                // agent access port's screenshot readback (a
+                // `copy_texture_to_buffer` straight off the swapchain
+                // texture) is legal - without it, wgpu's validation layer
+                // rejects that copy as a hard (process-crashing) error.
+                usage: agent_port_usage(self.agent_port_active),
                 format: *surface_format,
                 color_space: wgpu::SurfaceColorSpace::Auto,
                 width: size.width,
@@ -483,6 +558,89 @@ impl API {
             }
             let (commands, ui_renderer) = self.l.end_layout();
             render_commands = commands;
+
+            // Agent access port: force-draw a ~3px border around the whole
+            // window while the port is active, so it's never ambiguous on
+            // screen that this app is remotely controllable. Appended last -
+            // `ui_renderer::render_layout` draws commands in list order with
+            // no re-sort, so this always paints over everything else in the
+            // frame regardless of its `z_index`.
+            if self.agent_port_active {
+                let logical_w = ui_renderer.viewport_size.0 / ui_renderer.dpi_scale;
+                let logical_h = ui_renderer.viewport_size.1 / ui_renderer.dpi_scale;
+                render_commands.push(ui::telera_layout::RenderCommand::Border(
+                    ui::telera_layout::Border {
+                        bounding_box: ui::telera_layout::BoundingBox {
+                            x: 0.0,
+                            y: 0.0,
+                            width: logical_w,
+                            height: logical_h,
+                        },
+                        id: u32::MAX,
+                        z_index: i16::MAX,
+                        custom_layout_settings: None,
+                        color: Color { r: 255.0, g: 45.0, b: 0.0, a: 255.0 },
+                        corner_radii: ui::telera_layout::CornerRadii {
+                            top_left: 0.0,
+                            top_right: 0.0,
+                            bottom_left: 0.0,
+                            bottom_right: 0.0,
+                        },
+                        width: ui::telera_layout::BorderWidth {
+                            left: 3,
+                            right: 3,
+                            top: 3,
+                            bottom: 3,
+                            between_children: 0,
+                        },
+                    },
+                ));
+            }
+
+            // Agent access port: fulfil any `POST /dump` requests for this
+            // window that need `render_commands` (`"render"`/`"both"`) - a
+            // `"layout"`-only dump was already answered synchronously in
+            // `user_event`, so only those two kinds ever land here.
+            if !self.pending_dumps.is_empty() {
+                let (due, remaining): (Vec<_>, Vec<_>) = self
+                    .pending_dumps
+                    .drain(..)
+                    .partition(|pending| pending.window_id == window_id);
+                self.pending_dumps = remaining;
+                for pending in due {
+                    let mut text = String::new();
+                    if matches!(
+                        pending.kind,
+                        agent_port::DumpKind::Layout | agent_port::DumpKind::Both
+                    ) {
+                        text.push_str("=== LAYOUT COMMANDS ===\n");
+                        match self.binder.page(&page) {
+                            Some(layout) => text.push_str(&format!("{layout:#?}\n")),
+                            None => text.push_str("(page not found)\n"),
+                        }
+                    }
+                    if matches!(
+                        pending.kind,
+                        agent_port::DumpKind::Render | agent_port::DumpKind::Both
+                    ) {
+                        text.push_str("=== RENDER COMMANDS ===\n");
+                        text.push_str(&format!("{render_commands:#?}\n"));
+                    }
+                    match std::fs::write(&pending.path, text) {
+                        Ok(()) => {
+                            let _ = pending.reply.send(agent_port::AgentReply::ok(Some(
+                                pending.path.display().to_string(),
+                            )));
+                        }
+                        Err(error) => {
+                            let _ = pending
+                                .reply
+                                .send(agent_port::AgentReply::error(error.to_string()));
+                        }
+                    }
+                }
+            }
+
             // Canvas pan/zoom control and the world-size auto fallback want this
             // frame's on-screen rect for every `canvas` element the walk touched.
             self.refresh_canvas_rects();
@@ -734,8 +892,58 @@ impl API {
                     );
                 }
 
+                // Agent access port: if a screenshot was requested for this
+                // window, record the readback copy into this same command
+                // buffer now - `drawable`'s texture is about to be presented
+                // and is the last point in the frame it can be read from.
+                let screenshot_readback = if self
+                    .pending_screenshots
+                    .iter()
+                    .any(|pending| pending.window_id == window_id)
+                {
+                    let (due, remaining): (Vec<_>, Vec<_>) = self
+                        .pending_screenshots
+                        .drain(..)
+                        .partition(|pending| pending.window_id == window_id);
+                    self.pending_screenshots = remaining;
+
+                    let format = viewport.surface_config.format;
+                    let width = viewport.surface_config.width;
+                    let height = viewport.surface_config.height;
+                    let unpadded_bpr = width * 4;
+                    let padded_bpr = unpadded_bpr.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+                        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+                    let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("agent screenshot readback"),
+                        size: u64::from(padded_bpr) * u64::from(height),
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    });
+                    command_encoder.copy_texture_to_buffer(
+                        drawable.texture.as_image_copy(),
+                        wgpu::TexelCopyBufferInfo {
+                            buffer: &readback_buffer,
+                            layout: wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(padded_bpr),
+                                rows_per_image: Some(height),
+                            },
+                        },
+                        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                    );
+                    Some((readback_buffer, width, height, padded_bpr, unpadded_bpr, format, due))
+                } else {
+                    None
+                };
+
                 self.queue.submit(std::iter::once(command_encoder.finish()));
                 self.queue.present(drawable);
+
+                if let Some((readback_buffer, width, height, padded_bpr, unpadded_bpr, format, due)) =
+                    screenshot_readback
+                {
+                    self.fulfil_screenshots(readback_buffer, width, height, padded_bpr, unpadded_bpr, format, due);
+                }
             }
 
             self.ui_renderer = Some(ui_renderer);
@@ -749,6 +957,98 @@ impl API {
         }
         self.active_window = None;
 
+    }
+
+    /// Maps `readback_buffer` (already holding a `copy_texture_to_buffer` of
+    /// the just-presented frame, padded to `padded_bpr`-byte rows per wgpu's
+    /// alignment requirement), strips the padding (and swaps BGRA -> RGBA if
+    /// the surface uses a BGRA format), encodes it as PNG via the `image`
+    /// crate, and replies to every queued `POST /screenshot` request that
+    /// wanted this frame.
+    fn fulfil_screenshots(
+        &mut self,
+        readback_buffer: wgpu::Buffer,
+        width: u32,
+        height: u32,
+        padded_bpr: u32,
+        unpadded_bpr: u32,
+        format: wgpu::TextureFormat,
+        due: Vec<agent_port::PendingScreenshot>,
+    ) {
+        let slice = readback_buffer.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+
+        if !rx.recv().is_ok_and(|result| result.is_ok()) {
+            for pending in due {
+                let _ = pending
+                    .reply
+                    .send(agent_port::AgentReply::error("failed to map screenshot buffer"));
+            }
+            return;
+        }
+
+        let data = match slice.get_mapped_range() {
+            Ok(data) => data,
+            Err(error) => {
+                for pending in due {
+                    let _ = pending
+                        .reply
+                        .send(agent_port::AgentReply::error(format!(
+                            "failed to read mapped screenshot buffer: {error}"
+                        )));
+                }
+                return;
+            }
+        };
+        let bgra = matches!(
+            format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
+        let mut pixels = vec![0u8; unpadded_bpr as usize * height as usize];
+        for row in 0..height as usize {
+            let src_start = row * padded_bpr as usize;
+            let src = &data[src_start..src_start + unpadded_bpr as usize];
+            let dst_start = row * unpadded_bpr as usize;
+            let dst = &mut pixels[dst_start..dst_start + unpadded_bpr as usize];
+            dst.copy_from_slice(src);
+            if bgra {
+                for pixel in dst.chunks_exact_mut(4) {
+                    pixel.swap(0, 2);
+                }
+            }
+        }
+        drop(data);
+        readback_buffer.unmap();
+
+        match image::RgbaImage::from_raw(width, height, pixels) {
+            Some(image) => {
+                for pending in due {
+                    match image.save(&pending.path) {
+                        Ok(()) => {
+                            let _ = pending.reply.send(agent_port::AgentReply::ok(Some(
+                                pending.path.display().to_string(),
+                            )));
+                        }
+                        Err(error) => {
+                            let _ = pending
+                                .reply
+                                .send(agent_port::AgentReply::error(error.to_string()));
+                        }
+                    }
+                }
+            }
+            None => {
+                for pending in due {
+                    let _ = pending.reply.send(agent_port::AgentReply::error(
+                        "failed to interpret screenshot pixel buffer",
+                    ));
+                }
+            }
+        }
     }
 
 }
@@ -1033,7 +1333,7 @@ impl API {
     /// Reads and parses a single markdown layout file (see
     /// `process_layout`) and registers it - along with any reusable snippets
     /// it defines - as the page named after the file itself (its name with
-    /// the `.md` extension stripped), returning that page name. Called both
+    /// its extension stripped), returning that page name. Called both
     /// for the initial directory scan (`load_layout_directory`) and, one
     /// file at a time, whenever `Application::user_event` reloads a file the
     /// watcher thread reported as changed - an `App` never calls this
@@ -1147,15 +1447,15 @@ impl API {
         Ok(())
     }
 
-    /// Recursively loads every `.md` file under `dir` into the `Binder`
+    /// Recursively loads every `.tmd` file under `dir` into the `Binder`
     /// (see `load_layout_file`), each registered as a page named after its
     /// file, skipping (and logging) any individual file that fails to read
     /// or parse rather than aborting the whole scan. Errors only if `dir`
-    /// contains no `.md` files at all, or none of them parsed.
+    /// contains no `.tmd` files at all, or none of them parsed.
     fn load_layout_directory(&mut self, dir: &str) -> Result<(), String> {
         let files = find_layout_files(Path::new(dir));
         if files.is_empty() {
-            return Err(format!("no .md layout files found under {dir:?}"));
+            return Err(format!("no .tmd layout files found under {dir:?}"));
         }
 
         let mut any_loaded = false;
@@ -1344,7 +1644,11 @@ where
                             {
                                 //println!("context established, opening window");
                                 let surface_config = wgpu::SurfaceConfiguration {
-                                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                    // See the comment on the matching field in
+                                    // `create_staged_viewports` - the agent
+                                    // port's screenshot readback needs `COPY_SRC`
+                                    // on the surface texture's usage flags.
+                                    usage: agent_port_usage(startup.agent_access_port.is_some()),
                                     format: *surface_format,
                                     color_space: wgpu::SurfaceColorSpace::Auto,
                                     width: size.width,
@@ -1428,6 +1732,9 @@ where
                                     viewports,
                                     active_window: None,
                                     canvases: HashMap::new(),
+                                    agent_port_active: startup.agent_access_port.is_some(),
+                                    pending_screenshots: Vec::new(),
+                                    pending_dumps: Vec::new(),
                                 };
 
                                 // `API` reads and parses the layout files itself - the
@@ -1449,6 +1756,13 @@ where
                                 }
                                 if let RunType::Watch(dir) = &api.watch_path {
                                     spawn_layout_watcher(dir.clone(), self.app_events.clone());
+                                }
+                                if let Some(port) = startup.agent_access_port {
+                                    agent_port::spawn_agent_listener(
+                                        port,
+                                        startup.window_name.clone(),
+                                        self.app_events.clone(),
+                                    );
                                 }
                                 api.redraw_viewport(window_id, &mut self.user_application);
 
@@ -1523,6 +1837,12 @@ where
                             (MouseButton::Right, ElementState::Released) => {
                                 viewport.right_mouse_release()
                             }
+                            (MouseButton::Middle, ElementState::Pressed) => {
+                                viewport.middle_mouse_press()
+                            }
+                            (MouseButton::Middle, ElementState::Released) => {
+                                viewport.middle_mouse_release()
+                            }
                             _ => {}
                         }
                     }
@@ -1580,26 +1900,108 @@ where
         _event_loop: &winit::event_loop::ActiveEventLoop,
         event: InternalEvents,
     ) {
-        let InternalEvents::RebuildLayout(path) = event;
         let Some(api) = &mut self.api else {
             return;
         };
-        match api.load_layout_file(&path) {
-            Ok(_) => {
-                // The file may or may not be the page a viewport is
-                // currently showing (`load_layout_file` just re-registers
-                // it in the `Binder` under whatever page name it
-                // defines), so redraw every viewport rather than trying
-                // to work out which one(s) are affected.
-                for viewport in api.viewports.values_mut() {
+        match event {
+            InternalEvents::RebuildLayout(path) => match api.load_layout_file(&path) {
+                Ok(_) => {
+                    // The file may or may not be the page a viewport is
+                    // currently showing (`load_layout_file` just re-registers
+                    // it in the `Binder` under whatever page name it
+                    // defines), so redraw every viewport rather than trying
+                    // to work out which one(s) are affected.
+                    for viewport in api.viewports.values_mut() {
+                        viewport.redraw_requested = true;
+                    }
+                }
+                Err(error) => {
+                    eprintln!("failed to reload layout file {path:?}: {error}");
+                }
+            },
+            InternalEvents::AgentInput { window, events, reply } => {
+                let Some(window_id) = api.viewport_lookup.get_by_left(&window).copied() else {
+                    let _ = reply.send(agent_port::AgentReply::error(format!(
+                        "no such window: {window}"
+                    )));
+                    return;
+                };
+                if let Some(viewport) = api.viewports.get_mut(&window_id) {
+                    agent_port::apply_events(viewport, &events);
+                }
+                let _ = reply.send(agent_port::AgentReply::ok(None));
+            }
+            InternalEvents::AgentScreenshot { window, path, reply } => {
+                let Some(window_id) = api.viewport_lookup.get_by_left(&window).copied() else {
+                    let _ = reply.send(agent_port::AgentReply::error(format!(
+                        "no such window: {window}"
+                    )));
+                    return;
+                };
+                api.pending_screenshots.push(agent_port::PendingScreenshot {
+                    window_id,
+                    path,
+                    reply,
+                });
+                if let Some(viewport) = api.viewports.get_mut(&window_id) {
                     viewport.redraw_requested = true;
                 }
             }
-            Err(error) => {
-                eprintln!("failed to reload layout file {path:?}: {error}");
+            InternalEvents::AgentDump { window, kind, path, reply } => {
+                let Some(window_id) = api.viewport_lookup.get_by_left(&window).copied() else {
+                    let _ = reply.send(agent_port::AgentReply::error(format!(
+                        "no such window: {window}"
+                    )));
+                    return;
+                };
+                // A layout-only dump doesn't need a live frame: the authored
+                // per-page command list (`Binder::page`) persists across
+                // frames, unlike render commands.
+                if kind == agent_port::DumpKind::Layout {
+                    let page = api.viewports.get(&window_id).map(|v| v.page.clone());
+                    let text = match page.as_deref().and_then(|p| api.binder.page(p)) {
+                        Some(layout) => format!("=== LAYOUT COMMANDS ===\n{layout:#?}\n"),
+                        None => "=== LAYOUT COMMANDS ===\n(page not found)\n".to_string(),
+                    };
+                    match std::fs::write(&path, text) {
+                        Ok(()) => {
+                            let _ = reply.send(agent_port::AgentReply::ok(Some(
+                                path.display().to_string(),
+                            )));
+                        }
+                        Err(error) => {
+                            let _ = reply.send(agent_port::AgentReply::error(error.to_string()));
+                        }
+                    }
+                    return;
+                }
+                api.pending_dumps.push(agent_port::PendingDump {
+                    window_id,
+                    kind,
+                    path,
+                    reply,
+                });
+                if let Some(viewport) = api.viewports.get_mut(&window_id) {
+                    viewport.redraw_requested = true;
+                }
             }
         }
     }
+}
+
+/// The swapchain-surface usage flags a window's `SurfaceConfiguration`
+/// should request: always `RENDER_ATTACHMENT`, plus `COPY_SRC` whenever the
+/// agent access port is active, since its screenshot readback does a
+/// `copy_texture_to_buffer` straight off the surface texture - wgpu
+/// validates that the source texture's usage includes `COPY_SRC` and treats
+/// a missing flag as a fatal (process-crashing) error, so this can't be
+/// requested lazily only once a screenshot is actually asked for.
+fn agent_port_usage(agent_port_active: bool) -> wgpu::TextureUsages {
+    let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+    if agent_port_active {
+        usage |= wgpu::TextureUsages::COPY_SRC;
+    }
+    usage
 }
 
 pub fn run<UserApp>(user_application: UserApp)
@@ -1616,7 +2018,7 @@ where
     }
 }
 
-/// Recursively collects every `.md` file under `dir`, sorted for
+/// Recursively collects every `.tmd` file under `dir`, sorted for
 /// deterministic load order. Unreadable directories (missing, permission
 /// denied, ...) just yield no files rather than erroring - the caller
 /// (`API::load_layout_directory`) turns "found nothing" into its own
@@ -1630,7 +2032,7 @@ fn find_layout_files(dir: &Path) -> Vec<PathBuf> {
         let path = entry.path();
         if path.is_dir() {
             files.extend(find_layout_files(&path));
-        } else if path.extension().is_some_and(|extension| extension == "md") {
+        } else if path.extension().is_some_and(|extension| extension == "tmd") {
             files.push(path);
         }
     }
@@ -1639,7 +2041,7 @@ fn find_layout_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Spawns the background thread backing `RunType::Watch`: watches `dir`
-/// (recursively) for filesystem changes and, for every `.md` file that's
+/// (recursively) for filesystem changes and, for every `.tmd` file that's
 /// modified or created, sends `InternalEvents::RebuildLayout(path)`
 /// through `app_events` so `Application::user_event` can reload it on the
 /// winit event-loop thread - `notify`'s callback runs on its own thread
@@ -1682,7 +2084,7 @@ fn spawn_layout_watcher(dir: String, app_events: EventLoopProxy<InternalEvents>)
                 continue;
             }
             for path in event.paths {
-                if path.extension().is_none_or(|extension| extension != "md") {
+                if path.extension().is_none_or(|extension| extension != "tmd") {
                     continue;
                 }
                 if app_events

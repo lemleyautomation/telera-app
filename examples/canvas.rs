@@ -1,6 +1,6 @@
 use telera_app::*;
 
-/// A `` `canvas` `` element (see `examples/layouts/Canvas.md`): a clipped,
+/// A `` `canvas` `` element (see `examples/layouts/Canvas.tmd`): a clipped,
 /// pannable, zoomable surface in the middle of the window, with a sidebar
 /// checklist and three floating cards laid out on it.
 ///
@@ -34,6 +34,7 @@ impl App for CanvasApp {
             window_name: "Canvas".to_string(),
             page: None,
             watch_path: RunType::Watch("examples/layouts".to_string()),
+            agent_access_port: None,
         }
     }
 
