@@ -266,7 +266,7 @@ impl App for BasicApp {
                             else {
                                 api.l.configure_element(&side_bar_button);
                             }
-                            api.l.add_text_element(&self.documents[i].title, &text_config, true);
+                            api.l.add_text_element(&self.documents[i].title, &text_config);
                             api.l.close_element();
                         }
                     ),

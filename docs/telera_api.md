@@ -239,7 +239,10 @@ injects two helper macros into the method body:
 
 - `e!(config $(, child_stmt)*)` — open an element, `configure_element(&config)`,
   run the child statements, close it.
-- `t!(text_config, content)` — add a text run to the current element.
+- `t!(text_config, content)` — add a text run to the current element. A bare
+  string literal (`t!(cfg, "hello")`) takes a zero-copy path automatically;
+  anything else (`&self.title`, `&format!(...)`) is copied so it's safe
+  regardless of how long it lives.
 
 Both call a binding named `api`, so keep the parameter named `api`.
 
@@ -620,8 +623,15 @@ apps rarely touch it; you need it for `#[layout_element]` methods,
 |---|---|
 | `open_element()` | begin an element |
 | `configure_element(&ElementConfiguration) -> u32` | configure the open element (returns its clay id) |
-| `add_text_element(content: &str, &TextConfig, statically_allocated: bool)` | add a text run to the open element |
+| `add_text_element(content: &str, &TextConfig)` | add a text run to the open element; copies `content`, so any `&str` works regardless of how long it lives |
+| `add_static_text_element(content: &'static str, &TextConfig)` | like `add_text_element` but zero-copy for genuinely `'static` content (string literals) |
 | `close_element()` | end it. Every `open_element` needs a `configure_element` and a `close_element` |
+
+`configure_element` clones any `.image()` / `.custom_element()` / `.custom_layout_settings()`
+referent on `ElementConfiguration` immediately, so those can point at a plain local
+too - no `const`/`'static` needed, and no lifetime bookkeeping of your own. Only the
+*moment `configure_element` is called* matters: the referent just needs to still be
+in scope then, which it always is for values built earlier in the same function.
 
 **Querying (any time after a layout pass):**
 
@@ -639,7 +649,7 @@ fn badge(&mut self, api: &mut API) {
     api.l.open_element();
     api.l.configure_element(&ElementConfiguration::new()
         .padding_all(6).radius_all(4.0).color(Color::rgb(200, 60, 60)).end());
-    api.l.add_text_element(&self.badge_text, &self.badge_style, false);
+    api.l.add_text_element(&self.badge_text, &self.badge_style);
     api.l.close_element();
 }
 ```
@@ -755,7 +765,9 @@ A `const`-friendly builder; every method returns `&mut Self`, finish with
   points each), `floating_attach_to_root()`, `floating_clip_to_attached_parent()`,
   `floating_pointer_capture()` / `floating_pointer_pass_through()`
 - **identity / special** — `id(&str)`, `id_indexed(&str, index)`,
-  `custom_element(&data)`, `custom_layout_settings(&data)`, `image(&data)`
+  `custom_element(&data)`, `custom_layout_settings(&data)`, `image(&data)` — all
+  three accept a plain local; `configure_element` clones `data` in immediately,
+  so it only needs to be valid at that call, not `const`/`'static`
 
 ```rust
 let panel = ElementConfiguration::new()

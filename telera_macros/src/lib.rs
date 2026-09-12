@@ -512,8 +512,16 @@ pub fn layout_fn(
 
         #[allow(unused_macros)]
         macro_rules! t {
+            // A bare string literal is genuinely `'static` - take the zero-copy path.
+            // Anything else (`&node.name`, `&format!(...)`, ...) may not outlive this
+            // call, so it goes through the copying path instead. `literal` only
+            // matches an actual literal token, never a computed expression, so this
+            // dispatches correctly with no help needed from the call site.
+            ($v:expr, $c:literal) => {
+                api.l.add_static_text_element($c, &$v);
+            };
             ($v:expr, $c:expr) => {
-                api.l.add_text_element($c, &$v, true);
+                api.l.add_text_element($c, &$v);
             };
         }
 

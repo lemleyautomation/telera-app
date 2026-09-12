@@ -42,7 +42,7 @@ pub use ui::layout_runner::{
     FontLoad, ImageLoad, Layout, LayoutReflector, LayoutRunnerReflection, LayoutResources,
     ParsedLayout, ShaderLoad, ShaderSpec, process_layout,
 };
-pub use ui::telera_layout::{Color, ElementConfiguration, TextConfig};
+pub use ui::telera_layout::{Color, ElementConfiguration, TextConfig, ElementID};
 pub use ui::ui_renderer::{
     CustomElement, CustomLayoutSettings, EffectKind, ResolvedShader, UIImageDescriptor,
 };
@@ -177,34 +177,25 @@ pub struct API {
     pub scene_renderer: SceneRenderer,
     ui_renderer: Option<UIRenderer>,
     pub l: LayoutEngine<UIRenderer, UIImageDescriptor, CustomElement, CustomLayoutSettings>,
-    /// Per-frame storage for `UIImageDescriptor`s the markdown layout resolves
-    /// (from a `set-image` declaration or an `image` literal). The layout engine
-    /// keeps a raw pointer to each image descriptor a config sets until the
-    /// render pass consumes it, so the value has to outlive `run_layout` - the
-    /// declarations/reusables it might otherwise be borrowed from don't. Each
-    /// entry is boxed so pushing more never moves the ones already handed out;
-    /// cleared at the start of every layout pass.
+    /// Per-frame storage for `UIImageDescriptor`s `Config::Image`/`Config::ImageLiteral`
+    /// resolve. Unlike the `#[layout_fn]`/`e!` path, the markdown pipeline builds an
+    /// element's `ElementConfiguration` incrementally across many separate
+    /// `execute_config` calls (one per `Config` item) and only calls
+    /// `configure_element` much later, from a different function, once every config
+    /// for that element has been processed - so the descriptor a single
+    /// `execute_config` call resolves does not survive to that later call on its own
+    /// (telera-layout's own per-call cloning in `configure_element` can't help here;
+    /// it protects the reference at the moment `configure_element` runs, and by then
+    /// this value is already gone). Each entry is boxed so pushing more never moves
+    /// the ones already handed out; cleared at the start of every layout pass.
     #[allow(clippy::vec_box)] // stable element addresses are the whole point
     image_frame_arena: Vec<Box<UIImageDescriptor>>,
-    /// Per-frame storage for the `CustomElement` shapes the markdown layout
-    /// resolves from a `` `circle` ``/`` `line` ``/`` `arc` ``/... element's
-    /// `CustomElementSpec`. Same rationale (and boxing) as `image_frame_arena`:
-    /// the layout engine holds a raw pointer to each until the render pass reads
-    /// it. Cleared at the start of every layout pass.
+    /// Per-frame storage for the `CustomElement` shapes `Config::CustomElement`
+    /// resolves. Same rationale (and boxing) as `image_frame_arena`.
     #[allow(clippy::vec_box)] // stable element addresses are the whole point
     custom_shape_arena: Vec<Box<CustomElement>>,
-    /// Per-frame storage for the text of every `` `text` `` element, resolved
-    /// once here and handed to `add_text_element`. clay stores only a
-    /// `(ptr, len)` into the string and re-reads it (unchanged) all the way
-    /// through `end_layout`, so a resolved `&str` that borrows a per-list /
-    /// per-reusable *clone* of the layout commands (which is dropped when
-    /// `run_layout` returns) would dangle - hence a copy that lives as long as
-    /// the other frame arenas. Boxed for stable addresses; cleared each pass.
-    #[allow(clippy::vec_box)]
-    layout_text_arena: Vec<Box<str>>,
-    /// Per-frame storage for the `CustomLayoutSettings` a `` `shader` `` config
-    /// resolves to. Same rationale (and boxing) as the other frame arenas: the
-    /// layout engine holds a raw pointer to each until the render pass reads it.
+    /// Per-frame storage for the `CustomLayoutSettings` `Config::Shaders` resolves.
+    /// Same rationale (and boxing) as `image_frame_arena`.
     #[allow(clippy::vec_box)]
     custom_layout_settings_arena: Vec<Box<CustomLayoutSettings>>,
     /// Atlases loaded from `` `load` `` directives in layout files, keyed by
@@ -545,11 +536,10 @@ impl API {
                 0.016,
             );
             // Descriptors from the last frame's layout have been rendered; the
-            // engine holds no live pointers into the arena now, so it's safe to
-            // drop them before this frame fills it again.
+            // engine holds no live pointers into these arenas now, so it's safe to
+            // drop them before this frame fills them again.
             self.image_frame_arena.clear();
             self.custom_shape_arena.clear();
-            self.layout_text_arena.clear();
             self.custom_layout_settings_arena.clear();
             self.l.begin_layout(ui_renderer);
             match self.watch_path {
@@ -1094,9 +1084,14 @@ impl API {
         }
     }
 
-    /// Boxes `descriptor` into the per-frame arena and hands back a reference
-    /// that stays valid for the rest of the layout + render pass (see
-    /// [`API::image_frame_arena`]).
+    /// Boxes `descriptor` into the per-frame arena and hands back a reference that
+    /// stays valid for the rest of the layout + render pass (see
+    /// [`API::image_frame_arena`]). Needed only by the markdown pipeline, which
+    /// resolves a `Config::Image`/`Config::ImageLiteral` in one `execute_config` call
+    /// and applies it via `configure_element` in a later, separate call - telera-layout's
+    /// own per-call cloning can't bridge that gap on its own. The `#[layout_fn]`/`e!`
+    /// path doesn't need this: it builds and applies an `ElementConfiguration` in one
+    /// synchronous call, which telera-layout now handles safely by itself.
     pub(crate) fn stage_frame_image(
         &mut self,
         descriptor: UIImageDescriptor,
@@ -1105,27 +1100,18 @@ impl API {
         self.image_frame_arena.last().unwrap()
     }
 
-    /// Copies `text` into the per-frame arena and adds it as a text element on
-    /// the currently open layout element. The copy is what keeps clay's
-    /// `(ptr, len)` valid through `end_layout` (see [`API::layout_text_arena`]).
-    pub(crate) fn add_layout_text(&mut self, text: &str, config: &TextConfig) {
-        self.layout_text_arena.push(text.into());
-        // `layout_text_arena` and `l` are disjoint fields, so this borrow is fine.
-        let stored: &str = self.layout_text_arena.last().unwrap();
-        self.l.add_text_element(stored, config, false);
-    }
-
-    /// Boxes `shape` into the per-frame arena and hands back a reference that
-    /// stays valid for the rest of the layout + render pass (see
-    /// [`API::custom_shape_arena`]).
+    /// Boxes `shape` into the per-frame arena and hands back a reference that stays
+    /// valid for the rest of the layout + render pass (see [`API::custom_shape_arena`]).
+    /// Same rationale as [`Self::stage_frame_image`].
     pub(crate) fn stage_frame_shape(&mut self, shape: CustomElement) -> &CustomElement {
         self.custom_shape_arena.push(Box::new(shape));
         self.custom_shape_arena.last().unwrap()
     }
 
-    /// Boxes a resolved `` `shader` `` effect into the per-frame arena and hands
-    /// back a reference that stays valid through the render pass (see
-    /// [`API::custom_layout_settings_arena`]).
+    /// Boxes a resolved `` `shader` `` effect into the per-frame arena and hands back
+    /// a reference that stays valid through the render pass (see
+    /// [`API::custom_layout_settings_arena`]). Same rationale as
+    /// [`Self::stage_frame_image`].
     pub(crate) fn stage_frame_layout_settings(
         &mut self,
         settings: CustomLayoutSettings,
@@ -1133,6 +1119,7 @@ impl API {
         self.custom_layout_settings_arena.push(Box::new(settings));
         self.custom_layout_settings_arena.last().unwrap()
     }
+
     pub fn set_viewport_title(&mut self, viewport: &str, title: &str) {
         if let Some(window_id) = self.viewport_lookup.get_by_left(viewport)
             && let Some(viewport) = self.viewports.get_mut(window_id)
@@ -1742,7 +1729,6 @@ where
                                     l,
                                     image_frame_arena: Vec::new(),
                                     custom_shape_arena: Vec::new(),
-                                    layout_text_arena: Vec::new(),
                                     custom_layout_settings_arena: Vec::new(),
                                     loaded_layout_images: HashMap::new(),
                                     loaded_layout_fonts: HashMap::new(),
@@ -1949,6 +1935,7 @@ where
                 };
                 if let Some(viewport) = api.viewports.get_mut(&window_id) {
                     agent_port::apply_events(viewport, &events);
+                    viewport.redraw_requested = true;
                 }
                 let _ = reply.send(agent_port::AgentReply::ok(None));
             }

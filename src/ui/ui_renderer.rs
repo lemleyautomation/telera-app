@@ -382,7 +382,7 @@ impl Fallback for TeleraFallback {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CustomLayoutSettings {
     Radii {
         top_left: f32,

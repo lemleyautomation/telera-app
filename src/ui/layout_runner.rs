@@ -4204,11 +4204,12 @@ where
                                 text_config.line_height = sc(text_config.line_height);
                                 text_config.letter_spacing = sc(text_config.letter_spacing);
                             }
-                            // Copied into a frame arena: the resolved slice may
-                            // borrow a per-list / per-reusable clone of the
-                            // commands that is dropped before `end_layout` reads
-                            // clay's stored pointer.
-                            api.add_layout_text(text_content, text_config);
+                            // `add_text_element` copies `text_content` into its own
+                            // per-frame arena internally, so it's fine that the
+                            // resolved slice may borrow a per-list / per-reusable
+                            // clone of the commands that's dropped before
+                            // `end_layout` runs.
+                            api.l.add_text_element(text_content, text_config);
                         }
                     }
                     Element::TextConfigOpened => {
@@ -4467,8 +4468,10 @@ fn execute_config<UserApp>(
 
         Config::CustomElement(spec) => {
             // Resolve every `DataSrc<f32>` parameter for this frame and stash the
-            // plain `CustomElement` in `api`'s per-frame arena so its address
-            // stays put until the render pass reads it (same as `Config::Image`).
+            // plain `CustomElement` in `api`'s per-frame arena so its address stays
+            // put until the later `configure_element` call reads it (this function
+            // returns, dropping `resolved`, well before that happens - see
+            // `stage_frame_shape`'s doc comment).
             let mut resolved = spec.resolve(locals, user_app, list_data);
             if s != 1.0 {
                 // Stroke widths are logical px; the 0..1 positional fields track
@@ -4484,9 +4487,9 @@ fn execute_config<UserApp>(
             config.custom_element(api.stage_frame_shape(resolved));
         }
         Config::Shaders(specs) => {
-            // Resolve this frame's effect params and stash the `ResolvedShader`
-            // list in `api`'s per-frame arena, carried on the element's clay
-            // `userData` (a different slot from `custom_element` above).
+            // Resolve this frame's effect params and stash the `ResolvedShader` list
+            // in `api`'s per-frame arena, carried on the element's clay `userData` (a
+            // different slot from `custom_element` above).
             let resolved: Vec<ResolvedShader> = specs
                 .iter()
                 .map(|spec| spec.resolve(locals, user_app, list_data))
