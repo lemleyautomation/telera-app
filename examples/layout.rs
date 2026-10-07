@@ -56,10 +56,30 @@ impl App for LayoutApp {
                 .with_inner_size(LogicalSize::new(900, 600)),
             window_name: "Main".to_string(),
             page: None,
-            watch_path: RunType::Watch("examples/layouts".to_string()),
+            watch_path: layouts(),
             agent_access_port: Some(4848),
         }
     }
+}
+
+/// Natively: load `examples/layouts` from disk and hot-reload it. In a
+/// browser (no filesystem): the layouts - and the shaders and fonts their
+/// directives name - are compiled into the binary instead.
+#[cfg(not(target_arch = "wasm32"))]
+fn layouts() -> RunType {
+    RunType::Watch("examples/layouts".to_string())
+}
+#[cfg(target_arch = "wasm32")]
+fn layouts() -> RunType {
+    use telera_app::include_dir::{Dir, include_dir};
+    static LAYOUTS: Dir = include_dir!("$CARGO_MANIFEST_DIR/examples/layouts");
+    static SHADERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/examples/shaders");
+    static FONTS: Dir = include_dir!("$CARGO_MANIFEST_DIR/examples/fonts");
+    RunType::Embedded(vec![
+        EmbeddedAssets { dir: &LAYOUTS, mount: "examples/layouts" },
+        EmbeddedAssets { dir: &SHADERS, mount: "examples/shaders" },
+        EmbeddedAssets { dir: &FONTS, mount: "examples/fonts" },
+    ])
 }
 
 fn main() {

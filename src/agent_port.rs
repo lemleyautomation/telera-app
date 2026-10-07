@@ -30,19 +30,26 @@
 //! answered synchronously too, via `Binder::page` - the authored per-page
 //! command list persists across frames, unlike render commands.
 
+// The listener half (sockets + threads) is native-only: a browser has
+// neither, and `InternalEvents` isn't `Send` in the wasm build.
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use winit::event::ElementState;
+#[cfg(not(target_arch = "wasm32"))]
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, KeyCode, KeyLocation, NamedKey, PhysicalKey};
 use winit::window::WindowId;
 
 use crate::graphics::viewport::{SyntheticKeyEvent, Viewport};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::InternalEvents;
 
 // ---------------------------------------------------------------------------
@@ -104,24 +111,28 @@ impl AgentReply {
     pub fn error(message: impl Into<String>) -> Self {
         AgentReply { ok: false, path: None, message: Some(message.into()) }
     }
+    #[cfg(not(target_arch = "wasm32"))]
     fn to_json(&self) -> String {
         serde_json::to_string(self)
             .unwrap_or_else(|_| r#"{"ok":false,"message":"internal serialization error"}"#.to_string())
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Deserialize)]
 struct InputRequest {
     window: Option<String>,
     events: Vec<SyntheticEvent>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default, Deserialize)]
 struct ScreenshotRequest {
     window: Option<String>,
     path: Option<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Deserialize)]
 struct DumpRequest {
     window: Option<String>,
@@ -286,6 +297,7 @@ fn key_from_name(name: &str) -> Option<(PhysicalKey, Key, KeyLocation)> {
 // The HTTP listener
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Spawns the agent-port listener thread: binds `127.0.0.1:port` and, for
 /// each accepted connection, spawns a short-lived thread to parse and answer
 /// it. `default_window` (the bootstrap window's name) is used whenever a
@@ -309,6 +321,7 @@ pub fn spawn_agent_listener(port: u16, default_window: String, app_events: Event
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Reads and answers exactly one request from `stream`, then closes it - no
 /// keep-alive/chunked-encoding support, a deliberately minimal v1.
 fn handle_connection(mut stream: TcpStream, app_events: EventLoopProxy<InternalEvents>, default_window: String) {
@@ -353,6 +366,7 @@ fn handle_connection(mut stream: TcpStream, app_events: EventLoopProxy<InternalE
     respond(&mut stream, status, &response_body);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn route(
     method: &str,
     path: &str,
@@ -369,6 +383,7 @@ fn route(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn handle_input(body: &[u8], app_events: &EventLoopProxy<InternalEvents>, default_window: &str) -> (u16, String) {
     let request: InputRequest = match serde_json::from_slice(body) {
         Ok(r) => r,
@@ -383,6 +398,7 @@ fn handle_input(body: &[u8], app_events: &EventLoopProxy<InternalEvents>, defaul
     send_and_wait(app_events, event, rx)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn handle_screenshot(body: &[u8], app_events: &EventLoopProxy<InternalEvents>, default_window: &str) -> (u16, String) {
     let request: ScreenshotRequest = if body.is_empty() {
         ScreenshotRequest::default()
@@ -402,6 +418,7 @@ fn handle_screenshot(body: &[u8], app_events: &EventLoopProxy<InternalEvents>, d
     send_and_wait(app_events, event, rx)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn handle_dump(body: &[u8], app_events: &EventLoopProxy<InternalEvents>, default_window: &str) -> (u16, String) {
     let request: DumpRequest = match serde_json::from_slice(body) {
         Ok(r) => r,
@@ -418,6 +435,7 @@ fn handle_dump(body: &[u8], app_events: &EventLoopProxy<InternalEvents>, default
     send_and_wait(app_events, event, rx)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Sends `event` through the proxy and blocks for a reply, mirroring
 /// `spawn_layout_watcher`'s `if app_events.send_event(...).is_err()` shutdown
 /// idiom - except here that case must still answer the waiting HTTP client
@@ -437,14 +455,17 @@ fn send_and_wait(app_events: &EventLoopProxy<InternalEvents>, event: InternalEve
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn default_screenshot_path() -> PathBuf {
     std::env::temp_dir().join(format!("telera-agent-screenshot-{}.png", timestamp()))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn default_dump_path() -> PathBuf {
     std::env::temp_dir().join(format!("telera-agent-dump-{}.txt", timestamp()))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn timestamp() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -452,6 +473,7 @@ fn timestamp() -> u128 {
         .unwrap_or(0)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn respond(stream: &mut TcpStream, status: u16, body: &str) {
     let status_text = match status {
         200 => "OK",

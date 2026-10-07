@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    fs,
     io::{BufReader, Cursor},
     path::{Path, PathBuf},
 };
@@ -349,8 +348,12 @@ impl Mesh {
 }
 
 #[allow(dead_code)]
+/// Loads a `.gltf` model. `read` fetches the file and the buffers / images it
+/// references by path - `API::load_gltf_model` passes its asset reader, so a
+/// model can come from the disk or a `RunType::Embedded` bundle.
 pub fn load_model_gltf(
     file: PathBuf,
+    read: &dyn Fn(&Path) -> Result<Vec<u8>, String>,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     transform: Option<Transform>,
@@ -365,8 +368,9 @@ pub fn load_model_gltf(
         file_name = filename.to_str().unwrap().to_string();
     }
 
-    let gltf_text = fs::read_to_string(Path::new(&user_model_directory).join(&file_name)).unwrap();
-    let gltf_cursor = Cursor::new(gltf_text);
+    let gltf_bytes =
+        read(&Path::new(&user_model_directory).join(&file_name)).map_err(anyhow::Error::msg)?;
+    let gltf_cursor = Cursor::new(gltf_bytes);
     let gltf_reader = BufReader::new(gltf_cursor);
     let gltf = Gltf::from_reader(gltf_reader)?;
 
@@ -400,7 +404,7 @@ pub fn load_model_gltf(
             gltf::buffer::Source::Bin => {}
             gltf::buffer::Source::Uri(uri) => {
                 let path = Path::new(&user_model_directory).join(uri);
-                let bin = fs::read(path).unwrap();
+                let bin = read(&path).map_err(anyhow::Error::msg)?;
                 buffer_data.push(bin);
             }
         }
@@ -456,7 +460,7 @@ pub fn load_model_gltf(
             }
             gltf::image::Source::Uri { uri, mime_type: _ } => {
                 let path = Path::new(&user_model_directory).join(uri);
-                let bytes = fs::read(path).unwrap();
+                let bytes = read(&path).map_err(anyhow::Error::msg)?;
                 let diffuse_texture = Texture::from_bytes(device, queue, &bytes, uri).unwrap();
 
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {

@@ -55,6 +55,44 @@ a GUI app framework designed for performance, and modularity.
 - [`docs/tml-spec.md`](docs/tml-spec.md) — the TML markdown layout language (`.tmd` files).
 
 
+## Web (WebAssembly)
+
+Apps compile to `wasm32-unknown-unknown` and run in a browser on **WebGPU**
+(current Chrome/Edge; Firefox and Safari where WebGPU is enabled). One-time setup:
+
+```
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version <wasm-bindgen version in Cargo.lock> --locked
+```
+
+plus a `clang` that can target wasm32 (it compiles clay's C source). Then:
+
+```
+scripts/build-web layout              # or basic, effects; add --release for a small, fast build
+python3 -m http.server -d target/web/layout 8000   # open http://localhost:8000
+```
+
+What differs in a browser:
+
+- **No filesystem.** Ship layouts, and the images, fonts and shaders their
+  directives name, inside the binary with `RunType::Embedded`. Each bundle is an
+  `include_dir!` directory standing in for a path, so directive paths resolve
+  unchanged (see `layouts()` in `examples/layout.rs`). `RunType::Watch` loads
+  once with no hot reload, and `Once`/`Watch` paths can't be read at all.
+- **No system fonts.** A `font` directive (or `API::load_font`) works as usual.
+  If no *text* font is registered by the end of `onload` (an emoji-only font
+  doesn't count), the default Noto Sans is downloaded from jsDelivr. Change or
+  disable this with `API::set_web_fallback_font_url`.
+- **Time:** use `telera_app::web_time::Instant`, because `std::time::Instant::now()`
+  panics in a browser.
+- The agent access port (sockets, threads) is native-only and ignored on the web.
+  Every window becomes a `<canvas>` appended to the page.
+- Errors, including GPU validation and WGSL the browser rejects, go to the
+  browser console. Browsers enforce WGSL's uniformity rules, which native naga
+  doesn't, so call `textureSample` outside branches that depend on per-fragment
+  values. Use `textureSampleLevel` when it has to be inside one.
+
+
 ## Profiling
 
 `[profile.release]` in `Cargo.toml` sets `debug = "line-tables-only"`, so

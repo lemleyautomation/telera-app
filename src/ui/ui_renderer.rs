@@ -288,6 +288,11 @@ struct TextBatch {
     scissor: Option<(UIPosition, UIPosition)>,
 }
 
+/// The `font-id` the web build registers its runtime-downloaded fallback font
+/// under (see `API::set_web_fallback_font_url`). Reserved: layouts and apps
+/// should use other ids.
+pub const FALLBACK_FONT_ID: u16 = u16::MAX;
+
 /// cosmic-text font fallback with the app's [`register_font`](UIRenderer::register_font)
 /// families prepended to the platform's common list, so a loaded emoji/symbol
 /// font is preferred over whatever system text font happens to carry an outline
@@ -304,6 +309,16 @@ impl TeleraFallback {
         common.extend_from_slice(PlatformFallback.common_fallback());
         Self { common }
     }
+}
+
+/// Whether face `id` can render ordinary text - judged by a glyph for `a` -
+/// as opposed to an emoji/symbol font like Twemoji.
+fn can_render_text(db: &fontdb::Database, id: fontdb::ID) -> bool {
+    db.with_face_data(id, |data, index| {
+        ttf_parser::Face::parse(data, index)
+            .is_ok_and(|face| face.glyph_index('a').is_some())
+    })
+    .unwrap_or(false)
 }
 
 /// First family in `candidates` that has a face loaded in `db`, matched
@@ -860,6 +875,10 @@ pub struct UIRenderer {
     /// `font-id` -> font family name, populated by [`Self::register_font`].
     /// Unmapped ids fall back to the system sans-serif.
     font_families: HashMap<u16, Box<str>>,
+    /// The `loaded_fonts` ids whose face has Latin letters (see
+    /// [`can_render_text`]), in load order - candidates for the default
+    /// family when there are no system fonts.
+    text_font_ids: Vec<u16>,
 
     pub viewport_size: (f32, f32),
     pub size_buffer: wgpu::Buffer,
@@ -1009,6 +1028,9 @@ impl UIRenderer {
         font_size: f32,
         line_height: f32,
     ) -> GlyphAdvances {
+        if !self.has_any_font() {
+            return GlyphAdvances::new();
+        }
         self.measurement_buffer.set_metrics_and_size(
             Metrics { font_size, line_height },
             None,
@@ -1070,6 +1092,20 @@ impl UIRenderer {
     /// to the fallback chain ahead of the platform defaults, so a loaded emoji /
     /// symbol font is used automatically without setting `font-id`. Unregistered
     /// ids fall back to the system sans-serif.
+    /// Whether the font system has any face at all. cosmic-text panics when
+    /// asked to shape with none, which happens in a browser (no system fonts)
+    /// until a font is registered - until then text measures as empty and
+    /// isn't drawn; registering a font clears the text caches.
+    fn has_any_font(&self) -> bool {
+        self.font_system.db().len() > 0
+    }
+
+    /// Whether a [`register_font`](Self::register_font)ed font can render
+    /// ordinary text (an emoji/symbol-only font doesn't count).
+    pub fn has_text_font(&self) -> bool {
+        !self.text_font_ids.is_empty()
+    }
+
     pub fn register_font(&mut self, font_id: u16, data: Vec<u8>) {
         self.loaded_fonts.push((font_id, std::sync::Arc::new(data)));
         self.rebuild_font_system();
@@ -1088,8 +1124,10 @@ impl UIRenderer {
         // Point the generic families at faces that are actually installed (an
         // unset `font-id` resolves through `sans-serif`).
         configure_generic_families(&mut db);
+        let has_system_fonts = db.len() > 0;
 
         self.font_families.clear();
+        self.text_font_ids.clear();
         let mut preferred: Vec<&'static str> = Vec::new();
         for (font_id, data) in &self.loaded_fonts {
             let ids = db.load_font_source(fontdb::Source::Binary(data.clone()));
@@ -1097,6 +1135,9 @@ impl UIRenderer {
                 && let Some(face) = db.face(*face_id)
                 && let Some((name, _)) = face.families.first()
             {
+                if can_render_text(&db, *face_id) {
+                    self.text_font_ids.push(*font_id);
+                }
                 let name = name.clone().into_boxed_str();
                 let leaked: &'static str = Box::leak(name.clone());
                 self.font_families.insert(*font_id, name);
@@ -1106,9 +1147,30 @@ impl UIRenderer {
             }
         }
 
+        // No system fonts at all (always the case in a browser): the generic
+        // families can't name an installed face, so point them at a registered
+        // text font instead - the first one the app loaded, else the web
+        // fallback once it has arrived - so text with no `font-id` still shapes.
+        if !has_system_fonts {
+            let default_family = self
+                .text_font_ids
+                .iter()
+                .find(|font_id| **font_id != FALLBACK_FONT_ID)
+                .or_else(|| self.text_font_ids.first())
+                .and_then(|font_id| self.font_families.get(font_id))
+                .cloned();
+            if let Some(family) = default_family {
+                db.set_sans_serif_family(family.to_string());
+                db.set_serif_family(family.to_string());
+                db.set_monospace_family(family.to_string());
+            }
+        }
+
         self.font_system =
             FontSystem::new_with_locale_and_db_and_fallback(locale, db, TeleraFallback::new(&preferred));
-        self.measurement_buffer = Buffer::new(&mut self.font_system, Metrics::new(30.0, 42.0));
+        // `new_empty`: `Buffer::new` shapes an empty line straight away,
+        // which panics with no fonts at all (a browser, before one loads).
+        self.measurement_buffer = Buffer::new_empty(Metrics::new(30.0, 42.0));
 
         // Every cache keyed by the old font ids / shaping is now stale.
         self.measure_cache.clear();
@@ -1238,7 +1300,8 @@ impl UIRenderer {
         // font-match cache, which is empty here anyway.
         configure_generic_families(font_system.db_mut());
         let swash_cache = SwashCache::new();
-        let measurement_buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
+        // See `rebuild_font_system` for why not `Buffer::new`.
+        let measurement_buffer = Buffer::new_empty(Metrics::new(30.0, 42.0));
 
         Self {
             batches: Vec::<RenderBatch>::new(),
@@ -1289,6 +1352,7 @@ impl UIRenderer {
             run_cache: HashMap::new(),
             line_cache: HashMap::new(),
             font_families: HashMap::new(),
+            text_font_ids: Vec::new(),
             dpi_scale: 1.0,
             viewport_size: (1.0, 1.0),
             size_buffer,
@@ -1356,7 +1420,8 @@ impl UIRenderer {
         config: &wgpu::SurfaceConfiguration,
         multi_sample_count: u32,
     ) {
-        let mut ui_pipeline_builder = UIPipeline::new(config.format);
+        let format = crate::graphics::textures::render_format(config);
+        let mut ui_pipeline_builder = UIPipeline::new(format);
 
         ui_pipeline_builder.add_buffer_layout(UIVertex::get_layout());
 
@@ -1372,15 +1437,15 @@ impl UIRenderer {
 
         self.composite_pipeline = Some(build_composite_pipeline(
             device,
-            config.format,
+            format,
             &self.composite_bind_group_layout,
         ));
 
-        self.effect_surface_format = Some(config.format);
+        self.effect_surface_format = Some(format);
         self.effect_msaa_count = multi_sample_count;
         self.effect_pipeline = Some(build_effect_pipeline(
             device,
-            config.format,
+            format,
             multi_sample_count,
             &self.size_bind_group_layout,
             &effect_source(include_str!("../../shaders/ui_effects.wgsl")),
@@ -1390,7 +1455,7 @@ impl UIRenderer {
 
         self.blur_pipeline = Some(build_blur_pipeline(
             device,
-            config.format,
+            format,
             &self.size_bind_group_layout,
             &self.composite_bind_group_layout,
         ));
@@ -2517,6 +2582,9 @@ impl UIRenderer {
         color: cosmic_text::Color,
         draw_order: f32,
     ) {
+        if !self.has_any_font() {
+            return;
+        }
         let key = Self::text_key(text, font_id, letter_spacing, font_size, line_height);
         let generation = self.text_generation;
 
@@ -3649,11 +3717,11 @@ mod tests {
             ("ui_effects.wgsl", include_str!("../../shaders/ui_effects.wgsl")),
         ] {
             let full = effect_source(body);
-            let module = wgpu::naga::front::wgsl::parse_str(&full)
+            let module = naga::front::wgsl::parse_str(&full)
                 .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(&full)));
-            wgpu::naga::valid::Validator::new(
-                wgpu::naga::valid::ValidationFlags::all(),
-                wgpu::naga::valid::Capabilities::empty(),
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
             )
             .validate(&module)
             .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(&full)));
@@ -3664,11 +3732,11 @@ mod tests {
     #[test]
     fn blur_wgsl_validates() {
         let src = include_str!("../../shaders/blur.wgsl");
-        let module = wgpu::naga::front::wgsl::parse_str(src)
+        let module = naga::front::wgsl::parse_str(src)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(src)));
-        wgpu::naga::valid::Validator::new(
-            wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::empty(),
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
         )
         .validate(&module)
         .unwrap_or_else(|e| panic!("{}", e.emit_to_string(src)));
@@ -3680,11 +3748,11 @@ mod tests {
         let body = "@fragment fn fs_main(in: VertexPayload) -> @location(0) vec4<f32> { \
             return vec4<f32>(in.color.rgb, in.color.a * in.params.x); }";
         let full = effect_source(body);
-        let module = wgpu::naga::front::wgsl::parse_str(&full)
+        let module = naga::front::wgsl::parse_str(&full)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&full)));
-        wgpu::naga::valid::Validator::new(
-            wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::empty(),
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
         )
         .validate(&module)
         .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&full)));

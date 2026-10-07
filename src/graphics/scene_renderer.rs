@@ -87,7 +87,7 @@ impl SceneRenderer {
         config: &wgpu::SurfaceConfiguration,
         multi_sample_count: u32,
     ) {
-        let mut pipeline_builder = ScenePipeline::new(config.format);
+        let mut pipeline_builder = ScenePipeline::new(crate::graphics::textures::render_format(config));
         pipeline_builder.add_buffer_layout(Vertex::buffer_description());
         pipeline_builder.add_buffer_layout(Transform::buffer_description());
         let render_pipeline = pipeline_builder.build_pipeline(

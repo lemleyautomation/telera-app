@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use symbol_table::GlobalSymbol;
 use winit::window::Window;
@@ -7,7 +7,7 @@ use winit::{dpi::PhysicalSize, event::KeyEvent};
 use winit::event::ElementState;
 use winit::keyboard::{Key, KeyLocation, PhysicalKey};
 
-use crate::graphics::textures::{DepthTexture, MultiSampleTexture, UiSurface};
+use crate::graphics::textures::{DepthTexture, MultiSampleTexture, UiSurface, render_format};
 
 /// Default gap the animation / continuous-render path paces to: 30 fps. Apps
 /// override per window with `API::set_viewport_frame_interval`.
@@ -335,7 +335,7 @@ impl Viewport {
             self.ui_surface = Some(UiSurface::new(
                 device,
                 (w, h),
-                self.surface_config.format,
+                render_format(&self.surface_config),
                 composite_bind_group_layout,
                 composite_sampler,
             ));

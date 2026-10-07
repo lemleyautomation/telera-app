@@ -1,5 +1,6 @@
-use std::time::Instant;
 use telera_app::*;
+// Not `std::time::Instant`: that panics in a browser.
+use telera_app::web_time::Instant;
 
 /// Acceptance harness for the UI effect-shader system (`examples/layouts/Effects.tmd`).
 ///
@@ -44,7 +45,7 @@ impl App for EffectsApp {
                 .with_inner_size(LogicalSize::new(1000, 700)),
             window_name: "Effects".to_string(),
             page: None,
-            watch_path: RunType::Watch("examples/layouts".to_string()),
+            watch_path: layouts(),
             agent_access_port: None,
         }
     }
@@ -61,6 +62,26 @@ impl App for EffectsApp {
         self.sheen_phase = t * 1.5;
         self.neon_glow = 0.3 + tri(0.6) * 1.1;
     }
+}
+
+/// Natively: load `examples/layouts` from disk and hot-reload it. In a
+/// browser (no filesystem): the layouts - and the shaders and fonts their
+/// directives name - are compiled into the binary instead.
+#[cfg(not(target_arch = "wasm32"))]
+fn layouts() -> RunType {
+    RunType::Watch("examples/layouts".to_string())
+}
+#[cfg(target_arch = "wasm32")]
+fn layouts() -> RunType {
+    use telera_app::include_dir::{Dir, include_dir};
+    static LAYOUTS: Dir = include_dir!("$CARGO_MANIFEST_DIR/examples/layouts");
+    static SHADERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/examples/shaders");
+    static FONTS: Dir = include_dir!("$CARGO_MANIFEST_DIR/examples/fonts");
+    RunType::Embedded(vec![
+        EmbeddedAssets { dir: &LAYOUTS, mount: "examples/layouts" },
+        EmbeddedAssets { dir: &SHADERS, mount: "examples/shaders" },
+        EmbeddedAssets { dir: &FONTS, mount: "examples/fonts" },
+    ])
 }
 
 fn main() {

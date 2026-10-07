@@ -1,10 +1,17 @@
 pub use cgmath;
 pub use image::{self, DynamicImage, load_from_memory};
+pub use include_dir;
+#[cfg(not(target_arch = "wasm32"))]
 use notify::Watcher as _;
 pub use rkyv;
 use std::{
-    collections::HashMap, fmt::Debug, path::{Path, PathBuf}, sync::{Arc, mpsc}, time::{Duration, Instant},
+    collections::HashMap, fmt::Debug, path::{Path, PathBuf}, sync::{Arc, mpsc},
 };
+use web_time::{Duration, Instant};
+/// `std::time`, but browser-safe: `std::time::Instant::now()` panics on
+/// `wasm32-unknown-unknown`, `web_time::Instant` works everywhere (it *is*
+/// `std::time::Instant` natively). Apps that time things should use this.
+pub use web_time;
 pub use symbol_table;
 pub use telera_macros::*;
 use winit::{
@@ -20,7 +27,26 @@ pub use winit::{
     window::{Window, WindowAttributes, WindowId},
 };
 
+/// `eprintln!` natively; `console.error` in a browser, where stderr goes
+/// nowhere. For the framework's own load / init diagnostics.
+macro_rules! log_error {
+    ($($arg:tt)*) => {{
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!($($arg)*);
+        #[cfg(target_arch = "wasm32")]
+        crate::web::console_error(&format!($($arg)*));
+    }};
+}
+
 mod agent_port;
+#[cfg(target_arch = "wasm32")]
+mod web;
+
+/// Default for [`API::set_web_fallback_font_url`]: Noto Sans Regular (SIL
+/// OFL) as a `.ttf` - fontdb can't parse woff/woff2 - from jsDelivr, which
+/// serves it with permissive CORS headers.
+pub const DEFAULT_FALLBACK_FONT_URL: &str =
+    "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf";
 
 mod graphics;
 pub use graphics::model::{
@@ -62,8 +88,18 @@ pub enum APIError {
 /// `agent_port::spawn_agent_listener`) - each carries an `mpsc::Sender` so
 /// the HTTP connection thread that sent it can block for a reply.
 #[derive(Debug)]
+// In a browser the watcher / agent-port senders never exist.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum InternalEvents {
     RebuildLayout(PathBuf),
+    /// Browser only: the async adapter/device request `Application::resumed`
+    /// started has finished (successfully or not).
+    #[cfg(target_arch = "wasm32")]
+    GpuReady(Box<PendingInit>),
+    /// Browser only: the fallback font download (see
+    /// [`API::set_web_fallback_font_url`]) has arrived.
+    #[cfg(target_arch = "wasm32")]
+    FallbackFontLoaded(Vec<u8>),
     AgentInput {
         window: String,
         events: Vec<agent_port::SyntheticEvent>,
@@ -95,9 +131,64 @@ pub enum RunType {
     /// watching it (recursively) in a background thread, reloading
     /// whichever file changed whenever it does.
     Watch(String),
+    /// Load every layout file in these bundles compiled into the binary,
+    /// once, at startup - the way to ship layouts (and the images / fonts /
+    /// shaders their directives name) to a browser, which has no filesystem.
+    /// Several bundles let an app embed just the directories it needs. See
+    /// [`EmbeddedAssets`].
+    Embedded(Vec<EmbeddedAssets>),
     /// Don't touch the `Binder` at all - this app builds its layout by
     /// hand with `api.l` (see `examples/basic.rs`).
     None,
+}
+
+/// A directory tree compiled into the binary with [`include_dir!`], standing
+/// in for the filesystem directory `mount` (a path relative to the working
+/// directory, as layout directives write them). Every `.tmd` file in it is
+/// loaded, and a directive path under `mount` (`load`, `font`, `shader`, or
+/// [`API::load_gltf_model`]) is read from the bundle instead of the disk:
+///
+/// ```ignore
+/// static ASSETS: include_dir::Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
+/// // `examples/pic.jpg` in a layout now resolves to the embedded `pic.jpg`.
+/// let watch_path = RunType::Embedded(vec![EmbeddedAssets { dir: &ASSETS, mount: "examples" }]);
+/// ```
+#[derive(Clone, Copy)]
+pub struct EmbeddedAssets {
+    pub dir: &'static include_dir::Dir<'static>,
+    pub mount: &'static str,
+}
+
+impl EmbeddedAssets {
+    /// The bundled file standing in for `path`, if `path` lies under `mount`
+    /// and the bundle has it.
+    fn get(&self, path: &Path) -> Option<&'static include_dir::File<'static>> {
+        let relative = path.strip_prefix(self.mount).ok()?;
+        self.dir.get_file(relative)
+    }
+
+    /// Every `.tmd` file in the bundle, as `mount`-prefixed paths, sorted for
+    /// a deterministic load order (like [`find_layout_files`]).
+    fn layout_files(&self) -> Vec<PathBuf> {
+        fn walk(dir: &include_dir::Dir<'static>, out: &mut Vec<PathBuf>) {
+            for file in dir.files() {
+                if file.path().extension().is_some_and(|extension| extension == "tmd") {
+                    out.push(file.path().to_path_buf());
+                }
+            }
+            for sub in dir.dirs() {
+                walk(sub, out);
+            }
+        }
+        let mut files = Vec::new();
+        walk(self.dir, &mut files);
+        let mut files: Vec<PathBuf> = files
+            .into_iter()
+            .map(|relative| Path::new(self.mount).join(relative))
+            .collect();
+        files.sort();
+        files
+    }
 }
 
 pub struct Startup {
@@ -236,6 +327,11 @@ pub struct API {
     /// `render_commands` (`"render"`/`"both"`) - a `"layout"`-only dump is
     /// answered synchronously in `user_event` instead.
     pending_dumps: Vec<agent_port::PendingDump>,
+
+    /// Browser only: where to download a text font from if, once `onload`
+    /// has run, nothing has been registered (a browser exposes no system
+    /// fonts). See [`API::set_web_fallback_font_url`].
+    web_fallback_font_url: Option<String>,
 }
 
 /// Per-window input accessors. Each reads the [`Viewport`] named by
@@ -402,7 +498,7 @@ impl API {
                 continue;
             }
 
-            let Ok(window) = event_loop.create_window(attributes) else {
+            let Ok(window) = event_loop.create_window(platform_window_attributes(attributes)) else {
                 continue;
             };
             window.set_title(&name);
@@ -415,27 +511,11 @@ impl API {
                 continue;
             };
 
-            let size = window.inner_size();
-            let surface_capabilities = surface.get_capabilities(&self.adapter);
-            let Some(surface_format) = surface_capabilities.formats.iter().find(|f| f.is_srgb())
+            let usage = agent_port_usage(self.agent_port_active);
+            let Some(surface_config) =
+                surface_config_for(&surface, &self.adapter, window.inner_size(), usage)
             else {
                 continue;
-            };
-            let surface_config = wgpu::SurfaceConfiguration {
-                // `COPY_SRC` alongside the usual `RENDER_ATTACHMENT` so the
-                // agent access port's screenshot readback (a
-                // `copy_texture_to_buffer` straight off the swapchain
-                // texture) is legal - without it, wgpu's validation layer
-                // rejects that copy as a hard (process-crashing) error.
-                usage: agent_port_usage(self.agent_port_active),
-                format: *surface_format,
-                color_space: wgpu::SurfaceColorSpace::Auto,
-                width: size.width,
-                height: size.height,
-                present_mode: surface_capabilities.present_modes[0],
-                desired_maximum_frame_latency: 2,
-                alpha_mode: surface_capabilities.alpha_modes[0],
-                view_formats: vec![],
             };
             surface.configure(&self.device, &surface_config);
 
@@ -544,7 +624,9 @@ impl API {
             self.l.begin_layout(ui_renderer);
             match self.watch_path {
                 RunType::None => user_application.layout(&page, self),
-                RunType::Once(_) | RunType::Watch(_) => self.run_layout(&page, user_application),
+                RunType::Once(_) | RunType::Watch(_) | RunType::Embedded(_) => {
+                    self.run_layout(&page, user_application)
+                }
             }
             let (commands, ui_renderer) = self.l.end_layout();
             render_commands = commands;
@@ -649,9 +731,11 @@ impl API {
             if let Some(viewport) = self.viewports.get_mut(&window_id)
                 && let Some(drawable) = viewport.get_current_texture()
             {
-                let drawable_view = drawable
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let drawable_view =
+                    drawable.texture.create_view(&wgpu::TextureViewDescriptor {
+                        format: Some(graphics::textures::render_format(&viewport.surface_config)),
+                        ..Default::default()
+                    });
                 //println!("render surface acquired");
                 let mut command_encoder =
                     self.device
@@ -1078,9 +1162,25 @@ impl API {
     /// it for both measurement and drawing. Unregistered ids use the system
     /// sans-serif. Call during [`App::initialize`]; a no-op if the renderer does
     /// not exist yet.
+    /// Browser builds only (ignored natively, where system fonts exist): the
+    /// URL of a `.ttf`/`.otf` to download as the default text font when the
+    /// app hasn't registered a text font by the end of [`App::onload`] -
+    /// neither through a layout `font` directive nor [`API::load_font`]. (A
+    /// font with no Latin letters, like an emoji font, doesn't count.) Defaults to
+    /// [`DEFAULT_FALLBACK_FONT_URL`]; `None` disables the download. Call it
+    /// from `onload`. The URL must allow cross-origin requests (CORS) unless
+    /// it's served from the app's own origin.
+    pub fn set_web_fallback_font_url(&mut self, url: Option<String>) {
+        self.web_fallback_font_url = url;
+    }
+
     pub fn load_font(&mut self, font_id: u16, data: Vec<u8>) {
         if let Some(ui_renderer) = &mut self.ui_renderer {
             ui_renderer.register_font(font_id, data);
+            // Clay caches word widths across frames; text measured with the
+            // old font set (or, in a browser, with no font at all) must be
+            // re-measured.
+            self.l.reset_measure_text_cache();
         }
     }
 
@@ -1352,8 +1452,8 @@ impl API {
             .and_then(|stem| stem.to_str())
             .ok_or_else(|| format!("layout file {path:?} has no usable name"))?
             .to_string();
-        let markdown = std::fs::read_to_string(path)
-            .map_err(|error| format!("failed to read layout file {path:?}: {error}"))?;
+        let markdown = String::from_utf8(self.read_asset(path)?)
+            .map_err(|error| format!("layout file {path:?} isn't UTF-8: {error}"))?;
         let resources = self.binder.load_layout(&page_name, &markdown)?;
         let LayoutResources {
             image_loads,
@@ -1369,13 +1469,16 @@ impl API {
             if self.loaded_layout_images.get(&load.atlas) == Some(&load.path) {
                 continue;
             }
-            match image::open(&load.path) {
+            match self
+                .read_asset(Path::new(&load.path))
+                .and_then(|bytes| image::load_from_memory(&bytes).map_err(|error| error.to_string()))
+            {
                 Ok(decoded) => {
                     self.add_image(&load.atlas, decoded);
                     self.loaded_layout_images
                         .insert(load.atlas.clone(), load.path.clone());
                 }
-                Err(error) => eprintln!(
+                Err(error) => log_error!(
                     "layout {page_name:?}: failed to load image {:?} ({}): {error}",
                     load.path, load.atlas
                 ),
@@ -1389,12 +1492,12 @@ impl API {
             if self.loaded_layout_fonts.get(&load.id) == Some(&load.path) {
                 continue;
             }
-            match std::fs::read(&load.path) {
+            match self.read_asset(Path::new(&load.path)) {
                 Ok(bytes) => {
                     self.load_font(load.id, bytes);
                     self.loaded_layout_fonts.insert(load.id, load.path.clone());
                 }
-                Err(error) => eprintln!(
+                Err(error) => log_error!(
                     "layout {page_name:?}: failed to load font {:?} (id {}): {error}",
                     load.path, load.id
                 ),
@@ -1409,18 +1512,21 @@ impl API {
             if self.loaded_layout_shaders.get(&load.name) == Some(&load.path) {
                 continue;
             }
-            match std::fs::read_to_string(&load.path) {
+            match self
+                .read_asset(Path::new(&load.path))
+                .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()))
+            {
                 Ok(source) => match self.register_ui_shader(&load.name, &source) {
                     Ok(()) => {
                         self.loaded_layout_shaders
                             .insert(load.name.clone(), load.path.clone());
                     }
-                    Err(error) => eprintln!(
+                    Err(error) => log_error!(
                         "layout {page_name:?}: shader {:?} ({}) failed: {error}",
                         load.path, load.name
                     ),
                 },
-                Err(error) => eprintln!(
+                Err(error) => log_error!(
                     "layout {page_name:?}: failed to read shader {:?} ({}): {error}",
                     load.path, load.name
                 ),
@@ -1437,11 +1543,11 @@ impl API {
     pub fn register_ui_shader(&mut self, name: &str, wgsl_body: &str) -> Result<(), String> {
         let full = effect_source(wgsl_body);
 
-        let module = wgpu::naga::front::wgsl::parse_str(&full)
+        let module = naga::front::wgsl::parse_str(&full)
             .map_err(|e| e.emit_to_string(&full))?;
-        wgpu::naga::valid::Validator::new(
-            wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::empty(),
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
         )
         .validate(&module)
         .map_err(|e| e.emit_to_string(&full))?;
@@ -1455,29 +1561,61 @@ impl API {
         Ok(())
     }
 
+    /// Reads an asset a layout (or the app) names by path: from the
+    /// [`RunType::Embedded`] bundle when the path lies under its mount point,
+    /// otherwise from the filesystem.
+    fn read_asset(&self, path: &Path) -> Result<Vec<u8>, String> {
+        if let RunType::Embedded(bundles) = &self.watch_path
+            && let Some(file) = bundles.iter().find_map(|assets| assets.get(path))
+        {
+            return Ok(file.contents().to_vec());
+        }
+        std::fs::read(path).map_err(|error| format!("failed to read {path:?}: {error}"))
+    }
+
+    /// The start-up layout load `Startup::watch_path` asks for.
+    fn load_initial_layouts(&mut self) -> Result<(), String> {
+        match self.watch_path.clone() {
+            RunType::Once(dir) | RunType::Watch(dir) => self.load_layout_directory(&dir),
+            RunType::Embedded(bundles) => {
+                let mut files: Vec<PathBuf> =
+                    bundles.iter().flat_map(EmbeddedAssets::layout_files).collect();
+                files.sort();
+                let mounts: Vec<&str> = bundles.iter().map(|assets| assets.mount).collect();
+                self.load_layout_files(files, &format!("embedded {mounts:?}"))
+            }
+            RunType::None => Ok(()),
+        }
+    }
+
     /// Recursively loads every `.tmd` file under `dir` into the `Binder`
     /// (see `load_layout_file`), each registered as a page named after its
     /// file, skipping (and logging) any individual file that fails to read
     /// or parse rather than aborting the whole scan. Errors only if `dir`
     /// contains no `.tmd` files at all, or none of them parsed.
     fn load_layout_directory(&mut self, dir: &str) -> Result<(), String> {
-        let files = find_layout_files(Path::new(dir));
+        self.load_layout_files(find_layout_files(Path::new(dir)), &format!("{dir:?}"))
+    }
+
+    /// Loads each of `files` (see `load_layout_file`), logging and skipping
+    /// any that fail. `source` names where they came from, for errors.
+    fn load_layout_files(&mut self, files: Vec<PathBuf>, source: &str) -> Result<(), String> {
         if files.is_empty() {
-            return Err(format!("no .tmd layout files found under {dir:?}"));
+            return Err(format!("no .tmd layout files found under {source}"));
         }
 
         let mut any_loaded = false;
         for file in files {
             match self.load_layout_file(&file) {
                 Ok(_) => any_loaded = true,
-                Err(error) => eprintln!("failed to load layout file {file:?}: {error}"),
+                Err(error) => log_error!("failed to load layout file {file:?}: {error}"),
             }
         }
 
         if any_loaded {
             Ok(())
         } else {
-            Err(format!("no layout files under {dir:?} parsed successfully"))
+            Err(format!("no layout files under {source} parsed successfully"))
         }
     }
 
@@ -1489,7 +1627,14 @@ impl API {
     ) -> BaseMesh {
         self.model_ids
             .insert(model_name.to_string(), self.models.len());
-        let model = load_model_gltf(filename, &self.device, &self.queue, transfrom).unwrap();
+        let model = load_model_gltf(
+            filename,
+            &|path: &Path| self.read_asset(path),
+            &self.device,
+            &self.queue,
+            transfrom,
+        )
+        .unwrap();
         let base = model.mesh.base.clone();
         self.models.push(model);
 
@@ -1548,6 +1693,10 @@ where
     /// background thread can send `InternalEvents::RebuildLayout` back to
     /// `Application::user_event` on the winit event-loop thread.
     app_events: EventLoopProxy<InternalEvents>,
+
+    /// Set by the first `resumed`; guards against a second window + GPU
+    /// request while the (browser) async initialisation is still in flight.
+    init_started: bool,
 }
 
 impl<UserApp> Application<UserApp>
@@ -1557,10 +1706,279 @@ where
     pub fn new(app_events: EventLoopProxy<InternalEvents>, user_application: UserApp) -> Self {
         Application {
             api: None,
+            init_started: false,
             app_events,
             user_application,
         }
     }
+
+    /// The second half of start-up, once the GPU device exists: builds the
+    /// renderers, the bootstrap `Viewport` and `API`, loads the layout files,
+    /// starts the native-only background services, and runs `App::onload`.
+    /// Called straight from `resumed` natively, and from `user_event`
+    /// (`InternalEvents::GpuReady`) in a browser.
+    fn finish_init(&mut self, startup: Startup, window: Arc<Window>, gpu: GpuContext) {
+        let GpuContext {
+            instance,
+            surface,
+            adapter,
+            device,
+            queue,
+            surface_config,
+        } = gpu;
+        let window_id = window.id();
+
+        let depth_texture = DepthTexture::new(&device, &surface_config, MULTI_SAMPLE_COUNT);
+        let multi_sample_texture =
+            MultiSampleTexture::new(&device, &surface_config, MULTI_SAMPLE_COUNT);
+        let mut scene_renderer = SceneRenderer::new(&device);
+        scene_renderer.build_shaders(&device, &surface_config, MULTI_SAMPLE_COUNT);
+        let mut ui_renderer = UIRenderer::new(&device, &queue);
+        ui_renderer.build_shaders(&device, &queue, &surface_config, MULTI_SAMPLE_COUNT);
+        let ui_renderer = Some(ui_renderer);
+
+        let mut viewport_lookup = bimap::BiMap::new();
+        viewport_lookup.insert(startup.window_name.clone(), window_id);
+
+        // No explicit `Startup::page` -> the bootstrap window shows the page
+        // of the same name.
+        let initial_page = startup
+            .page
+            .clone()
+            .unwrap_or_else(|| startup.window_name.clone());
+
+        let initial_viewport = Viewport::new(
+            window,
+            initial_page,
+            surface,
+            surface_config,
+            depth_texture,
+            multi_sample_texture,
+        );
+
+        let l = LayoutEngine::new((0.0, 0.0));
+
+        let mut viewports = HashMap::new();
+        viewports.insert(window_id, initial_viewport);
+        let agent_port_active = agent_port_enabled(&startup);
+        let mut api = API {
+            staged_windows: Vec::new(),
+            binder: Binder::new(),
+            watch_path: startup.watch_path,
+            instance,
+            adapter,
+            device,
+            queue,
+            scene_renderer,
+            ui_renderer,
+            l,
+            image_frame_arena: Vec::new(),
+            custom_shape_arena: Vec::new(),
+            custom_layout_settings_arena: Vec::new(),
+            loaded_layout_images: HashMap::new(),
+            loaded_layout_fonts: HashMap::new(),
+            loaded_layout_shaders: HashMap::new(),
+            model_ids: HashMap::new(),
+            models: Vec::<Model>::new(),
+            viewport_lookup,
+            viewports,
+            active_window: None,
+            canvases: HashMap::new(),
+            agent_port_active,
+            pending_screenshots: Vec::new(),
+            pending_dumps: Vec::new(),
+            web_fallback_font_url: Some(DEFAULT_FALLBACK_FONT_URL.to_string()),
+        };
+
+        // `API` reads and parses the layout files itself - the app never sees
+        // the paths, the markdown, or the `Binder` they produce. Each file
+        // registers a page named after itself; the bootstrap viewport already
+        // points at its page (`Startup::page`, or `window_name`), so no
+        // follow-up `set_viewport_page` call is needed.
+        if let Err(error) = api.load_initial_layouts() {
+            log_error!("failed to load layouts: {error}");
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let RunType::Watch(dir) = &api.watch_path {
+                spawn_layout_watcher(dir.clone(), self.app_events.clone());
+            }
+            if let Some(port) = startup.agent_access_port {
+                agent_port::spawn_agent_listener(
+                    port,
+                    startup.window_name.clone(),
+                    self.app_events.clone(),
+                );
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if matches!(api.watch_path, RunType::Watch(_)) {
+                log_error!("RunType::Watch: hot reload isn't available in a browser; layouts were loaded once");
+            }
+            if startup.agent_access_port.is_some() {
+                log_error!("Startup::agent_access_port is ignored in a browser (no sockets)");
+            }
+        }
+
+        api.redraw_viewport(window_id, &mut self.user_application);
+
+        self.user_application.onload(&mut api);
+
+        // A browser has no system fonts: unless the app registered a text
+        // font (a `font` directive, or `API::load_font`) by now - an
+        // emoji-only font doesn't count - download the fallback so text
+        // isn't invisible.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(url) = api.web_fallback_font_url.clone()
+            && !api
+                .ui_renderer
+                .as_ref()
+                .is_some_and(|renderer| renderer.has_text_font())
+        {
+            web::spawn_font_fetch(url, self.app_events.clone());
+        }
+
+        self.api = Some(api);
+    }
+}
+
+/// The device-level GPU state plus the bootstrap window's configured surface,
+/// produced by [`init_gpu`] and consumed by `Application::finish_init`.
+struct GpuContext {
+    instance: wgpu::Instance,
+    surface: wgpu::Surface<'static>,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    surface_config: wgpu::SurfaceConfiguration,
+}
+
+/// Everything `finish_init` needs, carried across the async GPU request by
+/// `InternalEvents::GpuReady` in the browser build.
+#[cfg(target_arch = "wasm32")]
+struct PendingInit {
+    startup: Startup,
+    window: Arc<Window>,
+    gpu: Result<GpuContext, String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Debug for PendingInit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingInit")
+            .field("window", &self.window.id())
+            .field("ok", &self.gpu.is_ok())
+            .finish()
+    }
+}
+
+/// Creates the wgpu instance, the surface for `window`, an adapter and a
+/// device, and configures the surface. Async because adapter/device requests
+/// are; see `Application::resumed` for how each platform awaits it.
+async fn init_gpu(window: Arc<Window>, usage: wgpu::TextureUsages) -> Result<GpuContext, String> {
+    let instance = wgpu::Instance::default();
+    let surface = instance
+        .create_surface(window.clone())
+        .map_err(|error| format!("failed to create render surface: {error}"))?;
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        })
+        .await
+        .map_err(|error| {
+            format!("no suitable GPU adapter (in a browser, this needs WebGPU): {error}")
+        })?;
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("main device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::Off,
+        })
+        .await
+        .map_err(|error| format!("failed to open GPU device: {error}"))?;
+    // Natively wgpu's default handler panics with the error. A browser
+    // reports validation errors asynchronously and the default handler's
+    // output goes nowhere there, so route them to the console instead. This
+    // includes WGSL the browser rejects even though naga accepted it (e.g.
+    // its uniformity rules, which naga doesn't enforce).
+    #[cfg(target_arch = "wasm32")]
+    device.on_uncaptured_error(Arc::new(|error| log_error!("wgpu error: {error}")));
+    let surface_config = surface_config_for(&surface, &adapter, window.inner_size(), usage)
+        .ok_or("the render surface reports no supported formats")?;
+    surface.configure(&device, &surface_config);
+    Ok(GpuContext {
+        instance,
+        surface,
+        adapter,
+        device,
+        queue,
+        surface_config,
+    })
+}
+
+/// The `SurfaceConfiguration` for a new window's surface. Prefers an sRGB
+/// swapchain format; when the surface offers none (a WebGPU canvas only
+/// offers `bgra8unorm` / `rgba8unorm`) it uses the first format with an sRGB
+/// *view* format, which `graphics::textures::render_format` then hands to
+/// every pipeline and per-frame view - same gamma handling either way.
+fn surface_config_for(
+    surface: &wgpu::Surface,
+    adapter: &wgpu::Adapter,
+    size: PhysicalSize<u32>,
+    usage: wgpu::TextureUsages,
+) -> Option<wgpu::SurfaceConfiguration> {
+    let capabilities = surface.get_capabilities(adapter);
+    let (format, view_formats) = match capabilities.formats.iter().find(|f| f.is_srgb()) {
+        Some(format) => (*format, vec![]),
+        None => {
+            let format = *capabilities.formats.first()?;
+            let srgb = format.add_srgb_suffix();
+            (format, if srgb == format { vec![] } else { vec![srgb] })
+        }
+    };
+    Some(wgpu::SurfaceConfiguration {
+        // `COPY_SRC` alongside the usual `RENDER_ATTACHMENT` when the agent
+        // port is active - see `agent_port_usage`.
+        usage,
+        format,
+        color_space: wgpu::SurfaceColorSpace::Auto,
+        // wgpu rejects a zero-sized configuration; a browser canvas can
+        // report 0x0 before it's laid out. `Resized` fixes it up.
+        width: size.width.max(1),
+        height: size.height.max(1),
+        present_mode: *capabilities.present_modes.first()?,
+        desired_maximum_frame_latency: 2,
+        alpha_mode: *capabilities.alpha_modes.first()?,
+        view_formats,
+    })
+}
+
+/// Platform tweaks to every window's attributes. In a browser, a winit
+/// window is a `<canvas>`: append it to `<body>` (the page's CSS sizes it),
+/// and keep the browser's own shortcuts (scrolling, find, ...) from eating
+/// keyboard / wheel input meant for the app.
+fn platform_window_attributes(attributes: WindowAttributes) -> WindowAttributes {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::WindowAttributesExtWebSys;
+        attributes.with_append(true).with_prevent_default(true)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    attributes
+}
+
+/// Whether `startup` asks for (and this platform supports) the agent access
+/// port. A browser has no sockets, so it's always off there.
+fn agent_port_enabled(startup: &Startup) -> bool {
+    cfg!(not(target_arch = "wasm32")) && startup.agent_access_port.is_some()
 }
 
 impl<UserApp> ApplicationHandler<InternalEvents> for Application<UserApp>
@@ -1611,176 +2029,41 @@ where
         });
     }
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        //println!("building context");
-        if self.api.is_none() {
-            let startup = self.user_application.initialize();
+        if self.api.is_some() || self.init_started {
+            return;
+        }
+        self.init_started = true;
 
-            if let Ok(window) = event_loop.create_window(startup.window_attributes) {
-                //println!("window created");
-                let window_id = window.id();
-                let window = Arc::new(window);
-                let instance = wgpu::Instance::default();
-                if let Ok(surface) = instance.create_surface(window.clone()) {
-                    //println!("render surface created");
-                    let adapter_options = wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::default(),
-                        compatible_surface: Some(&surface),
-                        force_fallback_adapter: false,
-                        apply_limit_buckets: false,
-                    };
-                    //println!("requesting adapater context");
-                    if let Ok(adapter) =
-                        pollster::block_on(instance.request_adapter(&adapter_options))
-                    {
-                        //println!("adapter context established");
-                        let device_descriptor = wgpu::DeviceDescriptor {
-                            label: Some("main device"),
-                            required_features: wgpu::Features::empty(),
-                            required_limits: wgpu::Limits::default(),
-                            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                            memory_hints: wgpu::MemoryHints::default(),
-                            trace: wgpu::Trace::Off,
-                        };
-                        if let Ok((device, queue)) =
-                            pollster::block_on(adapter.request_device(&device_descriptor))
-                        {
-                            //println!("device connection established");
-                            let size = window.inner_size();
-                            let surface_capabilities = surface.get_capabilities(&adapter);
-                            if let Some(surface_format) =
-                                surface_capabilities.formats.iter().find(|f| f.is_srgb())
-                            {
-                                //println!("context established, opening window");
-                                let surface_config = wgpu::SurfaceConfiguration {
-                                    // See the comment on the matching field in
-                                    // `create_staged_viewports` - the agent
-                                    // port's screenshot readback needs `COPY_SRC`
-                                    // on the surface texture's usage flags.
-                                    usage: agent_port_usage(startup.agent_access_port.is_some()),
-                                    format: *surface_format,
-                                    color_space: wgpu::SurfaceColorSpace::Auto,
-                                    width: size.width,
-                                    height: size.height,
-                                    present_mode: surface_capabilities.present_modes[0],
-                                    desired_maximum_frame_latency: 2,
-                                    alpha_mode: surface_capabilities.alpha_modes[0],
-                                    view_formats: vec![],
-                                };
-                                surface.configure(&device, &surface_config);
-                                //println!("surface configured");
-                                let depth_texture =
-                                    DepthTexture::new(&device, &surface_config, MULTI_SAMPLE_COUNT);
-                                let multi_sample_texture = MultiSampleTexture::new(
-                                    &device,
-                                    &surface_config,
-                                    MULTI_SAMPLE_COUNT,
-                                );
-                                //println!("depth texture created");
-                                let mut scene_renderer = SceneRenderer::new(&device);
-                                scene_renderer.build_shaders(
-                                    &device,
-                                    &surface_config,
-                                    MULTI_SAMPLE_COUNT,
-                                );
-                                //println!("3d Shader compiled");
-                                let mut ui_renderer = UIRenderer::new(&device, &queue);
-                                ui_renderer.build_shaders(
-                                    &device,
-                                    &queue,
-                                    &surface_config,
-                                    MULTI_SAMPLE_COUNT,
-                                );
-                                let ui_renderer = Some(ui_renderer);
-                                //println!("2d shader compiled");
-                                let mut viewport_lookup = bimap::BiMap::new();
-                                viewport_lookup.insert(startup.window_name.clone(), window_id);
-
-                                // No explicit `Startup::page` -> the bootstrap
-                                // window shows the page of the same name.
-                                let initial_page = startup
-                                    .page
-                                    .clone()
-                                    .unwrap_or_else(|| startup.window_name.clone());
-
-                                let initial_viewport = Viewport::new(
-                                    window,
-                                    initial_page,
-                                    surface,
-                                    surface_config,
-                                    depth_texture,
-                                    multi_sample_texture,
-                                );
-
-                                let l = LayoutEngine::new((0.0, 0.0));
-
-                                let mut viewports = HashMap::new();
-                                viewports.insert(window_id, initial_viewport);
-                                //println!("API initialized");
-                                let mut api = API {
-                                    staged_windows: Vec::new(),
-                                    binder: Binder::new(),
-                                    watch_path: startup.watch_path,
-                                    instance,
-                                    adapter,
-                                    device,
-                                    queue,
-                                    scene_renderer,
-                                    ui_renderer,
-                                    l,
-                                    image_frame_arena: Vec::new(),
-                                    custom_shape_arena: Vec::new(),
-                                    custom_layout_settings_arena: Vec::new(),
-                                    loaded_layout_images: HashMap::new(),
-                                    loaded_layout_fonts: HashMap::new(),
-                                    loaded_layout_shaders: HashMap::new(),
-                                    model_ids: HashMap::new(),
-                                    models: Vec::<Model>::new(),
-                                    viewport_lookup,
-                                    viewports,
-                                    active_window: None,
-                                    canvases: HashMap::new(),
-                                    agent_port_active: startup.agent_access_port.is_some(),
-                                    pending_screenshots: Vec::new(),
-                                    pending_dumps: Vec::new(),
-                                };
-
-                                // `API` reads and parses the layout files itself - the
-                                // app never sees the paths, the markdown, or the
-                                // `Binder` they produce. Each file registers a page
-                                // named after itself; the bootstrap viewport already
-                                // points at its page (`Startup::page`, or
-                                // `window_name`), so no follow-up `set_viewport_page`
-                                // call is needed.
-                                match api.watch_path.clone() {
-                                    RunType::Once(dir) | RunType::Watch(dir) => {
-                                        if let Err(error) = api.load_layout_directory(&dir) {
-                                            eprintln!(
-                                                "failed to load layout directory {dir:?}: {error}"
-                                            );
-                                        }
-                                    }
-                                    RunType::None => {}
-                                }
-                                if let RunType::Watch(dir) = &api.watch_path {
-                                    spawn_layout_watcher(dir.clone(), self.app_events.clone());
-                                }
-                                if let Some(port) = startup.agent_access_port {
-                                    agent_port::spawn_agent_listener(
-                                        port,
-                                        startup.window_name.clone(),
-                                        self.app_events.clone(),
-                                    );
-                                }
-                                api.redraw_viewport(window_id, &mut self.user_application);
-
-                                self.user_application.onload(&mut api);
-
-                                self.api = Some(api);
-                            }
-                        }
-                    }
-                }
+        let startup = self.user_application.initialize();
+        let attributes = platform_window_attributes(startup.window_attributes.clone());
+        let window = match event_loop.create_window(attributes) {
+            Ok(window) => Arc::new(window),
+            Err(error) => {
+                log_error!("failed to create window: {error}");
+                return;
             }
+        };
+        let usage = agent_port_usage(agent_port_enabled(&startup));
+
+        // Adapter / device requests are async. Natively they're simply blocked
+        // on; a browser can't block its main thread, so there the request runs
+        // as a JS promise and reports back through `InternalEvents::GpuReady`.
+        #[cfg(not(target_arch = "wasm32"))]
+        match pollster::block_on(init_gpu(window.clone(), usage)) {
+            Ok(gpu) => self.finish_init(startup, window, gpu),
+            Err(error) => log_error!("graphics initialisation failed: {error}"),
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let app_events = self.app_events.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let gpu = init_gpu(window.clone(), usage).await;
+                let _ = app_events.send_event(InternalEvents::GpuReady(Box::new(PendingInit {
+                    startup,
+                    window,
+                    gpu,
+                })));
+            });
         }
     }
 
@@ -1907,10 +2190,31 @@ where
         _event_loop: &winit::event_loop::ActiveEventLoop,
         event: InternalEvents,
     ) {
+        #[cfg(target_arch = "wasm32")]
+        let event = match event {
+            InternalEvents::GpuReady(pending) => {
+                let PendingInit { startup, window, gpu } = *pending;
+                match gpu {
+                    Ok(gpu) => self.finish_init(startup, window, gpu),
+                    Err(error) => log_error!("graphics initialisation failed: {error}"),
+                }
+                return;
+            }
+            event => event,
+        };
         let Some(api) = &mut self.api else {
             return;
         };
         match event {
+            #[cfg(target_arch = "wasm32")]
+            InternalEvents::GpuReady(_) => {}
+            #[cfg(target_arch = "wasm32")]
+            InternalEvents::FallbackFontLoaded(bytes) => {
+                api.load_font(ui::ui_renderer::FALLBACK_FONT_ID, bytes);
+                for viewport in api.viewports.values_mut() {
+                    viewport.redraw_requested = true;
+                }
+            }
             InternalEvents::RebuildLayout(path) => match api.load_layout_file(&path) {
                 Ok(_) => {
                     // The file may or may not be the page a viewport is
@@ -1923,7 +2227,7 @@ where
                     }
                 }
                 Err(error) => {
-                    eprintln!("failed to reload layout file {path:?}: {error}");
+                    log_error!("failed to reload layout file {path:?}: {error}");
                 }
             },
             InternalEvents::AgentInput { window, events, reply } => {
@@ -2014,13 +2318,26 @@ fn agent_port_usage(agent_port_active: bool) -> wgpu::TextureUsages {
 
 pub fn run<UserApp>(user_application: UserApp)
 where
-    UserApp: App,
+    UserApp: App + 'static,
 {
+    #[cfg(target_arch = "wasm32")]
+    console_error_panic_hook::set_once();
     if let Ok(event_loop) = EventLoop::<InternalEvents>::with_user_event().build() {
         // `about_to_wait` sets the real policy from the first iteration.
         event_loop.set_control_flow(ControlFlow::Wait);
-        let mut app = Application::new(event_loop.create_proxy(), user_application);
-        event_loop.run_app(&mut app).unwrap();
+        let app = Application::new(event_loop.create_proxy(), user_application);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut app = app;
+            event_loop.run_app(&mut app).unwrap();
+        }
+        // A browser owns the event loop: `spawn_app` hands the app over and
+        // returns straight away, leaving it running off JS callbacks.
+        #[cfg(target_arch = "wasm32")]
+        {
+            use winit::platform::web::EventLoopExtWebSys;
+            event_loop.spawn_app(app);
+        }
     } else {
         panic!("Event loop creation failed.");
     }
@@ -2061,6 +2378,7 @@ fn find_layout_files(dir: &Path) -> Vec<PathBuf> {
 /// channel's sender is dropped (the watcher failing internally) or
 /// `app_events.send_event` starts failing (the event loop, and so the
 /// whole application, has shut down).
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn_layout_watcher(dir: String, app_events: EventLoopProxy<InternalEvents>) {
     std::thread::spawn(move || {
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
@@ -2068,12 +2386,12 @@ fn spawn_layout_watcher(dir: String, app_events: EventLoopProxy<InternalEvents>)
         let mut watcher = match notify::recommended_watcher(tx) {
             Ok(watcher) => watcher,
             Err(error) => {
-                eprintln!("failed to create layout watcher for {dir:?}: {error}");
+                log_error!("failed to create layout watcher for {dir:?}: {error}");
                 return;
             }
         };
         if let Err(error) = watcher.watch(Path::new(&dir), notify::RecursiveMode::Recursive) {
-            eprintln!("failed to watch layout directory {dir:?}: {error}");
+            log_error!("failed to watch layout directory {dir:?}: {error}");
             return;
         }
 
@@ -2081,7 +2399,7 @@ fn spawn_layout_watcher(dir: String, app_events: EventLoopProxy<InternalEvents>)
             let event = match res {
                 Ok(event) => event,
                 Err(error) => {
-                    eprintln!("layout watch error: {error}");
+                    log_error!("layout watch error: {error}");
                     continue;
                 }
             };

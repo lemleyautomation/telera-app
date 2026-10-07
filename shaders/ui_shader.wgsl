@@ -42,17 +42,18 @@ var s_diffuse: sampler;
 
 @fragment
 fn fs_main(in: VertexPayload) -> @location(0) vec4<f32> {
+    // Sampled up front: WGSL only allows `textureSample` in uniform control
+    // flow, and `in.texture` varies per fragment. naga doesn't enforce that
+    // rule, but browsers' WebGPU compilers reject the whole pipeline.
+    let texel = textureSample(t_diffuse, s_diffuse, in.uv);
     switch in.texture {
         // solid fill
         case 0u { return in.color; }
         // glyph coverage mask: tint by `color`, modulate alpha by atlas red
-        case 2u {
-            let coverage = textureSample(t_diffuse, s_diffuse, in.uv).r;
-            return vec4<f32>(in.color.rgb, in.color.a * coverage);
-        }
+        case 2u { return vec4<f32>(in.color.rgb, in.color.a * texel.r); }
         // colour glyph bitmap (emoji): straight RGBA from the atlas
-        case 3u { return textureSample(t_diffuse, s_diffuse, in.uv); }
+        case 3u { return texel; }
         // image atlas
-        default { return textureSample(t_diffuse, s_diffuse, in.uv); }
+        default { return texel; }
     }
 }

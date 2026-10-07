@@ -12,8 +12,7 @@ telera-tmd = { path = "telera-tmd" }
 telera-layout = { path = "../telera-layout"}
 winit = "0.30.12"
 wgpu = "30.0.1"
-pollster = "1.0.1"
-image = "0.25.10"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 bytemuck = { version = "1.25", features = [ "derive" ] }
 cosmic-text = "0.19.0"
 etagere = "0.3.0"
@@ -22,13 +21,18 @@ lyon = "1.0.19"
 cgmath = "0.18.0"
 anyhow = "1.0.104"
 gltf = "1.4.1"
-notify = "8.2.0"
 bimap = "0.6.3"
 rkyv = "0.8.18"
 markdown = "1.0.0"
 symbol_table = { version = "0.5.0", features = [ "global" ] }
 serde = { version = "1", features = [ "derive" ] }
 serde_json = "1"
+# Direct dep (same version wgpu uses) for custom-shader validation: wgpu only
+# re-exports `naga` when it bundles wgpu-core, which the WebGPU-only wasm build does not.
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+web-time = "1.1.0"
+include_dir = "0.7.4"
+ttf-parser = "0.25.1"
 
 [dev-dependencies]
 # The schema-drift test parses `src/ui/layout_runner.rs` to check every
@@ -40,3 +44,16 @@ syn = { version = "2.0", features = [ "full", "parsing", "visit" ] }
 # ~10-15% larger binary, no runtime cost. See the Profiling section in readme.md.
 [profile.release]
 debug = "line-tables-only"
+
+# Native-only: filesystem watcher (`RunType::Watch`) and blocking GPU init.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+notify = "8.2.0"
+pollster = "1.0.1"
+
+# Browser glue for the wasm32 build (see `scripts/build-web`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+js-sys = "0.3.106"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "Response", "console"] }

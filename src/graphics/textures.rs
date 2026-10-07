@@ -6,6 +6,17 @@
 use anyhow::*;
 use image::GenericImageView;
 
+/// The format everything that draws into a window renders as: the surface's
+/// sRGB view format when one was requested, else the surface format itself.
+/// Native swapchains usually offer an sRGB format directly; a WebGPU canvas
+/// only offers `bgra8unorm` / `rgba8unorm`, so the surface is configured with
+/// that and an sRGB *view* (see `surface_config_for` in `lib.rs`) - pipelines,
+/// offscreen layers and the per-frame swapchain view must all use this format
+/// so the gamma handling matches native.
+pub fn render_format(config: &wgpu::SurfaceConfiguration) -> wgpu::TextureFormat {
+    config.view_formats.first().copied().unwrap_or(config.format)
+}
+
 /// A sampled 2D texture with its view and sampler - loaded from image bytes for
 /// model materials.
 pub struct Texture {
@@ -189,7 +200,7 @@ impl MultiSampleTexture {
             mip_level_count: 1,
             sample_count: multi_sample_count,
             dimension: wgpu::TextureDimension::D2,
-            format: config.format,
+            format: render_format(config),
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             label: Some("multi_sample_texture"),
             view_formats: &[],
