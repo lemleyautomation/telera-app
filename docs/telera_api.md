@@ -37,10 +37,11 @@ impl App for MyApp {
             window_name: "Main".to_string(),
             page: None,
             watch_path: RunType::Watch("layouts".to_string()),
+            agent_access_port: None,
         }
     }
 
-    fn update(&mut self, _api: &mut API) {
+    fn update(&mut self, _viewport: Option<&str>, _api: &mut API) {
         self.label = format!("clicked {} times", self.clicks);
     }
 }
@@ -100,7 +101,7 @@ pub fn run<UserApp: App>(app: UserApp)   // takes over the thread and drives the
 pub trait App: LayoutRunnerReflection + LayoutReflector + Sized {
     fn initialize(&mut self) -> Startup;          // required - runs once, before API exists
     fn onload(&mut self, api: &mut API) {}        // once, right after the GPU context is up
-    fn update(&mut self, api: &mut API) {}        // once per event-loop wake (≈ per frame while animating)
+    fn update(&mut self, viewport: Option<&str>, api: &mut API) {}  // twice per frame cycle - see below
     fn layout(&mut self, page: &str, api: &mut API) {}  // imperative UI only (see #4)
 }
 ```
@@ -110,9 +111,21 @@ pub trait App: LayoutRunnerReflection + LayoutReflector + Sized {
   camera) goes in `onload`.
 - **`onload`** is the place for one-time GPU-touching setup.
 - **`update`** is your per-frame logic: mutate `self`'s fields, drive cameras
-  and model transforms, read input off `api`. It runs every time the event
-  loop wakes - which is every `frame_interval` while a window is animating
-  (`set_viewport_continuous`), and otherwise only on input.
+  and model transforms, read input off `api`. Each time the event loop wakes
+  (every `frame_interval` while a window is animating, see
+  `set_viewport_continuous`, and otherwise only on input), it is called:
+  - **once with `viewport == None`**, before any window is redrawn. Put
+    app-wide logic here: animation steps, timers, anything that should run
+    exactly once per frame. There is no active window, so the input readers
+    (§4.1) return their neutral defaults.
+  - **once with `viewport == Some(name)`** for each window about to be
+    redrawn, right before its layout pass. Input reads that window's state,
+    so handle mouse and keyboard input here, matching on `name` when you have
+    several windows.
+
+  Code that ignores `viewport` runs at least twice per frame. That's
+  harmless for derived values like the label in §1, but it doubles anything
+  that accumulates, such as a rotation step.
 - **`layout`** is only called for windows whose `watch_path` is
   `RunType::None` - the hand-coded UI path. Markdown-driven windows ignore it.
 
@@ -137,6 +150,7 @@ pub struct Startup {
 |---|---|
 | `RunType::Watch(dir)` | load every `.tmd` under `dir` at startup, then hot-reload changed files |
 | `RunType::Once(dir)` | load every `.tmd` under `dir` once, never look again |
+| `RunType::Embedded(bundles)` | load every `.tmd` in directories compiled into the binary; the only way to ship layouts to a browser (see §6) |
 | `RunType::None` | don't load any layout files - this app builds its UI in Rust via `App::layout` (see #4) |
 
 A "page" is one `.tmd` file (named by its filename minus its extension); reusable
@@ -328,7 +342,10 @@ input. Away from any window they return a neutral default.
 | `agent_port_active() -> bool` | whether `Startup::agent_access_port` was set | see §4.11 |
 
 ```rust
-fn update(&mut self, api: &mut API) {
+fn update(&mut self, viewport: Option<&str>, api: &mut API) {
+    if viewport.is_none() {
+        return;                        // no active window: input reads are all defaults
+    }
     if api.left_mouse_clicked() {
         self.count += 1;
     }
@@ -502,7 +519,10 @@ fn onload(&mut self, api: &mut API) {
     api.add_instance("crate", "b", Some(t));
 }
 
-fn update(&mut self, api: &mut API) {
+fn update(&mut self, viewport: Option<&str>, api: &mut API) {
+    if viewport.is_some() {
+        return;                        // step animation once per frame, in the `None` call
+    }
     if let Ok(t) = api.transform_model("crate") {
         t.rotate_y_axis(1.0);          // spins both copies
     }
@@ -547,7 +567,10 @@ fn onload(&mut self, api: &mut API) {
     }
 }
 
-fn update(&mut self, api: &mut API) {
+fn update(&mut self, viewport: Option<&str>, api: &mut API) {
+    if viewport.is_some() {
+        return;                            // once per frame, in the `None` call
+    }
     if let Some(cam) = api.camera("orbit") {
         cam.orbit(0.01, 0.0);              // needs set_viewport_continuous to run every frame
     }
@@ -817,7 +840,240 @@ pub struct EventContext {
 
 ---
 
-## 6. Re-exports
+## 6. Targeting the web (WebAssembly)
+
+A telera app compiles to `wasm32-unknown-unknown` and runs in a browser on
+**WebGPU**: current Chrome and Edge, and Firefox or Safari where WebGPU is
+enabled. Your app code stays the same. The work is in three places: one-time
+tooling, embedding your assets, and a small HTML page that loads the result.
+
+### 6.1 One-time setup
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version <X.Y.Z> --locked
+```
+
+- **`<X.Y.Z>` must exactly match** the `wasm-bindgen` crate version in *your
+  app's* `Cargo.lock` (telera pulls it in; find it with
+  `grep -A1 'name = "wasm-bindgen"' Cargo.lock`). A mismatch fails at the
+  `wasm-bindgen` step with a schema-version error. After a `cargo update`
+  that bumps it, reinstall with `--force`.
+- **A `clang` that can target wasm32.** telera-layout compiles clay's C
+  source for the browser. Check with `clang --print-targets | grep wasm32`.
+  Most distro clang packages include it. Apple's Xcode clang does not, so on
+  macOS use Homebrew's `llvm`.
+
+You don't need `wasm-bindgen` or `web-sys` in your own `Cargo.toml`.
+`telera-app` brings in everything the browser build needs, and
+`wasm-bindgen` runs your `fn main` automatically when the page loads.
+
+### 6.2 Embed your assets
+
+A browser has no filesystem, so `RunType::Watch` and `RunType::Once` have
+nothing to read. Use `RunType::Embedded` instead: a list of `EmbeddedAssets`
+bundles, each a directory compiled into the binary with `include_dir!` and
+*mounted* at the path it replaces. Every `.tmd` in a bundle is loaded, and
+any directive path under a mount (`load` images, `font`, `shader`,
+`API::load_gltf_model`) reads from the bundle. Your layouts don't change.
+
+Keep hot reload on native and embed only for the web by selecting the
+`RunType` with `cfg`:
+
+```text
+my-app/
+├── Cargo.toml          # depends on telera-app
+├── src/main.rs
+├── layouts/Main.tmd
+└── assets/             # images, fonts, shaders the layouts name, e.g. assets/Inter.ttf
+```
+
+```rust
+use telera_app::*;
+
+/// Native: read `layouts/` from disk and hot-reload it.
+#[cfg(not(target_arch = "wasm32"))]
+fn layouts() -> RunType {
+    RunType::Watch("layouts".to_string())
+}
+
+/// Browser: the same directories, compiled into the binary.
+#[cfg(target_arch = "wasm32")]
+fn layouts() -> RunType {
+    use telera_app::include_dir::{Dir, include_dir};
+    static LAYOUTS: Dir = include_dir!("$CARGO_MANIFEST_DIR/layouts");
+    static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
+    RunType::Embedded(vec![
+        EmbeddedAssets { dir: &LAYOUTS, mount: "layouts" },
+        EmbeddedAssets { dir: &ASSETS, mount: "assets" },
+    ])
+}
+
+impl App for MyApp {
+    fn initialize(&mut self) -> Startup {
+        Startup {
+            window_attributes: Window::default_attributes()
+                .with_inner_size(LogicalSize::new(800, 600)),
+            window_name: "Main".to_string(),
+            page: None,
+            watch_path: layouts(),
+            agent_access_port: None,
+        }
+    }
+}
+```
+
+- `mount` is the path exactly as your layout directives write it, relative
+  to the working directory you run from natively. `` `font` [1](assets/Inter.ttf) ``
+  resolves through the `"assets"` mount to `Inter.ttf` in the bundle.
+- `$CARGO_MANIFEST_DIR` makes the `include_dir!` path independent of where
+  you build from.
+- Embed only what the app uses, because every embedded byte is downloaded
+  before the app starts.
+- An app that builds its UI in Rust (`RunType::None`) has no layouts to
+  embed. It still needs any fonts or images it loads (see §6.4).
+
+### 6.3 Build and serve
+
+Save this as `build-web.sh` in your app's root. It assumes your binary has
+the same name as your package (the default). Otherwise set `app`:
+
+```sh
+#!/bin/sh
+# Usage: ./build-web.sh [--release]   ->   target/web/
+set -e
+app=$(sed -n 's/^name *= *"\(.*\)"/\1/p' Cargo.toml | head -1)   # your [package] name
+profile=debug; flag=
+[ "$1" = "--release" ] && { profile=release; flag=--release; }
+
+cargo build $flag --target wasm32-unknown-unknown
+wasm-bindgen --target web --no-typescript --out-dir target/web --out-name app \
+    "target/wasm32-unknown-unknown/$profile/$app.wasm"
+cp web/index.html target/web/
+echo "serve with: python3 -m http.server -d target/web 8000"
+```
+
+and this as `web/index.html`:
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My App</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #1e1e1e; }
+    canvas { display: block; outline: none; }  /* each telera window is a <canvas> */
+  </style>
+</head>
+<body>
+  <script type="module">
+    if (!navigator.gpu) {
+      document.body.textContent = "This browser doesn't support WebGPU.";
+    } else {
+      const { default: init } = await import("./app.js");
+      await init();   // runs your fn main
+    }
+  </script>
+</body>
+</html>
+```
+
+Then:
+
+```sh
+./build-web.sh --release
+python3 -m http.server -d target/web 8000    # open http://localhost:8000
+```
+
+- Serve it over HTTP. Opening `index.html` as a `file://` URL doesn't work,
+  because browsers refuse to load wasm modules from there. Any static file
+  server works, and so does any static host (GitHub Pages, Netlify, an S3
+  bucket).
+- Use `--release` for anything you share. Debug builds are around 25 MB of
+  wasm and run noticeably slower. A minimal app's release build is about 8 MB.
+- `target/web/` (`index.html`, `app.js`, `app_bg.wasm`) is the whole
+  deployable app.
+
+telera's own `scripts/build-web <example>` does the same for the bundled
+examples and adds `--serve` and `--all`.
+
+### 6.4 What's different in a browser
+
+**Files and assets**
+
+- **No `std::fs`.** It returns errors in the browser, for your code as well
+  as telera's. Bytes your Rust code loads itself (`API::load_font`,
+  `API::add_image`, model data) should come from `include_bytes!` or an
+  `EmbeddedAssets` bundle, not `std::fs::read`.
+- **`RunType::Watch` / `Once` find no layouts.** The directory can't be read,
+  so you get `failed to load layouts: no .tmd layout files found` in the
+  console and an empty window. Use the `cfg` switch from §6.2.
+- **No hot reload.** Rebuild and refresh the page to see layout changes. Keep
+  native as your iteration loop and check the browser build periodically.
+
+**Fonts**
+
+- **No system fonts.** Natively, text falls back to the OS's sans-serif. In a
+  browser, if no *text* font is registered by the end of `onload` (through a
+  `font` directive or `API::load_font`), telera downloads Noto Sans from
+  jsDelivr so text isn't invisible. An emoji-only font doesn't count.
+- That download means the first frame can render without text, and an
+  offline or locked-down page shows none. **Ship your own font** to avoid
+  both. To change or disable the download, call
+  `api.set_web_fallback_font_url(...)` from `onload`; it takes
+  `Some(url)` or `None`. A URL on another origin must allow CORS.
+
+**Time and threads**
+
+- **`std::time::Instant::now()` panics** on `wasm32-unknown-unknown`. Use
+  `telera_app::web_time::Instant` (and `web_time::SystemTime`). It is the std
+  type natively, so you can use it everywhere unconditionally.
+- **No `std::thread::spawn`.** It panics. Work that would run on a
+  background thread natively has to run in `update` in small slices, or be
+  gated behind `cfg(not(target_arch = "wasm32"))`.
+- **The browser owns the event loop.** `run` returns immediately in the
+  browser, and the app keeps going from browser callbacks. Code after `run`
+  in `main` runs right away, not at exit, so don't put cleanup there.
+
+**Windows**
+
+- **Every window is a `<canvas>`** appended to `<body>`. Its initial size
+  comes from `with_inner_size`. Your page's CSS can resize it (for example
+  `canvas { width: 100vw; height: 100vh; }` to fill the page), and the app
+  receives a normal resize. Extra windows are additional canvases, laid out
+  by your CSS.
+- **Keyboard and wheel input go to the app**, not the browser. telera turns
+  off the browser's default handling on its canvases, so the arrow keys,
+  space and the scroll wheel don't scroll the page while the app has focus.
+  Click the canvas to give it keyboard focus.
+- Window titles and closing a window don't map to anything meaningful in a
+  tab. The app runs until the page is closed.
+
+**Not available**
+
+- **Agent access port** (§4.11): a browser has no sockets, so
+  `agent_access_port` is ignored and a note is logged.
+- **GPU init is asynchronous.** It is invisible to your code, because
+  `onload` still runs only once the device exists. But `initialize` runs
+  before the GPU exists on every platform, so keep GPU work in `onload` as
+  usual.
+
+**Shaders and errors**
+
+- **Errors go to the browser console** (F12): load errors, panics with their
+  message, and GPU validation errors. A blank canvas almost always has an
+  explanation there.
+- **Browsers are stricter about WGSL than native.** They enforce WGSL's
+  uniformity rules, which native wgpu/naga doesn't. A custom shader (§4.6)
+  that calls `textureSample` inside a branch on a per-fragment value works
+  natively and fails in the browser. Move the sample out of the branch, or
+  use `textureSampleLevel`, which has no uniformity requirement.
+
+---
+
+## 7. Re-exports
 
 `use telera_app::*;` brings in, besides the framework's own items:
 
@@ -826,11 +1082,13 @@ pub struct EventContext {
 | `winit` | `Window`, `WindowAttributes`, `WindowId`, `LogicalSize`, `KeyEvent`, `ElementState`, `Key`, `NamedKey`, `KeyCode`, `KeyLocation`, `PhysicalKey`, `keyboard` |
 | `image` | `image` (the crate), `DynamicImage`, `load_from_memory` |
 | `cgmath` | `cgmath` (the crate) - for `Camera` / `Transform` vector math |
+| `include_dir` | `include_dir` (the crate) - for `RunType::Embedded` bundles (§6) |
+| `web_time` | `web_time` (the crate) - an `Instant` that works in a browser too (§6) |
 | framework | `Color`, `ElementConfiguration`, `TextConfig`, `Camera`, `Canvas`, `Transform`, `Quaternion`, `Euler`, `Model`, `BaseMesh`, `CustomElement`, `UIImageDescriptor`, `EventContext`, `SyntheticKeyEvent`, `symbol_table`, `rkyv` |
 
 ---
 
-## 7. See also
+## 8. See also
 
 - [`tml-spec.md`](tml-spec.md) — the markdown layout language in full.
 - `examples/` — `basic.rs` (imperative UI; also wires `agent_access_port` on

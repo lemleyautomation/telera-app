@@ -1,0 +1,169 @@
+#!/bin/sh
+# Build examples for the browser (wasm32-unknown-unknown + WebGPU) into
+# target/web/<example>/, each with an index.html that loads it.
+#
+#   scripts/build-web layout                 # debug build of examples/layout
+#   scripts/build-web layout --release       # optimized, much smaller .wasm
+#   scripts/build-web layout --serve         # build, then serve on :8000
+#   scripts/build-web --all --serve 8080     # every example + an index page
+#
+# Serve the output with any static server, e.g.
+#   python3 -m http.server -d target/web/layout 8000
+# Opening index.html from file:// does not work (browsers block wasm modules there).
+#
+# Only examples that embed their assets (`RunType::Embedded`, see `layouts()`
+# in examples/layout.rs) can load layouts in a browser. The rest still build,
+# which checks they compile for wasm32, but log a load error in the console.
+#
+# One-time host setup:
+#   rustup target add wasm32-unknown-unknown
+#   cargo install wasm-bindgen-cli --version <wasm-bindgen version in Cargo.lock> --locked
+#   # plus a clang that can target wasm32 (telera-layout compiles clay's C source)
+set -e
+
+cd "$(dirname "$0")/.."
+
+target=wasm32-unknown-unknown
+profile=debug
+cargo_profile=
+serve=
+port=8000
+all=
+examples=
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--release) profile=release; cargo_profile=--release ;;
+	--all) all=1 ;;
+	--serve)
+		serve=1
+		case "$2" in [0-9]*) port="$2"; shift ;; esac
+		;;
+	-h|--help) sed -n '2,/^set -e/{/^set -e/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
+	-*) echo "unknown option: $1" >&2; exit 1 ;;
+	*) examples="$examples $1" ;;
+	esac
+	shift
+done
+
+if [ -n "$all" ]; then
+	examples=$(for f in examples/*.rs; do basename "$f" .rs; done)
+fi
+if [ -z "$examples" ]; then
+	echo "usage: scripts/build-web <example>... [--release] [--serve [port]]" >&2
+	echo "       scripts/build-web --all [--release] [--serve [port]]" >&2
+	echo "examples:" $(for f in examples/*.rs; do basename "$f" .rs; done) >&2
+	exit 1
+fi
+
+# --- tooling checks -------------------------------------------------------
+
+if ! rustup target list --installed 2>/dev/null | grep -qx "$target"; then
+	echo "Rust target $target is not installed. Run: rustup target add $target" >&2
+	exit 1
+fi
+
+# `cargo install` drops binaries in ~/.cargo/bin, which isn't always on PATH.
+bindgen=wasm-bindgen
+command -v wasm-bindgen >/dev/null 2>&1 || bindgen="${CARGO_HOME:-$HOME/.cargo}/bin/wasm-bindgen"
+want=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')
+if ! [ -x "$bindgen" ] && ! command -v "$bindgen" >/dev/null 2>&1; then
+	echo "wasm-bindgen not found. Run: cargo install wasm-bindgen-cli --version $want --locked" >&2
+	exit 1
+fi
+have=$("$bindgen" --version | awk '{print $2}')
+if [ "$have" != "$want" ]; then
+	echo "wasm-bindgen $have doesn't match the $want in Cargo.lock (they must match exactly)." >&2
+	echo "  cargo install wasm-bindgen-cli --version $want --locked --force" >&2
+	exit 1
+fi
+
+# --- build ----------------------------------------------------------------
+
+failed=
+built=
+for ex in $examples; do
+	if ! [ -f "examples/$ex.rs" ]; then
+		echo "no such example: examples/$ex.rs" >&2
+		exit 1
+	fi
+	echo "==> $ex ($profile)"
+	if ! cargo build $cargo_profile --target "$target" --example "$ex"; then
+		failed="$failed $ex"
+		continue
+	fi
+	out="target/web/$ex"
+	rm -rf "$out"
+	"$bindgen" --target web --no-typescript --out-dir "$out" --out-name "$ex" \
+		"target/$target/$profile/examples/$ex.wasm"
+	cat > "$out/index.html" <<EOF
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$ex · telera (web)</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1e1e1e; color: #ddd; font: 14px system-ui, sans-serif; }
+  canvas { display: block; outline: none; }
+  #status { position: fixed; left: 0; right: 0; bottom: 0; margin: 0; padding: 8px 12px;
+            background: #5a1d1d; color: #fff; white-space: pre-wrap; font: 12px ui-monospace, monospace;
+            max-height: 40vh; overflow: auto; }
+  #status:empty { display: none; }
+</style>
+</head>
+<body>
+<pre id="status"></pre>
+<script type="module">
+  // Mirror errors and panics (console_error_panic_hook logs via console.error)
+  // onto the page so a failed run is obvious without opening devtools.
+  const status = document.getElementById("status");
+  const report = (msg) => { status.textContent += (status.textContent ? "\n" : "") + msg; };
+  const consoleError = console.error.bind(console);
+  console.error = (...args) => { consoleError(...args); report(args.map(String).join(" ")); };
+  addEventListener("error", (e) => report(String(e.error ?? e.message)));
+  addEventListener("unhandledrejection", (e) => report(String(e.reason)));
+
+  if (!navigator.gpu) {
+    report("This browser has no WebGPU (navigator.gpu is undefined). Use a current Chrome or Edge, " +
+           "or enable WebGPU in Firefox/Safari. On Linux Chrome may need chrome://flags/#enable-unsafe-webgpu.");
+  } else {
+    const { default: init } = await import("./$ex.js");
+    await init();
+  }
+</script>
+</body>
+</html>
+EOF
+	built="$built $ex"
+	echo "    -> $out/ ($(du -h "$out/${ex}_bg.wasm" | cut -f1) wasm)"
+done
+
+# An index page linking every example built this run.
+if [ -n "$all" ] || [ "$(echo $built | wc -w)" -gt 1 ]; then
+	{
+		echo '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+		echo '<title>telera examples (web)</title>'
+		echo '<style>body{font:16px system-ui,sans-serif;margin:2rem;background:#1e1e1e;color:#ddd}a{color:#7ab7ff}li{margin:.3rem 0}</style>'
+		echo '</head><body><h1>telera examples (web)</h1><ul>'
+		for ex in $built; do echo "<li><a href=\"$ex/\">$ex</a></li>"; done
+		for ex in $failed; do echo "<li>$ex (failed to build)</li>"; done
+		echo '</ul></body></html>'
+	} > target/web/index.html
+fi
+
+if [ -n "$failed" ]; then
+	echo "failed to build:$failed" >&2
+fi
+
+if [ -n "$serve" ] && [ -n "$built" ]; then
+	if [ "$(echo $built | wc -w)" -eq 1 ] && [ -z "$all" ]; then
+		dir="target/web/$(echo $built)"
+	else
+		dir=target/web
+	fi
+	echo "serving $dir at http://localhost:$port  (ctrl+c to stop)"
+	exec python3 -m http.server -d "$dir" "$port"
+fi
+
+[ -z "$failed" ]

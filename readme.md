@@ -72,13 +72,29 @@ scripts/build-web layout              # or basic, effects; add --release for a s
 python3 -m http.server -d target/web/layout 8000   # open http://localhost:8000
 ```
 
+`--serve [port]` does both steps. `--all` builds every example into
+`target/web/` with an index page linking them, which is a quick way to check
+everything still compiles for wasm32:
+
+```
+scripts/build-web layout --serve       # build + serve on :8000
+scripts/build-web --all --serve 8080   # all examples, index at http://localhost:8080
+```
+
+Panics, GPU errors, and a missing WebGPU are shown in a bar at the bottom of
+the page as well as in the console. Only examples that embed their assets
+(currently `basic`, `layout`, `effects`) load layouts in a browser. The others
+build but log a load error.
+
 What differs in a browser:
 
 - **No filesystem.** Ship layouts, and the images, fonts and shaders their
   directives name, inside the binary with `RunType::Embedded`. Each bundle is an
   `include_dir!` directory standing in for a path, so directive paths resolve
-  unchanged (see `layouts()` in `examples/layout.rs`). `RunType::Watch` loads
-  once with no hot reload, and `Once`/`Watch` paths can't be read at all.
+  unchanged (see `layouts()` in `examples/layout.rs`). `RunType::Watch` and
+  `RunType::Once` can't read their directory in a browser, so they load nothing
+  (and log why). There is no hot reload. See `docs/telera_api.md` §6 for a full
+  walkthrough.
 - **No system fonts.** A `font` directive (or `API::load_font`) works as usual.
   If no *text* font is registered by the end of `onload` (an emoji-only font
   doesn't count), the default Noto Sans is downloaded from jsDelivr. Change or

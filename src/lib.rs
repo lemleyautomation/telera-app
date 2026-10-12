@@ -1814,8 +1814,13 @@ where
         }
         #[cfg(target_arch = "wasm32")]
         {
-            if matches!(api.watch_path, RunType::Watch(_)) {
-                log_error!("RunType::Watch: hot reload isn't available in a browser; layouts were loaded once");
+            // `load_initial_layouts` above found nothing (`std::fs` can't read
+            // a directory here), so point at the fix rather than the symptom.
+            if matches!(api.watch_path, RunType::Watch(_) | RunType::Once(_)) {
+                log_error!(
+                    "RunType::Watch / RunType::Once read layouts from disk, which a browser doesn't have; \
+                     no layouts were loaded. Use RunType::Embedded (see docs/telera_api.md §6)"
+                );
             }
             if startup.agent_access_port.is_some() {
                 log_error!("Startup::agent_access_port is ignored in a browser (no sockets)");

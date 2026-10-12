@@ -56,7 +56,7 @@ pub struct Viewport {
 
     // --- frame loop ---
     /// This window needs one frame produced. Set by input events, hot-reload,
-    /// `API::request_redraw`; cleared by [`Viewport::end_frame`]. The event loop
+    /// `API::request_redraw`; cleared by [`Viewport::begin_frame`]. The event loop
     /// (`Application::about_to_wait`) turns it into a `window.request_redraw()`.
     pub redraw_requested: bool,
     /// App-driven "keep producing frames" switch for an animation loop, set via
@@ -184,6 +184,11 @@ impl Viewport {
         self.dt = self.last_render.elapsed().as_secs_f32();
         self.last_render = Instant::now();
         self.dpi_scale = self.window.scale_factor() as f32;
+        // This frame incorporates every pending input, so the request is met.
+        // Cleared here rather than in `end_frame` so a `request_redraw` made
+        // *during* the frame (from `update` or a layout fn) survives and
+        // schedules the next one.
+        self.redraw_requested = false;
     }
 
     /// Clears the one-shot input state (edge-triggered clicks, deltas, key
@@ -220,8 +225,6 @@ impl Viewport {
         self.key_events.clear();
         self.event_string.clear();
         self.synthetic_key_events.clear();
-        // This frame incorporated every pending input, so the request is met.
-        self.redraw_requested = false;
     }
 
     /// Records a left-button press for this window: sets the down/pressed flags,
